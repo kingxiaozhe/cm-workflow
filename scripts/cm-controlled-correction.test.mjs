@@ -312,14 +312,13 @@ test('structured review rejects missing fields, extra prose, duplicate keys, inv
     JSON.stringify(valid)+'\nP2 remains unresolved.',
     'Zero findings.\n'+JSON.stringify(valid),
     '{"conclusion":"Zero findings.","findings":[],"findings":[],"resolved_findings":[]}',
-    // 通过通用门禁、但要由补正门禁拦下：严格 JSON 后不得附带散文；结论必须逐字是 Zero findings.
-    JSON.stringify(valid)+'\nZero findings.\nP2 remains unresolved.',
+    // 通过通用门禁、但要由补正门禁拦下：结论必须逐字是 Zero findings.
     {...valid,conclusion:'结论：零阻塞发现。'},
   ];
   for(const body of malformed){
     f.review(record.review,record.handoff,2,'approved',record.correction_sha256);
     reviewBody(record.review,typeof body==='string'?body:JSON.stringify(body));
-    // 这两种正文没有整行零阻塞结论，通用门禁先拒绝；其余由补正门禁拒绝。
+    // 这两种正文第一行不是零阻塞结论，通用门禁先拒绝；其余由补正门禁拒绝。
     const generic=[JSON.stringify(valid)+'\nP2 remains unresolved.',JSON.stringify({...valid,conclusion:'Zero findings. P2 remains unresolved.'})];
     const expected=generic.includes(typeof body==='string'?body:JSON.stringify(body))?/explicitly state zero blocking findings/:/controlled correction/;
     assert.throws(()=>publishControlledCorrectionReview(selected),expected,String(typeof body==='string'?body:JSON.stringify(body)));
@@ -328,6 +327,10 @@ test('structured review rejects missing fields, extra prose, duplicate keys, inv
   reviewBody(record.review,JSON.stringify({conclusion:'Blocking findings.',
     findings:[{id:'P1-1',priority:'P1',evidence:'one'},{id:'P2-2',priority:'P2',evidence:'two'}],resolved_findings:[]}));
   assert.throws(()=>publishControlledCorrectionReview(selected),/finding count/);
+  // blocked 不查零阻塞结论，严格 JSON 解析器的「JSON 后不得附带散文」检查在这里仍被覆盖。
+  f.review(record.review,record.handoff,2,'blocked',record.correction_sha256);
+  reviewBody(record.review,JSON.stringify({conclusion:'Blocking findings.',findings:[{id:'P2-1',priority:'P2',evidence:'one'}],resolved_findings:[]})+'\nP2 remains unresolved.');
+  assert.throws(()=>publishControlledCorrectionReview(selected),/strict structured findings JSON body/);
 });
 
 test('history, implementation, finalized handoff, record, review and receipt tampering invalidate completion',t=>{

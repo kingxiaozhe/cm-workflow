@@ -403,9 +403,9 @@ function parseReview(review){
   }
   if(scope.length===0)throw new GateError(`review evidence scope must contain at least one entry: ${review}`);
   if(new Set(scope).size!==scope.length)throw new GateError(`review evidence scope must not contain duplicates: ${review}`);
-  const body=lines.slice(end+1).join('\n').trim();
+  const rawBody=lines.slice(end+1).join('\n'),body=rawBody.trim();
   if(!body)throw new GateError(`review evidence body must not be empty: ${review}`);
-  return {header:scalars,scope,body};
+  return {header:scalars,scope,body,rawBody};
 }
 
 function sha256(file){
@@ -422,7 +422,7 @@ function integerHeader(value,label){
 }
 
 export function validateReview(review,{task,attempt,handoff,changedFiles}){
-  const {header,scope,body}=parseReview(review);
+  const {header,scope,rawBody}=parseReview(review);
   const required=['at','reviewer','independent','task','attempt','round','verdict','handoff','handoff_sha256','blocking_findings'];
   const missing=required.filter(field=>!Object.hasOwn(header,field)).sort();
   if(missing.length)throw new GateError(`review header missing fields: ${missing.join(', ')}`);
@@ -450,8 +450,8 @@ export function validateReview(review,{task,attempt,handoff,changedFiles}){
     throw new GateError('non-approved review must declare at least one blocking finding');
   if(header.reviewer==='self-degraded'&&!header.degraded_reason?.trim())
     throw new GateError('self-degraded review must include degraded_reason');
-  if(header.verdict==='approved'&&!statesZeroBlockingFindings(body,{at:header.at}))
-    throw new GateError(`approved review body must explicitly state zero blocking findings on a standalone conclusion line outside quotes and code blocks, e.g. "结论：零阻塞发现。" (accepted phrases: ${ZERO_BLOCKING_PHRASES.join(' / ')}); ask the reviewer to regenerate the evidence, do not edit it yourself)`);
+  if(header.verdict==='approved'&&!statesZeroBlockingFindings(rawBody,{at:header.at}))
+    throw new GateError(`approved review body must explicitly state zero blocking findings as its first line, unindented and containing only the conclusion, e.g. "结论：零阻塞发现。" (accepted phrases: ${ZERO_BLOCKING_PHRASES.join(' / ')}); ask the reviewer to regenerate the evidence, do not edit it yourself)`);
   if(attempt===2&&header.verdict==='changes_requested')
     throw new GateError('round 2 blocking findings must use verdict: blocked');
   if(header.handoff!==path.basename(handoff))
