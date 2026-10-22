@@ -141,12 +141,12 @@ test('message is bounded and built only from the structured fields',()=>{
   const short=buildNotifyMessage(fields('k'),{now:NOW,timeZone:'Asia/Shanghai'});
   assert.equal(short.title,'CM 需要人处理 · work/demo-app');
   assert.equal(short.subtitle,'cm-fix · T-001');
-  assert.equal(short.body,'下一步：核对 reason 后恢复原运行\n卡在：checks_not_passed\n时间：16:00');
+  assert.equal(short.body,'下一步：核对 reason 后恢复原运行\n卡在：检查没通过（checks_not_passed）\n时间：16:00');
   const named=buildNotifyMessage(fields('k',{feature:'12.app-version-footer',session:'4f9fa27f',code:'qa_decision_required'}),{now:NOW,timeZone:'Asia/Shanghai'});
   assert.equal(named.subtitle,'cm-fix · 12.app-version-footer T-001 · 会话 4f9fa27f');
   assert.equal(named.body,'下一步：核对 reason 后恢复原运行\n卡在：在等 QA 判定（qa_decision_required）\n时间：16:00');
   assert.equal(buildNotifyMessage(fields('k'),{now:NOW,timeZone:'Asia/Shanghai',followUp:true,suppressed:2}).body,
-    '第 2 次提醒：上次提醒后仍未处理\n下一步：核对 reason 后恢复原运行\n卡在：checks_not_passed\n时间：16:00\n另有 2 条提醒为避免刷屏已合并，请一并查看各会话');
+    '第 2 次提醒：上次提醒后仍未处理\n下一步：核对 reason 后恢复原运行\n卡在：检查没通过（checks_not_passed）\n时间：16:00\n另有 2 条提醒为避免刷屏已合并，请一并查看各会话');
   assert.doesNotMatch(short.body,/运行：|run-1|CM 不会自动继续/);
 });
 
@@ -180,7 +180,7 @@ test('custom text: without `text` (or with an empty one) every event is byte-ide
     const base=buildNotifyMessage(fields('k',{event}),at);
     assert.equal(base.title,`CM ${headline} · work/demo-app`,String(event));
     assert.equal(base.body,event==='done'?'下一步：核对 reason 后恢复原运行\n时间：16:00'
-      :'下一步：核对 reason 后恢复原运行\n卡在：checks_not_passed\n时间：16:00');
+      :'下一步：核对 reason 后恢复原运行\n卡在：检查没通过（checks_not_passed）\n时间：16:00');
     for(const text of [{},DEFAULT_NOTIFY_TEXT,null,normalizeNotifyText({}).text])
       assert.deepEqual(buildNotifyMessage(fields('k',{event}),{...at,text}),base,`${event} ${JSON.stringify(text)}`);
   }
@@ -201,12 +201,12 @@ test('custom text: prefix, headlines, field order (runId included) and labels',(
   for(const [event,headline] of Object.entries(want)){
     const message=buildNotifyMessage(fields('k',{event}),{...at,text:custom});
     assert.equal(message.title,`【工作流】 ${headline} · work/demo-app`);
-    assert.equal(message.body,event==='done'?'时刻：16:00\n工单：T-001':'代码：checks_not_passed\n编号：run-1\n时刻：16:00');
+    assert.equal(message.body,event==='done'?'时刻：16:00\n工单：T-001':'代码：检查没通过（checks_not_passed）\n编号：run-1\n时刻：16:00');
   }
   // Partial text: only what is given changes; an empty prefix drops it from the title.
   const partial=buildNotifyMessage(fields('k'),{...at,text:{titlePrefix:'',labels:{nextAction:'先做'}}});
   assert.equal(partial.title,'需要人处理 · work/demo-app');
-  assert.equal(partial.body,'先做：核对 reason 后恢复原运行\n卡在：checks_not_passed\n时间：16:00');
+  assert.equal(partial.body,'先做：核对 reason 后恢复原运行\n卡在：检查没通过（checks_not_passed）\n时间：16:00');
   assert.equal(buildNotifyMessage(fields('k',{event:'waiting'}),{...at,text:{headlines:{waiting:'等'}}}).title,'CM 等 · work/demo-app');
   assert.equal(buildNotifyMessage(fields('k',{event:'idle'}),{...at,text:{headlines:{waiting:'等'}}}).title,'CM 疑似空转 · work/demo-app');
   // Empty field values are still left out under a custom order.
@@ -223,7 +223,7 @@ test('custom text strings are cleaned like field values: paths redacted, control
   assert.equal(message.title,'CM <路径> 卡住 见<路径> [31m · work/demo-app');
   assert.equal(message.body.split('\n')[0],'<路径> 下一步：核对 reason 后恢复原运行');
   assert.equal(text.labels.project,'<路径>');
-  assert.match(message.body,/\n<路径>：checks_not_passed\n/);
+  assert.match(message.body,/\n<路径>：检查没通过（checks_not_passed）\n/);
   // Caps: prefix 16, headline 24, label 12 characters (… included); title 60, body 500.
   const long=normalizeNotifyText({titlePrefix:'前'.repeat(40),headlines:{default:'标'.repeat(40)},labels:{nextAction:'签'.repeat(40)}}).text;
   assert.equal(long.titlePrefix,'前'.repeat(15)+'…');assert.equal(long.headlines.default,'标'.repeat(23)+'…');
@@ -246,7 +246,7 @@ test('custom text loses bidi and zero-width characters; a string left with nothi
   const message=buildNotifyMessage(fields('k'),{...at,text});
   for(const char of hidden)assert(!message.title.includes(char)&&!message.body.includes(char),`U+${char.codePointAt(0).toString(16)}`);
   assert.equal(message.title,'CM 卡住了 · work/demo-app');
-  assert.equal(text.labels.task,'工单');assert.match(message.body,/\n原因：checks_not_passed\n/);
+  assert.equal(text.labels.task,'工单');assert.match(message.body,/\n原因：检查没通过（checks_not_passed）\n/);
   // Nothing visible left: the whole text is invalid and the default text is used.
   for(const [value,reason] of [[{headlines:{default:'​⁦⁩'}},'headlines'],[{labels:{code:'‮ ‏'}},'labels'],
     [{titlePrefix:'​'},'title_prefix'],[{titlePrefix:'  '},'title_prefix'],[{headlines:{done:'̀'}},'headlines']]){
@@ -294,7 +294,7 @@ test('invalid text falls back to the default text with one text_config log line;
   assert.deepEqual(notify(fields('typo'),{env:h.env,now:NOW}),{sent:true,reason:'launched'});
   assert(await h.until(()=>h.rows().length===1));
   assert.equal(h.rows()[0].title,'CM 需要人处理 · work/demo-app');
-  assert.match(h.rows()[0].body,/^下一步：核对 reason 后恢复原运行\n卡在：checks_not_passed\n/);
+  assert.match(h.rows()[0].body,/^下一步：核对 reason 后恢复原运行\n卡在：检查没通过（checks_not_passed）\n/);
   readNotifyConfig(h.env);
   const lines=h.log().split('\n').filter(line=>line.includes('text_config'));
   assert.equal(lines.length,1,h.log());assert.match(lines[0],/ config - key=- default_text text_config fields$/);
@@ -306,7 +306,7 @@ test('custom text reaches the command in CM_NOTIFY_TITLE/BODY and the stdin JSON
   assert.equal(notify(fields('custom'),{env:h.env,now:NOW}).sent,true);
   assert(await h.until(()=>h.rows().length===1));
   const [row]=h.rows();
-  assert.equal(row.title,'提醒 卡住了 · work/demo-app');assert.equal(row.body,'工单：T-001\n卡在：checks_not_passed');
+  assert.equal(row.title,'提醒 卡住了 · work/demo-app');assert.equal(row.body,'工单：T-001\n卡在：检查没通过（checks_not_passed）');
   assert.equal(row.stdin.title,row.title);assert.equal(row.stdin.body,row.body);assert.equal(row.stdin.runId,'run-1');
 });
 
@@ -383,10 +383,16 @@ test('compact layout: title is the project, subtitle the session title, body onl
   const stuck=fields('k',{code:'qa_decision_required',session:'4f9fa27f',sessionTitle:'分析 skills 库'});
   assert.deepEqual(buildNotifyMessage(stuck,at),{title:'work/demo-app',subtitle:'会话：分析 skills 库',body:'在等 QA 判定'});
   // No plain-words entry: the event headline, never the English code. No title: the short session id; neither: the workflow.
-  assert.deepEqual(buildNotifyMessage(fields('k',{session:'4f9fa27f'}),{...at,text:{headlines:{default:'要你出手'}}}),
+  assert.deepEqual(buildNotifyMessage(fields('k',{session:'4f9fa27f',code:'batch_resources_open'}),{...at,text:{headlines:{default:'要你出手'}}}),
     {title:'work/demo-app',subtitle:'会话：4f9fa27f',body:'要你出手'});
   assert.equal(buildNotifyMessage(fields('k'),at).subtitle,'cm-fix');
   assert.equal(buildNotifyMessage(fields('k',{event:'done',code:'qa_decision_required'}),at).body,'流程已结束');
+  // Codes without an entry still read as Chinese from their words; only a code saying nothing falls back to the headline.
+  for(const [code,want] of [['checks_not_passed','检查没通过'],['qa_failed','QA 没通过'],['develop_checks_not_passed','开发检查没通过'],
+    ['review_verification_failed','审查失败'],['qa_fix_action_authorization_required','QA 修复要你授权'],['batch_resources_open','需要人处理'],
+    ['spec_drift','规格有改动，需重新批准'],['call_timeout','超时']])
+    assert.equal(buildNotifyMessage(fields('k',{code}),at).body,want,code);
+  assert.equal(buildNotifyMessage(fields('k',{code:'review_verification_failed'}),{now:NOW,timeZone:'UTC'}).body.split('\n')[1],'卡在：审查失败（review_verification_failed）');
   assert.equal(buildNotifyMessage(stuck,{...at,followUp:true,suppressed:2}).body,'第 2 次：在等 QA 判定\n另有 2 条提醒已合并');
   assert.deepEqual(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],layout:'compact'})).config.layout,'compact');
   assert.equal(Object.hasOwn(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],layout:'full'})).config,'layout'),false);
@@ -410,6 +416,12 @@ test('session title: last custom-title (else ai-title) from the tail of the sess
   // A symlinked transcript is never followed.
   fs.writeFileSync(path.join(root,'real.jsonl'),line({type:'custom-title',customTitle:'别读我'}));
   fs.rmSync(file);fs.symlinkSync(path.join(root,'real.jsonl'),file);
+  assert.equal(sessionTitle(env),null);
+  // A project directory that is a symlink is not followed, even to a valid transcript.
+  fs.rmSync(file);const outside=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-outside-')));
+  t.after(()=>fs.rmSync(outside,{recursive:true,force:true}));
+  fs.writeFileSync(path.join(outside,`${id}.jsonl`),line({type:'custom-title',customTitle:'链接外的标题'}));
+  fs.rmSync(dir,{recursive:true});fs.symlinkSync(outside,dir);
   assert.equal(sessionTitle(env),null);
   for(const bad of [{...env,CLAUDE_CODE_SESSION_ID:undefined},{...env,CLAUDE_CODE_SESSION_ID:'../x'},{...env,CM_NOTIFY_CLAUDE_PROJECTS:undefined}])
     assert.equal(sessionTitle(bad),null,JSON.stringify(bad));

@@ -24,7 +24,8 @@ function home(t,{withConfig=true}={}){
 process.stdin.on('end',()=>{fs.appendFileSync(${JSON.stringify(sent)},JSON.stringify({title:process.env.CM_NOTIFY_TITLE,
 body:process.env.CM_NOTIFY_BODY,stdin:JSON.parse(input)})+'\\n');});`);
   if(withConfig)fs.writeFileSync(path.join(dir,'notify.json'),JSON.stringify({version:1,command:[process.execPath,script]}));
-  const env={...process.env,CM_WORKFLOW_HOME:dir};
+  // Never read the real Claude Code session of whoever runs the tests.
+  const env={...process.env,CM_WORKFLOW_HOME:dir};delete env.CLAUDE_CODE_SESSION_ID;delete env.CM_NOTIFY_CLAUDE_PROJECTS;
   const rows=()=>fs.existsSync(sent)?fs.readFileSync(sent,'utf8').trim().split('\n').map(line=>JSON.parse(line)):[];
   const until=async(check,ms=8000)=>{const end=Date.now()+ms;while(!check()&&Date.now()<end)await new Promise(r=>setTimeout(r,25));return check();};
   const registry=()=>fs.existsSync(hostRegistryDir(env))?fs.readdirSync(hostRegistryDir(env)).filter(name=>name.endsWith('.json')).sort():[];
@@ -122,6 +123,23 @@ test('patrol: a single dead host names its run and workflow; rate-limited or off
   assert.deepEqual(h.registry(),[]);
   const off=home(t,{withConfig:false});off.write(KEYS[1],{pid:gone});
   assert.equal(patrol({env:off.env,now:NOW}).notice,'off');assert.deepEqual(off.registry(),[`${KEYS[1]}.json`]);
+});
+
+test('patrol names the dead hosts own sessions, never the session that runs the patrol',async t=>{
+  const h=home(t),gone=gonePid(),projects=path.join(h.dir,'projects'),id='2e015f08-c743-427a-95fa-0e471a851593';
+  // The patrolling session has a title of its own; it must not appear.
+  fs.mkdirSync(path.join(projects,'p'),{recursive:true});
+  fs.writeFileSync(path.join(projects,'p',`${id}.jsonl`),JSON.stringify({type:'custom-title',customTitle:'正在巡检的会话'})+'\n');
+  const env={...h.env,CLAUDE_CODE_SESSION_ID:id,CM_NOTIFY_CLAUDE_PROJECTS:projects};
+  h.write(KEYS[1],{pid:gone,sessionTitle:'分析 skills 库'});
+  assert.equal(patrol({env,now:NOW}).notice,'sent');
+  assert(await h.until(()=>h.rows().length===1));
+  assert.equal(h.rows()[0].stdin.sessionTitle,'分析 skills 库');
+  // Without a recorded title nothing is guessed from the patrol's own session.
+  const other=home(t);other.write(KEYS[2],{pid:gone});
+  assert.equal(patrol({env:{...other.env,CLAUDE_CODE_SESSION_ID:id,CM_NOTIFY_CLAUDE_PROJECTS:projects},now:NOW}).notice,'sent');
+  assert(await other.until(()=>other.rows().length===1));
+  assert.equal(other.rows()[0].stdin.sessionTitle,undefined);
 });
 
 test('--report prints the summary and neither notifies nor removes anything',t=>{

@@ -147,6 +147,7 @@ export function notifySessionLabel(args=[]){
 // the last 1 MiB is read, never through a symlink. Under node --test only an
 // explicit CM_NOTIFY_CLAUDE_PROJECTS directory is read. null when unknown.
 const TITLE_TAIL_BYTES=1024*1024;
+const TITLE_DIR_LIMIT=2000;
 export function sessionTitle(env=process.env){
   try{
     const id=env.CLAUDE_CODE_SESSION_ID;
@@ -154,14 +155,20 @@ export function sessionTitle(env=process.env){
     const projects=env.CM_NOTIFY_CLAUDE_PROJECTS||(env.NODE_TEST_CONTEXT?null
       :path.join(env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),'.claude'),'projects'));
     if(!projects)return null;
-    for(const dir of fs.readdirSync(projects)){
-      const file=path.join(projects,dir,`${id}.jsonl`);
+    // The projects root may itself be a link (a moved config directory); the
+    // project directories below it and the transcript must not be.
+    const dirs=fs.readdirSync(projects,{withFileTypes:true}).filter(entry=>entry.isDirectory()).slice(0,TITLE_DIR_LIMIT);
+    for(const dir of dirs){
+      const file=path.join(projects,dir.name,`${id}.jsonl`);
       let stat;try{stat=fs.lstatSync(file);}catch{continue;}
       if(!stat.isFile())continue;
-      const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+      const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
       try{
-        const length=Math.min(stat.size,TITLE_TAIL_BYTES),buffer=Buffer.alloc(length);
-        fs.readSync(fd,buffer,0,length,stat.size-length);
+        // The opened file must be the regular file lstat saw, not a replacement.
+        const opened=fs.fstatSync(fd);
+        if(!opened.isFile()||opened.dev!==stat.dev||opened.ino!==stat.ino)return null;
+        const length=Math.min(opened.size,TITLE_TAIL_BYTES),buffer=Buffer.alloc(length);
+        fs.readSync(fd,buffer,0,length,opened.size-length);
         let custom=null,ai=null;
         for(const line of buffer.toString('utf8').split('\n')){
           if(!line.includes('-title"'))continue;
@@ -214,9 +221,29 @@ const CODE_WORDS=Object.freeze({qa_decision_required:'在等 QA 判定',qa_manda
   fingerprint_mismatch:'启动参数与创建时不一致',review_blocked:'审查判定无法通过',review_limit:'审查轮次用完',
   host_exited:'宿主中途退出',host_request_unanswered:'宿主请求没人应答',host_response_rejected:'宿主应答被拒绝',
   permission_denied:'权限被拒绝',spec_drift:'规格有改动，需重新批准',awaiting_spec_approval:'在等规格批准',
-  blocked:'被阻断',cancelled:'已取消',failed:'失败',interrupted:'被中断'});
+  blocked:'被阻断',cancelled:'已取消',failed:'失败',interrupted:'被中断',
+  checks_not_passed:'检查没通过',develop_checks_not_passed:'开发检查没通过',qa_failed:'QA 没通过',qa_blocked:'QA 被阻断',
+  qa_result_blocked:'QA 结果被阻断',qa_execution_unknown:'QA 执行结果不明',project_qa_not_passed:'项目 QA 没通过',
+  correction_review_required:'需要重新审查改动',documentation_sync_blocked:'文档同步被阻断',handoff_exists:'交接记录已存在',
+  provider_development_authorization_required:'需要你授权外部开发',host_process_gone:'宿主进程已退出',run_done:'跑完了'});
+// Codes without an entry: "subject + outcome" from the words in the code, so
+// the reason is still in Chinese; null when the code says neither.
+const CODE_SUBJECTS=[['qa_fix','QA 修复'],['qa','QA'],['review','审查'],['develop','开发'],['checks','检查'],['check','检查'],
+  ['spec','规格'],['documentation','文档'],['batch','批次'],['fix','修复'],['host','宿主'],['bootstrap','初始化'],
+  ['permission','权限'],['verification','验证'],['completion','完成'],['scope','范围'],['provider','外部模型']];
+const CODE_OUTCOMES=[['not_passed','没通过'],['failed','失败'],['blocked','被阻断'],['authorization_required','要你授权'],
+  ['approval_required','要你批准'],['required','要你处理'],['timeout','超时'],['unknown','结果不明'],['interrupted','被中断'],
+  ['drift','有改动'],['exhausted','次数用完'],['unavailable','不可用'],['invalid','无效'],['denied','被拒绝'],['cancelled','已取消']];
+function codeChinese(code){
+  if(!code)return null;
+  if(Object.hasOwn(CODE_WORDS,code))return CODE_WORDS[code];
+  const outcome=CODE_OUTCOMES.find(([word])=>code===word||code.endsWith(`_${word}`));
+  if(!outcome)return null;
+  const subject=CODE_SUBJECTS.find(([word])=>code===word||code.startsWith(`${word}_`)||code.includes(`_${word}_`));
+  return `${subject?subject[1]:''}${outcome[1]}`;
+}
 const codeWords=code=>{const value=clean(code,64);if(!value)return '';
-  return Object.hasOwn(CODE_WORDS,value)?`${CODE_WORDS[value]}（${value}）`:value;};
+  const words=codeChinese(value);return words?`${words}（${value}）`:value;};
 // Custom strings first lose every Unicode format character (\p{Cf}: bidi
 // controls U+202A-202E, U+2066-2069, U+200E/200F, U+061C; zero-width U+200B-200D,
 // U+2060, U+FEFF; soft hyphen, tag characters), so they cannot reorder or hide
@@ -273,7 +300,7 @@ export function buildNotifyMessage(fields,{now=Date.now(),timeZone,text,followUp
     // plain-words entry falls back to the event headline; the code itself stays
     // in the stdin JSON for anyone who needs it.
     const session=clean(fields.sessionTitle,40)||clean(fields.session,24),code=clean(fields.code,64);
-    const reason=event!=='done'&&Object.hasOwn(CODE_WORDS,code)?CODE_WORDS[code]:spec.headlines[event];
+    const reason=(event!=='done'&&codeChinese(code))||spec.headlines[event];
     const lines=[`${followUp?'第 2 次：':''}${reason}`];
     if(Number.isSafeInteger(suppressed)&&suppressed>0)lines.push(`另有 ${suppressed} 条提醒已合并`);
     return {title:cut(project||workflow,NOTIFY_LIMITS.titleChars),subtitle:session?`会话：${session}`:workflow,
@@ -487,7 +514,9 @@ export function writeHostRegistry({sessionKey,workflow,project,startedAt,row=nul
       operation:clean(operation,32)||null,
       runId:text(result.identity?.runId)??text(result.runId)??text(result.batchId)??null,
       task:text(result.identity?.taskId)??text(result.taskId)??null,
-      stage:text(result.stage)??text(result.state)??text(result.status)??null};
+      stage:text(result.stage)??text(result.state)??text(result.status)??null,
+      // The session that started this host, so a later patrol can name it.
+      sessionTitle:sessionTitle(env)};
     const file=path.join(dir,`${sessionKey}.json`),temp=`${file}.${process.pid}.tmp`;
     fs.writeFileSync(temp,JSON.stringify(entry),{mode:0o600});fs.renameSync(temp,file);return true;
   }catch{return false;}
