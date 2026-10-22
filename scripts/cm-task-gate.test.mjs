@@ -212,13 +212,16 @@ test('approved body needs a standalone zero-blocking conclusion line; older evid
     assert.throws(()=>validateReview(review,selected),error=>error instanceof GateError&&/explicitly state zero blocking findings/.test(error.message),body);};
   for(const phrase of ['零发现','零阻塞发现','零阻断发现','无阻塞发现','无阻断发现','未发现阻塞','未发现阻断','Zero findings','no findings','No blocking findings'])
     assert.ok(accepts(strict,`审查了全部范围。\n\n结论：${phrase}。`),phrase);
-  for(const body of ['Zero findings.','No blocking findings.','- **结论：** 零阻断发现。','**结论：零阻塞发现。**','Conclusion: no blocking findings','说明。\r\n\r\n结论：零阻塞发现。'])
+  for(const body of ['Zero findings.','No blocking findings.','- **结论：** 零阻断发现。','**结论：零阻塞发现。**','**结论**：零阻塞发现。',
+    '- ~~~\n  示例\n  ~~~\n\n结论：零阻塞发现。','Conclusion: no blocking findings','说明。\r\n\r\n结论：零阻塞发现。'])
     assert.ok(accepts(strict,body),body);
   for(const body of ['未发现阻断问题以外的问题。','零阻断发现？','零阻断发现 ？','不能说零阻塞发现。','零阻断发现，并不成立。仍有一个阻断问题。',
     '不能宣称 e.g. no blocking findings，因为仍有阻断问题。','结论：approved，零 findings。No blocking findings. 已核对 handoff。',
     '> 其他审查：零阻断发现\n\n本次仍存在一个阻断问题。','> 结论：零阻塞发现。\n\n本次仍存在一个阻断问题。','{"conclusion":"> Zero findings."}','```\nZero findings.\n```','~~~\n~~~javascript\nZero findings.',
     '{"conclusion":"> 旧结果。No blocking findings."}','{"conclusion":"~~~\\n说明。Zero findings.\\n~~~"}','["e.g. No blocking findings."]',
-    '{"summary":"x"}\n','blocker、major、minor 都是 0。'])
+    '{"summary":"x"}\n','blocker、major、minor 都是 0。',
+    '- ~~~\n  Zero findings.\n  ~~~\n\n本次仍有阻断。','- a\n  - ````\n    零阻塞发现。\n    ````','1. ```\nZero findings.\n```',
+    '<!--\nZero findings.\n-->','<!-- 草稿 -->\n    Zero findings.','说明。\n  结论：零阻塞发现。','- 第一项\n  零阻塞发现。'])
     rejects(strict,body);
   // 启用前的凭证按原判定：原有说法出现在任意位置即可，新增说法不回溯放宽。
   assert.ok(accepts(legacy,'结论：approved，零 findings。No blocking findings. 已核对 handoff。'));
