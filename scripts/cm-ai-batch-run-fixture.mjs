@@ -5,6 +5,7 @@
 // The tests were split across files so they run in separate processes; batchFixture
 // patches Date.now and fs.existsSync for some modes, so tests of one file stay serial.
 import {buildManifest} from './cm-spec-manifest.mjs';
+import {batchSegment} from '../runtime/js/cm-ai/batch-location.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -150,11 +151,10 @@ export async function batchFixture(mode,options={}){
     });
     const open=(extra={})=>createCmAiBatch({configuration:config,executionFor,logHome:path.join(root,'logs'),...extra});
     if(mode==='parallel-existing'){
-      // T-002's scope file is committed on HEAD, so it is an edit, not a new file.
-      fs.writeFileSync(path.join(codeProject,'file1.js'),'existing\n');git(codeProject,['add','file1.js']);git(codeProject,['commit','-m','existing file']);
-      await assert.rejects(open().handle({operation:'advance',requestId:'existing'}),error=>error.code==='parallel_scope_existing_file');
-      assert.deepEqual(calls,[]);assert(!fs.existsSync(path.join(root,'.cm-worktrees')));
-      assert.equal(git(codeProject,['status','--porcelain']),'');return;
+      // Both members' scope files are committed on HEAD, so each member edits an
+      // existing file. The batch must run, merge both edits and finish as usual.
+      for(const file of ['file0.js','file1.js'])fs.writeFileSync(path.join(codeProject,file),'existing\n');
+      git(codeProject,['add','file0.js','file1.js']);git(codeProject,['commit','-m','existing files']);
     }
     if(mode==='parallel-dirty'){
       fs.writeFileSync(path.join(codeProject,'dirty.txt'),'user-owned\n');
@@ -220,7 +220,7 @@ export async function batchFixture(mode,options={}){
         }
         // Kept in its original run: no second generation, no WIP removal, no redispatch.
         assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
-        assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002')));
+        assert(fs.existsSync(path.join(root,'.cm-worktrees',batchSegment(config.batchId),'T-002')));
         assert(!fs.existsSync(path.join(specsDir,'.reviews','.execution',`task-${digest({batchId:config.batchId,task:`${feature}/T-002`,generation:2}).slice(0,48)}`)));
         assert(fs.existsSync(statePath));
         const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
@@ -233,7 +233,7 @@ export async function batchFixture(mode,options={}){
       // Probe the exits the hint names (or withholds) through the real entry checks.
       const {prepareReviewedEvidenceSupersession}=await import('../runtime/js/cm-ai/reviewed-evidence-supersede.mjs');
       const {acquireExternalRunGuard,externalRunGuardExists}=await import('../runtime/js/cm-ai/external-run-guard.mjs');
-      const worktree=path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002');
+      const worktree=path.join(root,'.cm-worktrees',batchSegment(config.batchId),'T-002');
       const identity={repositoryId:config.repositoryId,runId:'task-supersede-probe',taskId:'T-002',attempt:1};
       prepareReviewedEvidenceSupersession({specsDir,codeProject:worktree,feature,identity,reason:'probe',
         tasksPath:path.join(specsDir,feature,'tasks.md'),acceptSupersededCodeDrift:true});
@@ -250,7 +250,7 @@ export async function batchFixture(mode,options={}){
       assert.match(result.reason,/--allow-develop-redo 1\.work\/T-002/);assert.equal(result.guidance.authorizationGranted,false);
       // Kept in place: no serial reschedule, its worktree and edits stay for the redo.
       assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);
-      const worktree=path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002');
+      const worktree=path.join(root,'.cm-worktrees',batchSegment(config.batchId),'T-002');
       assert.equal(fs.readFileSync(path.join(worktree,'file1.js'),'utf8'),'implemented\n');
       const redo={operation:'develop_redo',requestId:'redo',taskKey:`${feature}/T-002`,reason:'会话已停止修改代码'};
       const refused=await open().handle(redo);
@@ -280,7 +280,7 @@ export async function batchFixture(mode,options={}){
       const logfile=path.join(specsDir,'运行日志.jsonl');
       let rows=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
       assert.equal(rows.filter(row=>row.phase==='batch_member_blocked').length,0);
-      assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),'T-002')));
+      assert(fs.existsSync(path.join(root,'.cm-worktrees',batchSegment(config.batchId),'T-002')));
       result=await open().handle({operation:'advance',requestId:'retry-completion'});
       assert.equal(result.code,'run_done',JSON.stringify(result));
       rows=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
@@ -350,10 +350,10 @@ export async function batchFixture(mode,options={}){
     if(mode==='parallel-resume'){assert(interrupted);const before=[...calls];result=await open().handle({operation:'advance',requestId:'resume-parallel'});assert.deepEqual(calls.slice(0,before.length),before);}
     if(mode==='parallel-conflict'){
       assert.equal(result.code,'merge_conflict',JSON.stringify(result));assert.equal(git(codeProject,['rev-parse','HEAD']),conflictHead);
-      for(const task of ['T-001','T-002'])assert(fs.existsSync(path.join(root,'.cm-worktrees',config.batchId.slice(0,8),task)));
+      for(const task of ['T-001','T-002'])assert(fs.existsSync(path.join(root,'.cm-worktrees',batchSegment(config.batchId),task)));
       // Kept member branches are namespaced per batch, so a later batch of the same
       // tasks does not collide with the WIP branches this one leaves behind.
-      const segment=config.batchId.slice(0,8).replace(/\./g,'-');
+      const segment=batchSegment(config.batchId);
       const heads=git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']).split('\n').filter(Boolean);
       assert.deepEqual(heads.sort(),[`cm/${segment}/work/T-001`,`cm/${segment}/work/T-002`]);
       for(const name of heads)git(codeProject,['check-ref-format','--branch',name]);
@@ -405,6 +405,10 @@ export async function batchFixture(mode,options={}){
       assert.deepEqual(qaCalls,['T-003']);
       assert(fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8').includes('[x] T-003'));
       assert.equal(git(codeProject,['branch','--show-current']),'main');
+      if(mode==='parallel-existing')for(const file of ['file0.js','file1.js']){
+        assert.equal(fs.readFileSync(path.join(codeProject,file),'utf8'),'implemented\n');
+        assert.equal(git(codeProject,['show',`HEAD~3:${file}`]),'existing');
+      }
     }
     if(mode==='learning'){
       const handoff=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','work-T-002-a1-handoff.json'),'utf8'));

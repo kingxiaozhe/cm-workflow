@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {readBatchExecutionPolicy,freezeBatchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
+import {batchSegments,batchMemberWorktree} from '../runtime/js/cm-ai/batch-location.mjs';
 import {readBatchExternalModels,freezeBatchExternalModels,batchModelsFile} from '../runtime/js/cm-ai/external-group-models.mjs';
 // Current-conversation transport for the existing batch driver, not a new loop.
 import fs from 'node:fs';
@@ -89,7 +90,7 @@ export function migrateLegacyPreflightCache(batch,review,runtime){
     try{const a=fs.lstatSync(file),b=fs.lstatSync(destination);interrupted=a.dev===b.dev&&a.ino===b.ino;}catch(error){if(error.code!=='ENOENT')throw error;}
     const source=pinned(file,interrupted?2:1);
     if(source===null)refuse(`${entry.name} 在核对时消失`);
-    const cwd=path.resolve(batch.codeProject,'..','.cm-worktrees',batch.batchId.slice(0,8),taskId);
+    const cwd=batchMemberWorktree({codeProject:batch.codeProject,taskId,segments:batchSegments({specsDir:batch.specsDir,batchId:batch.batchId})});
     const options={cwd,model:review.model,disabledSkills:review.disabledSkills,promptTransport:'stdin'};
     let cached;try{cached=readConversationReviewConfigurationValue(JSON.parse(source.bytes.toString('utf8')),null);}
     catch{refuse(`${entry.name} 不是预检缓存格式`);}

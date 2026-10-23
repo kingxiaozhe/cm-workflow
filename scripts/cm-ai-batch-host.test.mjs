@@ -1,5 +1,6 @@
 import {hostDiagnostic} from './fixtures/host-diagnostic.mjs';
 import test from 'node:test';
+import {batchSegment} from '../runtime/js/cm-ai/batch-location.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -108,7 +109,7 @@ function execute(f,{cancel=false,args=[],operations=[{operation:'advance',reques
           if(row.type==='host_request'){
             const payload=row.payload,identity=payload.identity??payload.request.identity;
             const cwd=f.parallel&&identity.taskId!=='T-003'
-              ?path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),identity.taskId):f.codeProject;
+              ?path.join(f.root,'.cm-worktrees',batchSegment(f.batch.batchId),identity.taskId):f.codeProject;
             calls.push(`${identity.taskId}:${row.kind}`);
             if(cancel){pendingControls.add('status');pendingControls.add('cancel');send({operation:'status',requestId:'status'});send({operation:'cancel',requestId:'cancel'});continue;}
             if(row.kind==='develop'){
@@ -272,7 +273,7 @@ let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',(
     const directory=path.join(f.specsDir,'.reviews','.execution',f.batch.batchId);
     const receipts=[1,2].map(n=>fs.readFileSync(path.join(directory,`preflight-T-00${n}.json`),'utf8'));
     for(const [index,bytes] of receipts.entries()){
-      const config=JSON.parse(bytes),cwd=path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),`T-00${index+1}`);
+      const config=JSON.parse(bytes),cwd=path.join(f.root,'.cm-worktrees',batchSegment(f.batch.batchId),`T-00${index+1}`);
       assert(preflightMatches(config.preflight,{cwd,model:'fixture',disabledSkills:[],promptTransport:'stdin'}));
       assert(!preflightMatches(config.preflight,{cwd:f.codeProject,model:'fixture',disabledSkills:[],promptTransport:'stdin'}));
       assert.equal(config.preflight.real_model_requests,0);assert.equal(config.preflight.listener_closed,true);
@@ -304,7 +305,7 @@ function legacyParallelFixture(){
   fs.writeFileSync(f.config,JSON.stringify({batch:f.batch,workflows:Object.fromEntries(f.batch.tasks.map(task=>[`1.work/${task.taskId}`,original]))}));
   f.legacy=path.join(f.specsDir,'.reviews','.execution',f.batch.batchId);
   f.current=path.join(f.specsDir,'.reviews','external-preflight',f.batch.batchId);
-  f.worktree=taskId=>path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),taskId);
+  f.worktree=taskId=>path.join(f.root,'.cm-worktrees',batchSegment(f.batch.batchId),taskId);
   return f;
 }
 const legacyReceipt=(f,taskId,extra={})=>JSON.stringify({model:'fixture',disabledSkills:[],preflight:{passed:true,cli_model:'fixture',

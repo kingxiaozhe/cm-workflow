@@ -127,6 +127,22 @@ test('real batch host advances with authored edit and actual check, then resumes
   const again=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a'}),'advance');
   assert.equal(again.status,0,again.stderr);
 });
+// The project log is shared by every run in the specs root. Rows of other runs,
+// including another batch, must not make a new batch look already started.
+test('a new batch starts in a specs root whose shared project log has only other runs',t=>{
+  const f=fixture(t);prepared(f);
+  const foreign=[{schema_version:1,workflow:'cm-prd',event:'run_done',run_id:'prd-earlier'},
+    {schema_version:1,workflow:'cm-ai',event:'decision',phase:'batch_start',run_id:'some-other-batch',from_key:'1.work/T-001'},
+    {schema_version:1,workflow:'cm-ai',event:'progress',run_id:'batch-drive-run',detail:'not a batch decision row'}];
+  fs.writeFileSync(path.join(f.specsDir,'运行日志.jsonl'),foreign.map(row=>JSON.stringify(row)).join('\n')+'\n');
+  const first=f.drive(f.plan(),'advance');
+  assert.equal(first.status,0,first.stderr);
+  assert.doesNotMatch(first.stderr,/批次已有存档/);
+  assert.match(first.stderr,/应答 develop/);
+  // Once this batch has written its own decision rows, create is refused again.
+  const again=f.drive(f.plan(),'advance');
+  assert.equal(again.status,2);assert.match(again.stderr,/批次已有存档，请用 resume/);
+});
 test('real batch reaches completion with automatic configured fixture review',t=>{
   const f=fixture(t);prepared(f);
   f.write('develop-a2.json',develop);

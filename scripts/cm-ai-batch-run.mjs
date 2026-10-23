@@ -21,6 +21,7 @@ import {releaseVerifiedQaResources} from '../runtime/js/cm-ai/qa-resource-releas
 import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readControlPolicy,controlTarget,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
+import {BATCH_SEGMENT_FIELD,batchSegment,batchSegments,batchMemberWorktree,batchMemberBranch} from '../runtime/js/cm-ai/batch-location.mjs';
 import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
@@ -277,10 +278,13 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   // refs/heads/cm/work/T-001/<batch> cannot coexist, so a suffix would still collide
   // with branches left by earlier versions. Git rejects ".." and a trailing dot in a
   // ref component while batchId allows dots, so the segment normalises them.
-  const batchSegment=config.batchId.slice(0,8).replace(/\./g,'-');
-  const location=key=>{const definition=plans.get(key);return {
-    worktree:path.resolve(config.codeProject,'..','.cm-worktrees',config.batchId.slice(0,8),definition.identity.taskId),
-    branch:`cm/${batchSegment}/${definition.feature.replace(/^\d+\./,'')}/${definition.identity.taskId}`};};
+  // batch-location.mjs: a new batch records a segment from its full id in
+  // batch_start; one that started without it keeps the old 8-character prefix.
+  let segments=null;
+  const memberSegments=()=>segments??=batchSegments({specsDir:config.specsDir,batchId:config.batchId});
+  const location=key=>{const definition=plans.get(key),current=memberSegments();return {
+    worktree:batchMemberWorktree({codeProject:config.codeProject,segments:current,taskId:definition.identity.taskId}),
+    branch:batchMemberBranch({segments:current,feature:definition.feature,taskId:definition.identity.taskId})};};
   function verifyMerged(row){
     const definition=plans.get(row.from_key),state=JSON.parse(fs.readFileSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json'),'utf8'));
     const {revision,...body}=state;
@@ -291,11 +295,12 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   function prepareGroup(group){
     const state=progress(),remaining=group.filter(key=>membership.has(key)&&!state.done.has(key));
-    // A member may only create files (js-host.md 3.1): every scope path of a member
-    // about to get its worktree must be absent from HEAD. Checked for the whole group
-    // before any worktree exists; started members are not rechecked.
-    for(const key of remaining)if(!fs.existsSync(location(key).worktree))for(const file of plans.get(key).scope)
-      need(spawnSync('git',['-C',config.codeProject,'cat-file','-e',`HEAD:${file}`],gitOptions()).status!==0,'parallel_scope_existing_file');
+    // Members may edit existing files. The group validator already requires
+    // pairwise-disjoint scopes and no dependency path, so members never write the
+    // same path; merges stay serial and a git conflict still stops as
+    // merge_conflict. The earlier create-only rule (#59, #187) existed because a
+    // task's scope was then guessed by the session; it now comes from the batch
+    // definition the scheduler validates.
     for(const key of remaining){
       const {worktree,branch}=location(key);
       if(!fs.existsSync(worktree)){
@@ -418,7 +423,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const initial=progress();
     if(request.operation==='status')return {outcome:'reported',state:'parallel',batchId:config.batchId,
       ready:group.filter(key=>initial.ready.has(key)),merged:group.filter(key=>initial.done.has(key))};
-    if(!initial.rows.length)record('batch_start',{from_key:liveKey});
+    if(!initial.rows.length)record('batch_start',{from_key:liveKey,[BATCH_SEGMENT_FIELD]:batchSegment(config.batchId)});
     if(request.operation==='cancel'){record('batch_cancel',{from_key:liveKey});return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};}
     prepareGroup(group);
     // Resolve every member's actual worktree preflight before any start dispatch.
@@ -569,7 +574,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         await Promise.all([...members].map(([key,run])=>run.host.handle({version:1,operation:'cancel',requestId:request.requestId,identity:plans.get(key).identity})));
         return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};}
       if(active){
-        if(progress().rows.length===0)record('batch_start',{from_key:liveKey});
+        if(progress().rows.length===0)record('batch_start',{from_key:liveKey,[BATCH_SEGMENT_FIELD]:batchSegment(config.batchId)});
         record('batch_cancel',{from_key:liveKey});
         return active.host.handle({version:1,operation:'cancel',requestId:request.requestId,identity:plans.get(liveKey).identity});
       }
@@ -639,7 +644,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         if(active.blocked)return {outcome:'blocked',code:active.blocked.reason,batchId:config.batchId};
         // batch.lock serializes selection across processes; child locks remain run-local.
         need(progress().current===liveKey&&!progress().stopped,'batch_history_changed');
-        if(progress().rows.length===0&&request.operation!=='status')record('batch_start',{from_key:liveKey});
+        if(progress().rows.length===0&&request.operation!=='status')record('batch_start',{from_key:liveKey,[BATCH_SEGMENT_FIELD]:batchSegment(config.batchId)});
         if(cancelled||request.operation==='cancel'){
           record('batch_cancel',{from_key:liveKey});cancelled=true;
           return active.host.handle({version:1,operation:'cancel',requestId:request.requestId,identity:plans.get(liveKey).identity});
