@@ -8,7 +8,7 @@ import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
 import {need,shape,json,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdMaterialResults} from './materials.mjs';
 import {prdFeatureInventory,nextPrdFeatureIndex,inspectPrdDraft,inspectPrdDesignDraft} from './draft.mjs';
-import {checkPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
+import {checkPrdDraftMechanics,inspectPrdContextCheck,PRD_SELF_CHECK_RULES} from './self-check.mjs';
 import {acceptedPrdDraftForSave} from './draft-save.mjs';
 import {preparePrdReview} from './review-preparation.mjs';
 import {inspectAcceptedPrdDesign} from './accepted-design.mjs';
@@ -235,7 +235,7 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
               mechanical:draft.mechanicalSelfCheck,contextCheck});
           }
           selfCheckRound++;contextCheck=null;
-          draft=json({...inspected,mechanicalSelfCheck:checkPrdDraftMechanics(inspected)});
+          draft=json({...inspected,mechanicalSelfCheck:checkPrdDraftMechanics(inspected,{rules:PRD_SELF_CHECK_RULES})});
           stage=draft.mechanicalSelfCheck.status==='failed'?(selfCheckRound>=2?'self_check_needs_human':'draft_self_check_failed'):'draft_ready';
         }
         const updated=[...next,{role:'assistant',result:reply}];

@@ -14,7 +14,7 @@ import {prdTreeFileDigest} from './tree-digest.mjs';
 import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdDraft} from './draft.mjs';
-import {checkPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
+import {checkPrdDraftMechanics,inspectPrdContextCheck,PRD_SELF_CHECK_RULES} from './self-check.mjs';
 import {replaceSessionFile} from './session.mjs';
 const names=['requirements.md','design.md','tasks.md','test-cases.json'];
 const valid=name=>/^[1-9]\d*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
@@ -126,7 +126,7 @@ export function inspectPrdChangeProposal(before,raw,selected,config){
   const changedUserCases=userCases(before.files).filter(item=>selected.includes(item.feature)
     &&!userCases(files).some(next=>next.feature===item.feature&&digest(next.value)===digest(item.value)));
   const draft={summary:raw.summary,features,draftDigest:digest({summary:raw.summary,features})};
-  const mechanics=checkPrdDraftMechanics(draft,{change:true,
+  const mechanics=checkPrdDraftMechanics(draft,{change:true,rules:PRD_SELF_CHECK_RULES,
     previous:Object.fromEntries(selected.map(directory=>[directory,before.files[`${directory}/tasks.md`]]))});
   need(mechanics.status==='mechanical_subset_passed','prd_change_mechanics_failed');
   return json({...draft,mechanicalSelfCheck:mechanics,removed:raw.removed,files,changedUserCases,

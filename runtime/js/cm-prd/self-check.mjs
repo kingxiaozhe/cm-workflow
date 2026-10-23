@@ -41,8 +41,10 @@ function outsideFences(source){
   }).join('\n');
 }
 // Rule 2 adds checks the parser alone cannot make; rule 1 is the original subset.
-// A recorded report is accepted under the rule it was produced by (see
-// matchesPrdDraftMechanics), so earlier failed-draft evidence stays verifiable.
+// Only a fresh draft round and a change proposal opt into rule 2. Every re-check
+// of material that may predate it (corrections, dispositions, summary) stays on
+// rule 1, and a recorded report is accepted under either rule
+// (matchesPrdDraftMechanics), so sessions started before the upgrade resume as before.
 export const PRD_SELF_CHECK_RULES=2;
 // Task- or dependency-looking lines the parser skips: a task written this way
 // would silently drop out of execution.
@@ -82,7 +84,7 @@ function strictFindings(source,previous,parsed){
 export function matchesPrdDraftMechanics(draft,recorded,options={}){
   return [PRD_SELF_CHECK_RULES,1].some(rules=>digest(checkPrdDraftMechanics(draft,{...options,rules}))===digest(recorded));
 }
-export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=PRD_SELF_CHECK_RULES}={}){
+export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1}={}){
   need(rules===1||rules===PRD_SELF_CHECK_RULES,'prd_self_check_rules_invalid');
   const findings=[],features=[];
   for(const feature of draft.features){
