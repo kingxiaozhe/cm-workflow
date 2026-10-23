@@ -32,7 +32,8 @@ export function writeHandoff(recordsRoot,fields,{now=()=>new Date()}={}){
 
 // 没有摘要返回 null；.reviews 是链接、摘要不是普通文件、有多个硬链接或超长时抛错，由调用方打警告。
 // 用 O_NOFOLLOW 打开后对同一描述符做检查和有界读取，检查与读取之间换不了文件；
-// 打开前后核对 .reviews 是同一个目录，换不了父目录。
+// 打开前后核对 .reviews 的目录身份，拒绝能察觉的父目录替换；记录根来自本地运行配置、按可信处理，
+// 不防「换走再换回」这类恶意并发（摘要只作参考，不参与授权、恢复与完成门禁）。
 export function readHandoff(recordsRoot){
   const dir=path.join(recordsRoot,'.reviews'),target=handoffPath(recordsRoot);
   const invalid=(code,message)=>Object.assign(Error(message),{code});
