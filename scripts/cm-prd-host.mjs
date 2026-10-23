@@ -10,6 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {inspectCmPrdAdmission} from './cm-prd-entry.mjs';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
+import {PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
 import {runPrdHostReview,validatePrdReviewMode} from '../runtime/js/cm-prd/review-host.mjs';
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
 import {createPrdDispositionOwner} from '../runtime/js/cm-prd/review-disposition.mjs';
@@ -107,8 +108,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       checkContext:(payload,signal)=>call('prd_self_check',payload,signal),
       generate:(payload,signal)=>call('prd_generate',payload,signal),
       processMaterials:(payload,signal)=>call('prd_materials',payload,signal),
-      analyze:(payload,signal)=>call('prd_analyze',payload,signal)}):null;
-    const restoreChange=(restored=null,selected,reason)=>createPrdChange({admission,runtime,call,restored,...(selected?{selected,reason}:{})});
+      analyze:(payload,signal)=>call('prd_analyze',payload,signal),selfCheckRules:()=>session.selfCheckRules()}):null;
+    const restoreChange=(restored=null,selected,reason)=>createPrdChange({admission,runtime,call,restored,
+      selfCheckRules:()=>session.selfCheckRules(),...(selected?{selected,reason}:{})});
     let reviewState=null;const reviewController=new AbortController();
     let summaryState=null,publishedSummary=false;
     const summarize=createPrdSummaryOwner({summarize:(payload,signal)=>call('prd_summary',{
@@ -334,7 +336,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
             packageDigest:prepared.packageDigest,authorContextId:original.payload.authorContextId,response})};
           session.commit(checkpoint());return status();
         }
-      }else{replaying=false;session.begin(request,checkpoint());}
+      }else{replaying=false;session.begin(request,checkpoint(),{selfCheckRules:PRD_SELF_CHECK_RULES});}
       if(!contextLogged){
         const segment=session.segment('context_load');
         record({event:'progress',phase:'start',at:contextStartedAt,data:{operation_id:'prd-context',phase_name:'context_load',segment}});

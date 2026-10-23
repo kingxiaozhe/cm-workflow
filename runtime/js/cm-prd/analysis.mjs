@@ -18,7 +18,8 @@ import {prdDraftJson} from './validation-reason.mjs';
 
 const initialTaskInstructions=' For FIRST task planning only: combine related low-risk work around one independently verifiable and reversible objective. Retain every AC, original user test, expected result and verification prerequisite; keep AC-to-test-to-task references complete. Same file/component alone is not evidence to combine. Keep high-risk work, unknown-risk work, explicit user requests for independent tasks and unrelated objectives separate; preserve legitimate contract-first tasks and real dependencies. Use requirement/design/context evidence, not keyword risk classification or another model call. No fixed merge ratio or task-count target. Do not repartition an existing draft, revision, restored task list, change or in-flight task. Scope expansion during development requires the existing explicit change and renewed approval. Keep configured developer/reviewer roles and each task independent N4 unchanged.';
 
-export function createCmPrdAnalysis({input,runtime,analyze,record,processMaterials,generate,checkContext,restored=null,allowInputDrift=false}){
+export function createCmPrdAnalysis({input,runtime,analyze,record,processMaterials,generate,checkContext,restored=null,allowInputDrift=false,
+  selfCheckRules=()=>PRD_SELF_CHECK_RULES}){
   need(['codex','claude'].includes(runtime)&&typeof analyze==='function'&&typeof record==='function','prd_host_invalid');
   input=json(input);
   const admission=inspectCmPrdAdmission(input);
@@ -235,7 +236,7 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
               mechanical:draft.mechanicalSelfCheck,contextCheck});
           }
           selfCheckRound++;contextCheck=null;
-          draft=json({...inspected,mechanicalSelfCheck:checkPrdDraftMechanics(inspected,{rules:PRD_SELF_CHECK_RULES})});
+          draft=json({...inspected,mechanicalSelfCheck:checkPrdDraftMechanics(inspected,{rules:selfCheckRules()})});
           stage=draft.mechanicalSelfCheck.status==='failed'?(selfCheckRound>=2?'self_check_needs_human':'draft_self_check_failed'):'draft_ready';
         }
         const updated=[...next,{role:'assistant',result:reply}];

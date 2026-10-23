@@ -102,8 +102,8 @@ test('a self-check revision recorded under rule 1 still verifies after rule 2',(
 });
 test('only a fresh draft round and a change proposal use rule 2; re-checks keep rule 1',()=>{
   const read=file=>fs.readFileSync(new URL(`../runtime/js/cm-prd/${file}`,import.meta.url),'utf8');
-  const optIns=['analysis.mjs','change.mjs'].flatMap(file=>[...read(file).matchAll(/rules:PRD_SELF_CHECK_RULES/g)].map(()=>file));
-  assert.deepEqual(optIns,['analysis.mjs','change.mjs']);
+  assert.match(read('analysis.mjs'),/checkPrdDraftMechanics\(inspected,\{rules:selfCheckRules\(\)\}\)/);
+  assert.match(read('change.mjs'),/checkPrdDraftMechanics\(draft,\{change:true,rules,/);
   const odd=draft('- [ ] T-001: Implement behavior\n- [ ] T-002/a: Hidden task');
   assert.deepEqual(checkPrdDraftMechanics(odd),checkPrdDraftMechanics(odd,{rules:1}),'the default is rule 1');
   for(const file of ['review-disposition.mjs','review-correction.mjs','summary.mjs','failed-correction.mjs','self-check-revision.mjs'])
