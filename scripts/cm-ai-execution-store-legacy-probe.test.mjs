@@ -15,26 +15,33 @@ const fingerprints={workflow:hash('a'),config:hash('b'),inputs:hash('c')};
 
 function legacyRoot(t){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-legacy-probe-')));
-  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  // One cleanup, in order: every lock holder has exited before the root is removed.
+  const holders=[];
+  t.after(async()=>{
+    for(const child of holders)if(child.exitCode===null&&child.signalCode===null){
+      const gone=new Promise(resolve=>child.once('exit',resolve));child.kill();await gone;
+    }
+    fs.rmSync(root,{recursive:true,force:true});
+  });
   // A real store built by the current protocol, then placed where the legacy shared writer lives.
   const seed=openExecutionStore({specsRoot:root,identity:{repositoryId:'probe',runId:'seed-run-0001'},fingerprints,create:true});
   seed.close();
   const execution=path.join(root,'.reviews','.execution'),seedDir=path.join(execution,'seed-run-0001');
   for(const name of ['writer.sqlite','writer-ready.json'])fs.copyFileSync(path.join(seedDir,name),path.join(execution,name));
-  return {root,legacy:path.join(execution,'writer.sqlite'),execution};
+  return {root,legacy:path.join(execution,'writer.sqlite'),execution,holders};
 }
 
 // Another process holds the legacy writer's write lock for holdMs, as a concurrent
 // create's probe does; resolves once the lock is actually held.
-function holdLegacy(t,legacy,holdMs){
+function holdLegacy(f,holdMs){
+  const legacy=f.legacy;
   const child=spawn(process.execPath,['--no-warnings','-e',`
     const {DatabaseSync}=require('node:sqlite');
     const db=new DatabaseSync(process.argv[1],{timeout:0});
     db.exec('BEGIN IMMEDIATE');process.stdout.write('held\\n');
     setTimeout(()=>{db.exec('ROLLBACK');db.close();process.stdout.write('released\\n');},Number(process.argv[2]));
   `,legacy,String(holdMs)],{stdio:['ignore','pipe','inherit']});
-  // Wait for the holder to exit before the temporary root is removed.
-  t.after(async()=>{if(child.exitCode===null){const gone=new Promise(resolve=>child.once('exit',resolve));child.kill();await gone;}});
+  f.holders.push(child);
   let output='';
   const held=new Promise((resolve,reject)=>{
     child.stdout.on('data',chunk=>{output+=chunk;if(output.includes('held'))resolve();});
@@ -47,7 +54,7 @@ function holdLegacy(t,legacy,holdMs){
 test('a create waits out a legacy writer lock that another process holds briefly',async t=>{
   const f=legacyRoot(t);
   const holdMs=Math.floor(LEGACY_PROBE_ATTEMPTS*LEGACY_PROBE_DELAY_MS/4);
-  const holder=holdLegacy(t,f.legacy,holdMs);await holder.held;
+  const holder=holdLegacy(f,holdMs);await holder.held;
   const store=openExecutionStore({specsRoot:f.root,identity:{repositoryId:'probe',runId:'new-run-0001'},fingerprints,create:true});
   store.close();
   assert(fs.existsSync(path.join(f.execution,'new-run-0001','writer.sqlite')));
@@ -56,7 +63,7 @@ test('a create waits out a legacy writer lock that another process holds briefly
 
 test('a legacy writer lock held past the retry budget still refuses with store_busy and creates nothing',async t=>{
   const f=legacyRoot(t);
-  const holder=holdLegacy(t,f.legacy,LEGACY_PROBE_ATTEMPTS*LEGACY_PROBE_DELAY_MS*4);await holder.held;
+  const holder=holdLegacy(f,LEGACY_PROBE_ATTEMPTS*LEGACY_PROBE_DELAY_MS*4);await holder.held;
   const started=Date.now();
   assert.throws(()=>openExecutionStore({specsRoot:f.root,identity:{repositoryId:'probe',runId:'new-run-0002'},fingerprints,create:true}),
     error=>error.code==='store_busy');

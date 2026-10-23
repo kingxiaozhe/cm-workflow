@@ -116,7 +116,7 @@ function seededLog(tail){
   fs.mkdirSync(project);fs.mkdirSync(specs);
   const log=path.join(specs,'运行日志.jsonl');
   const earlier=JSON.stringify({schema_version:1,at:'2026-07-29T09:00:00-07:00',workflow:'cm-prd',event:'run_done',run_id:'prd-earlier',status:'done'});
-  fs.writeFileSync(log,earlier+'\n'+tail);
+  fs.writeFileSync(log,Buffer.concat([Buffer.from(earlier+'\n'),Buffer.isBuffer(tail)?tail:Buffer.from(tail)]));
   const write=()=>spawnSync(process.env.CM_PYTHON_BIN||'python3',[pythonWriter,'--workflow','cm-ai','--event','run_start','--phase','start',
     '--runtime','codex','--project-root',project,'--specs-dir',specs,'--run-id','20260729T160000Z-active02','--detail','开始执行',
     '--at','2026-07-29T09:10:00-07:00','--data-json','{"feature":"1.login"}'],{encoding:'utf8',env:{...process.env,CM_WORKFLOW_LOG_HOME:globalHome}});
@@ -142,6 +142,33 @@ test('a half-written final record is refused and the log keeps its exact bytes',
     const result=f.write();
     assert.notEqual(result.status,0);assert.match(result.stderr,/log_tail_incomplete/);
     assert.deepEqual(fs.readFileSync(f.log),before);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('a whitespace-only tail is padding the next record starts after, not an incomplete record',()=>{
+  const f=seededLog(' \t\r ');
+  try{
+    const result=f.write();assert.equal(result.status,0,result.stderr);
+    const lines=fs.readFileSync(f.log,'utf8').trimEnd().split('\n');
+    assert.equal(lines.length,2);assert.equal(lines[0],f.earlier);
+    assert.equal(JSON.parse(lines[1]).run_id,'20260729T160000Z-active02');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('a closed final record holding invalid UTF-8 is refused like a half-written one',()=>{
+  const f=seededLog(Buffer.concat([Buffer.from('{"schema_version":1,"run_id":"bad","detail":"'),Buffer.from([0xff,0xfe]),Buffer.from('"}')]));
+  try{
+    const before=fs.readFileSync(f.log);
+    const result=f.write();
+    assert.notEqual(result.status,0);assert.match(result.stderr,/log_tail_incomplete/);
+    assert.deepEqual(fs.readFileSync(f.log),before);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('a final record past the 4 MiB tail bound is refused even when an earlier LF exists',()=>{
+  const f=seededLog(JSON.stringify({schema_version:1,run_id:'huge',detail:'x'.repeat(4*1024*1024)}));
+  try{
+    const before=fs.statSync(f.log).size;
+    const result=f.write();
+    assert.notEqual(result.status,0);assert.match(result.stderr,/log_tail_incomplete/);
+    assert.equal(fs.statSync(f.log).size,before);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 test('QA environment-failure supersession needs the matching completed FAIL, both case lists and a single-line reason',()=>{

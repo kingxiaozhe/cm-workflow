@@ -484,11 +484,19 @@ function unterminatedTail(descriptor){
     const start=Math.max(0,end-chunk),piece=Buffer.alloc(end-start);
     fs.readSync(descriptor,piece,0,piece.length,start);
     const newline=piece.lastIndexOf(0x0a);
-    if(newline!==-1)return Buffer.concat([piece.subarray(newline+1),tail]);
+    if(newline!==-1){
+      const found=Buffer.concat([piece.subarray(newline+1),tail]);
+      return found.length<=LOG_TAIL_LIMIT?found:false;
+    }
     tail=Buffer.concat([piece,tail]);end=start;
   }
   return end===0&&tail.length<=LOG_TAIL_LIMIT?tail:false;
 }
+// JSON whitespace only (space, tab, CR): harmless padding the next record can
+// start after, exactly as the plain O_APPEND writer always did.
+const blankTail=tail=>tail.every(byte=>byte===0x20||byte===0x09||byte===0x0d);
+// Readers decode logs as strict UTF-8; a tail they would reject is not complete.
+const strictUtf8=new TextDecoder('utf-8',{fatal:true});
 function appendLine(file,value,{privateFile=false}={}){
   fs.mkdirSync(path.dirname(file),{recursive:true});
   const descriptor=fs.openSync(file,fs.constants.O_APPEND|fs.constants.O_CREAT|fs.constants.O_RDWR,privateFile?0o600:0o644);
@@ -497,9 +505,12 @@ function appendLine(file,value,{privateFile=false}={}){
     // A complete final record without LF is closed first; a half-written one is
     // left byte for byte and refused rather than buried under a new record.
     const tail=unterminatedTail(descriptor);
-    let complete=false;
-    if(tail!==null&&tail!==false){try{JSON.parse(tail.toString('utf8'));complete=true;}catch{}}
-    if(tail!==null&&!complete){
+    let complete=false,blank=false;
+    if(tail!==null&&tail!==false){
+      blank=blankTail(tail);
+      if(!blank)try{JSON.parse(strictUtf8.decode(tail));complete=true;}catch{}
+    }
+    if(tail!==null&&!complete&&!blank){
       const error=new Error(`log_tail_incomplete: ${file} ends with an incomplete record; repair or move that last line before writing more events`);
       error.code='log_tail_incomplete';throw error;
     }
