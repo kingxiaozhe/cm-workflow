@@ -271,6 +271,9 @@ for(const mode of [false,true,'scope'])test(`F2 failed correction reaches human 
   const before=files.map(n=>fs.readFileSync(path.join(f.args.specs,'.reviews',n)));
   const receipt=fs.readFileSync(f.receipt),value=JSON.parse(receipt);
   assert.deepEqual(value.correction_check.input.decisions,f.args.decisions);
+  // A later save may rewrite the scope record; the failed check keeps the policy it ran under.
+  const record=path.join(f.args.specs,'.reviews/prd-guide-task-scope.json'),recordBytes=mode==='scope'?fs.readFileSync(record):null;
+  if(mode==='scope')fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n',{mode:0o600});
   const summary=await humanSummary()(f.args.specs);
   assert.equal(summary.readyForAwaitingReview,true);assert.deepEqual(summary.blockers,[]);
   assert.equal(summary.features[0].reviews.split.correctionSelfCheck.status,'failed');
@@ -280,6 +283,7 @@ for(const mode of [false,true,'scope'])test(`F2 failed correction reaches human 
   assert.match(summary.details.risks,/自检失败.*待人工裁决/);
   assert.match(summary.details.risks,mode==='scope'?/task_scope_missing/:mechanical?/new_task_not_pending/:/Cannot prove original correction/);
   assert.equal(publishPrdAwaitingReview({specs:f.args.specs,summary,writeEnabled:true}).status,'awaiting_review');
+  if(mode==='scope')fs.writeFileSync(record,recordBytes,{mode:0o600});
   const {assertPrdReviewsSettled}=await import('../runtime/js/cm-prd/change.mjs');
   assert.doesNotThrow(()=>assertPrdReviewsSettled(f.args.specs,['1.guide'],{requireSplit:true}));
   assert.equal((await f.owner(f.args,signal)).gate.disposition,'self_check_failed');

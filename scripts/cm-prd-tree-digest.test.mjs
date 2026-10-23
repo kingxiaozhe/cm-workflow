@@ -36,7 +36,7 @@ test('exact PRD change saves and recovers with large original assets, rejects la
   const version='\n| Date | Version | Change |\n| --- | --- | --- |\n| 2026-10-19 | v1 | original |\n';
   const original=[{path:'requirements.md',content:version+'\n- [ ] [AC-001] Keep asset\n'},
     {path:'design.md',content:version+'\nKeep original font\n'},
-    {path:'tasks.md',content:version+'\n- [x] T-001: Original task\n'}];
+    {path:'tasks.md',content:version+'\n- [x] T-001: Original task\n  - 范围: `README.md`\n'}];
   for(const d of original)fs.writeFileSync(path.join(feature,d.path),d.content);
   const asset=path.join(feature,'font.otf'),bytes=Buffer.alloc(1024*1024+13,0x92);fs.writeFileSync(asset,bytes);
   const before=inspectPrdChangeSnapshot(dir),selected=['1.example'];
@@ -58,7 +58,7 @@ test('recovering a saved PRD change refuses an asset directory swapped for a lin
   const feature=path.join(dir,'1.example');fs.mkdirSync(path.join(feature,'assets'),{recursive:true});
   const version='\n| Date | Version | Change |\n| --- | --- | --- |\n| 2026-10-19 | v1 | original |\n';
   const original=[{path:'requirements.md',content:version+'\n- [ ] [AC-001] Keep asset\n'},
-    {path:'design.md',content:version+'\nKeep original logo\n'},{path:'tasks.md',content:version+'\n- [x] T-001: Original task\n'}];
+    {path:'design.md',content:version+'\nKeep original logo\n'},{path:'tasks.md',content:version+'\n- [x] T-001: Original task\n  - 范围: `README.md`\n'}];
   for(const d of original)fs.writeFileSync(path.join(feature,d.path),d.content);
   const bytes=Buffer.from('logo bytes\n');fs.writeFileSync(path.join(feature,'assets','logo.png'),bytes);
   const before=inspectPrdChangeSnapshot(dir),selected=['1.example'];

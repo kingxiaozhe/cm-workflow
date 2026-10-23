@@ -8,7 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {parseTaskScopes,declaredTaskScope,sameScope,validScopePath} from '../runtime/js/task-scope.mjs';
 import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
-import {recordPrdTaskScopes,prdTaskScopeOptions} from '../runtime/js/cm-prd/task-scope-record.mjs';
+import {recordPrdTaskScopes,prdTaskScopeOptions,approvedScopeExemptions} from '../runtime/js/cm-prd/task-scope-record.mjs';
+import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {BATCH_SEGMENT_FIELD,batchSegment} from '../runtime/js/cm-ai/batch-location.mjs';
 
@@ -67,8 +69,12 @@ test('a task that cannot list its files declares 串行 and is never treated as 
   assert.deepEqual(codes(business),['task_scope_invalid']);assert.match(business.findings[0].reason.problems[0],/只用于脚手架功能/);
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-task-scope-serial-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  fs.mkdirSync(path.join(root,'1.work'));fs.writeFileSync(path.join(root,'1.work','tasks.md'),'- [ ] T-001: scaffold\n  - 范围: 串行\n');
-  assert.equal(declaredTaskScope(root,'1.work','T-001'),null);
+  // At run time too: a scaffold's 串行 is "no scope", anywhere else it is refused, not read as "none".
+  for(const feature of ['1.bootstrap','2.work']){
+    fs.mkdirSync(path.join(root,feature));fs.writeFileSync(path.join(root,feature,'tasks.md'),'- [ ] T-001: scaffold\n  - 范围: 串行\n');
+  }
+  assert.equal(declaredTaskScope(root,'1.bootstrap','T-001'),null);
+  assert.throws(()=>declaredTaskScope(root,'2.work','T-001'),error=>error.code==='task_scope_invalid'&&/只用于脚手架功能/.test(error.reason));
 });
 
 test('the same files in another order are the same scope',()=>{
@@ -94,12 +100,49 @@ test('rule 3: every task of a new draft must declare its files; earlier rules do
   assert.deepEqual(codes(malformed),['task_scope_invalid']);
 });
 
-test('rule 3 in a change proposal requires scope only for tasks the approved file did not have',()=>{
-  const previous={'1.sample':'- [x] T-001: old\n'};
+test('rule 3 in a change proposal requires scope only for tasks the approval covered',()=>{
+  const previous={'1.sample':'- [x] T-001: old\n'},scopes={'1.sample':{exempt:['T-001']}};
   const kept=draft('- [x] T-001: old\n- [ ] T-002: new\n  - 范围: `b.js`\n');
-  assert.equal(checkPrdDraftMechanics(kept,{rules:3,change:true,previous}).status,'mechanical_subset_passed');
+  assert.equal(checkPrdDraftMechanics(kept,{rules:3,change:true,previous,scopes}).status,'mechanical_subset_passed');
   const added=draft('- [x] T-001: old\n- [ ] T-002: new\n');
-  assert.deepEqual(checkPrdDraftMechanics(added,{rules:3,change:true,previous}).findings[0].reason.tasks,['T-002']);
+  assert.deepEqual(checkPrdDraftMechanics(added,{rules:3,change:true,previous,scopes}).findings[0].reason.tasks,['T-002']);
+  // The previous text alone exempts nothing: it may be an unapproved draft.
+  assert.deepEqual(checkPrdDraftMechanics(added,{rules:3,change:true,previous}).findings[0].reason.tasks,['T-001','T-002']);
+});
+
+test('change exemptions come from the approved bytes and grammar, or the save record, never a draft',()=>{
+  const sha=text=>createHash('sha256').update(text).digest('hex');
+  // Under the legacy grammar the full-width colon line is a note, not an approved task.
+  const approvedText='- [ ] T-001: 原任务\n- [ ] T-002：旧说明\n';
+  const status=(text,extra={})=>JSON.stringify({status:'approved',features:['1.sample'],specFiles:[{path:'1.sample/tasks.md',sha256:sha(text)}],...extra});
+  const before=(text,statusText,scopeRecords)=>({files:{'1.sample/tasks.md':text},status:statusText,...(scopeRecords?{scopeRecords}:{})});
+  assert.deepEqual(approvedScopeExemptions(before(approvedText,status(approvedText)),['1.sample'],1),{'1.sample':{exempt:['T-001']}});
+  assert.deepEqual(approvedScopeExemptions(before(approvedText,status(approvedText)),['1.sample'],2),{'1.sample':{exempt:['T-001','T-002']}});
+  // A saved but unapproved draft (no status, or bytes that differ from the approval) exempts nothing ...
+  assert.deepEqual(approvedScopeExemptions(before('- [ ] T-001: new\n',null),['1.sample'],2),{'1.sample':{exempt:[]}});
+  assert.deepEqual(approvedScopeExemptions(before('- [ ] T-001: edited\n',status(approvedText)),['1.sample'],2),{'1.sample':{exempt:[]}});
+  // ... except what its own save recorded, which traces back to an approval.
+  const record=JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n';
+  assert.deepEqual(approvedScopeExemptions(before('- [ ] T-001: edited\n',null,{'1.sample':record}),['1.sample'],2),{'1.sample':{exempt:['T-001']}});
+  assert.deepEqual(approvedScopeExemptions(before('x',null),['2.added'],2),{'2.added':{exempt:[]}});
+});
+
+test('scope paths that differ only in case are refused, as the execution side would',()=>{
+  const parsed=parseTaskScopes('- [ ] T-001: a\n  - 范围: `src/a.js`, `src/A.js`\n');
+  assert.equal(parsed.tasks.size,0);assert.match(parsed.errors[0].message,/大小写/);
+});
+
+test('reading tasks.md never blocks on a non-regular file and stays inside the specs directory',t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-task-scope-fifo-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(root,'1.work'));
+  assert.equal(spawnSync('mkfifo',[path.join(root,'1.work','tasks.md')]).status,0);
+  assert.throws(()=>declaredTaskScope(root,'1.work','T-001'),error=>error.code==='task_scope_invalid'&&/不是普通文件/.test(error.reason));
+  const outside=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-task-scope-outside-')));
+  t.after(()=>fs.rmSync(outside,{recursive:true,force:true}));
+  fs.writeFileSync(path.join(outside,'tasks.md'),'- [ ] T-001: a\n  - 范围: `a.js`\n');
+  fs.mkdirSync(path.join(root,'2.link'));fs.symlinkSync(path.join(outside,'tasks.md'),path.join(root,'2.link','tasks.md'));
+  assert.throws(()=>declaredTaskScope(root,'2.link','T-001'),error=>error.code==='task_scope_invalid'&&/不在规格目录内/.test(error.reason));
 });
 
 test('a saved scope record holds later re-checks to the scope rule, approved tasks exempt',t=>{
@@ -108,7 +151,7 @@ test('a saved scope record holds later re-checks to the scope rule, approved tas
   const feature=tasks=>draft(tasks).features[0];
   // Without a record the re-check is unchanged (rule 1 asks nothing about scope).
   assert.deepEqual(prdTaskScopeOptions(specs,'1.sample'),{});
-  recordPrdTaskScopes(specs,[feature('- [ ] T-001: old\n- [ ] T-002: new\n  - 范围: `b.js`\n')],{'1.sample':'- [ ] T-001: old\n'});
+  recordPrdTaskScopes(specs,[feature('- [ ] T-001: old\n- [ ] T-002: new\n  - 范围: `b.js`\n')],{'1.sample':{exempt:['T-001']}});
   const options=prdTaskScopeOptions(specs,['1.sample']);
   assert.deepEqual(options,{scopes:{'1.sample':{exempt:['T-001']}}});
   assert.equal(checkPrdDraftMechanics(draft('- [ ] T-001: old\n- [ ] T-002: new\n'),options).findings[0].code,'task_scope_missing');

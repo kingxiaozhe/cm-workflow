@@ -48,11 +48,11 @@ test('rule 2 rejects task and dependency lines the parser would silently skip',(
 });
 test('rule 2 change exempts approved malformed lines only up to their unfenced count',()=>{
   const odd='- [x] T-000/a: Historical note',base=`- [ ] T-001: Implement behavior\n${odd}`;
-  const previous=text=>({'1.sample':text});
-  assert.equal(checkPrdDraftMechanics(changeDraft(base),{...R2,change:true,previous:previous(base)}).status,'mechanical_subset_passed');
-  assert.ok(codesOf(checkPrdDraftMechanics(changeDraft(`${base}\n${odd}`),{...R2,change:true,previous:previous(base)})).includes('tasks_invalid'));
+  const previous=text=>({'1.sample':text}),scopes={'1.sample':{exempt:['T-001']}};
+  assert.equal(checkPrdDraftMechanics(changeDraft(base),{...R2,change:true,scopes,previous:previous(base)}).status,'mechanical_subset_passed');
+  assert.ok(codesOf(checkPrdDraftMechanics(changeDraft(`${base}\n${odd}`),{...R2,change:true,scopes,previous:previous(base)})).includes('tasks_invalid'));
   const fencedOnly=`- [ ] T-001: Implement behavior\n\`\`\`md\n${odd}\n\`\`\``;
-  assert.ok(codesOf(checkPrdDraftMechanics(changeDraft(base),{...R2,change:true,previous:previous(fencedOnly)})).includes('tasks_invalid'));
+  assert.ok(codesOf(checkPrdDraftMechanics(changeDraft(base),{...R2,change:true,scopes,previous:previous(fencedOnly)})).includes('tasks_invalid'));
 });
 test('rule 2 change rejects a new or rewritten dependency on a dropped task, not an approved one',()=>{
   const dropped='- [ ] T-001: Implement behavior\n  - 范围: `README.md`\n- [ ] ~~T-002: Old~~ [DROPPED 不再需要]\n- [ ] T-003: Next\n  - 范围: `README.md`';
@@ -112,7 +112,7 @@ test('only a fresh draft round and a change proposal use rule 2; re-checks keep 
   // host's disposition does); its change preflight follows the operation.
   const drive=fs.readFileSync(new URL('./cm-prd-drive.mjs',import.meta.url),'utf8');
   assert.match(drive,/draft\.mechanicalSelfCheck=checkPrdDraftMechanics\(draft,prdTaskScopeOptions\(specs,request\.feature\)\);/);
-  assert.match(read('review-disposition.mjs'),/checkPrdDraftMechanics\(draft,prdTaskScopeOptions\(input\.specs,input\.feature\)\)/);
+  assert.match(read('review-disposition.mjs'),/scopeOptions=prdTaskScopeOptions\(input\.specs,input\.feature\);[\s\S]*checkPrdDraftMechanics\(draft,scopeOptions\)/);
   assert.equal([...drive.matchAll(/PRD_SELF_CHECK_RULES/g)].length,2,'import plus the change preflight rule');
   assert.match(drive,/const rules=ctx\.operation==='resume'\?ctx\.state\.active\?\.selfCheckRules\?\?1:PRD_SELF_CHECK_RULES;/);
 });

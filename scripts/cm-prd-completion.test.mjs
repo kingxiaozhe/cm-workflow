@@ -7,6 +7,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {once} from 'node:events';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
+import {createHash} from 'node:crypto';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange,assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {recordPrdReview} from './cm-prd-review-gate.mjs';
@@ -135,6 +136,9 @@ test('controlled inventory revision retains old review and archives removed feat
   fs.writeFileSync(evidence,'---\nat: 2026-09-08T00:00:00Z\nreviewer: codex-subagent\nindependent: true\nscope:\n  - 1.guide/tasks.md\n---\nSynthetic original review',{mode:0o600});
   recordPrdReview({stage:'split',feature:'guide',evidence,receipt,disposition:'no_findings',finding_count:0,unresolved_count:0,
     artifact:docs().map(doc=>path.join(dir,'1.guide',doc.path))});
+  // The approval covers 1.guide's tasks, so they may stay without scope in the change.
+  fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2,features:['1.guide','2.obsolete'],
+    specFiles:[{path:'1.guide/tasks.md',sha256:createHash('sha256').update(fs.readFileSync(path.join(dir,'1.guide/tasks.md'))).digest('hex')}]}),{mode:0o600});
   const originalReview=fs.readFileSync(evidence),before=inspectPrdChangeSnapshot(dir),raw={status:'draft',summary:'Explicit inventory revision',removed:['2.obsolete'],features:[
     {directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'},
     {directory:'3.examples',documents:docs().map(doc=>({...doc,content:doc.content.replace('[x]','[ ]')})),testCasesReason:'no_observable_behavior'}]};
@@ -193,7 +197,9 @@ test('change guard reads the approved original with the legacy grammar',t=>{
 function sharedGrammarFixture(t){
   const dir=fixture(t),tasks=path.join(dir,'1.guide/tasks.md');
   fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix'),{mode:0o600});
-  fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2}),{mode:0o600});
+  // A real approval lists the approved bytes; its tasks may stay without scope in a change.
+  fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2,features:['1.guide'],
+    specFiles:[{path:'1.guide/tasks.md',sha256:createHash('sha256').update(fs.readFileSync(tasks)).digest('hex')}]}),{mode:0o600});
   return dir;
 }
 const fullWidth=docs=>docs.map(doc=>doc.path==='tasks.md'?{...doc,content:doc.content.replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix')}:doc);

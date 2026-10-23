@@ -127,13 +127,13 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
       // 串行 is the scaffold generator's exit (a N.bootstrap feature), not an opt-out for business tasks.
       if(!BOOTSTRAP_FEATURE.test(feature.directory))for(const id of scopes.serial)problems.push(`${id}：范围: 串行 只用于脚手架功能（N.bootstrap），其余任务要列出文件`);
       if(problems.length)add('task_scope_invalid',{field:`${feature.directory}/tasks.md`,problems:problems.slice(0,10)});
-      const before=previous?.[feature.directory]==null?null:parseFeatureTaskText(previous[feature.directory]);
-      // Tasks an approved tasks.md already had may stay without scope.
-      const known=new Set([...(before&&!before.error?before.tasks.map(task=>task.id):[]),...(scope?.exempt??[])]);
+      // Only tasks an approval already covered may stay without scope; the caller
+      // derives them from the approval (task-scope-record.mjs), never from a draft.
+      const known=new Set(scope?.exempt??[]);
       const missing=parsed.tasks.filter(task=>!task.dropped&&!scopes.tasks.has(task.id)&&!scopes.serial.has(task.id)&&!scopes.errors.some(item=>item.taskId===task.id)
         &&!known.has(task.id)).map(task=>task.id);
       if(missing.length)add('task_scope_missing',{field:`${feature.directory}/tasks.md`,tasks:missing,
-        expected:'每个任务下写一行缩进子项，例如 - 范围: `src/a.js`, `test/a.test.js`；列不出文件的任务写 - 范围: 串行'});
+        expected:'每个任务下写一行缩进子项，例如 - 范围: `src/a.js`, `test/a.test.js`（只有 N.bootstrap 脚手架里列不出文件的任务才写 - 范围: 串行）'});
     }
     if(files.has('test-cases.json')){
       let cases;try{cases=JSON.parse(files.get('test-cases.json'));}catch{add('test_cases_invalid');}

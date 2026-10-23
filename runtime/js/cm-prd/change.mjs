@@ -15,7 +15,7 @@ import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdDraft} from './draft.mjs';
 import {checkPrdDraftMechanics,inspectPrdContextCheck,PRD_SELF_CHECK_RULES} from './self-check.mjs';
-import {recordPrdTaskScopes} from './task-scope-record.mjs';
+import {recordPrdTaskScopes,approvedScopeExemptions,prdTaskScopeRecords} from './task-scope-record.mjs';
 import {replaceSessionFile} from './session.mjs';
 const names=['requirements.md','design.md','tasks.md','test-cases.json'];
 const valid=name=>/^[1-9]\d*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
@@ -54,7 +54,9 @@ export function inspectPrdChangeSnapshot(specs){
     if(bytes!==null)reviews[file]=sha(bytes);
   }
   const status=read(specs,'.cm-specs-status');
-  return json({directories,files,trees,reviews,status},4*1024*1024);
+  // Bound like the failure outcome above: present only where a save recorded one.
+  const scopeRecords=prdTaskScopeRecords(specs,directories);
+  return json({directories,files,trees,reviews,status,...(Object.keys(scopeRecords).length?{scopeRecords}:{})},4*1024*1024);
 }
 // Same declaration grammar as admission and N5 mark-done (spec-task-line.mjs):
 // the approved original is read with the grammar its approval bound, the
@@ -128,7 +130,8 @@ export function inspectPrdChangeProposal(before,raw,selected,config,{rules=PRD_S
     &&!userCases(files).some(next=>next.feature===item.feature&&digest(next.value)===digest(item.value)));
   const draft={summary:raw.summary,features,draftDigest:digest({summary:raw.summary,features})};
   const mechanics=checkPrdDraftMechanics(draft,{change:true,rules,
-    previous:Object.fromEntries(selected.map(directory=>[directory,before.files[`${directory}/tasks.md`]]))});
+    previous:Object.fromEntries(selected.map(directory=>[directory,before.files[`${directory}/tasks.md`]])),
+    ...(rules>=3?{scopes:approvedScopeExemptions(before,features.map(feature=>feature.directory),grammar)}:{})});
   need(mechanics.status==='mechanical_subset_passed','prd_change_mechanics_failed');
   return json({...draft,mechanicalSelfCheck:mechanics,removed:raw.removed,files,changedUserCases,
     proposalDigest:digest({before,raw,selected}),counts:{added:resultDirs.filter(dir=>!before.directories.includes(dir)).length,
@@ -283,8 +286,8 @@ export function applyPrdChange({specs,before,proposal,selected}){
     ...(approvedGrammar(before)===TASK_GRAMMAR?{taskGrammar:TASK_GRAMMAR}:{})})+'\n';
   if(read(specs,statusFile)===before.status)replaceSessionFile(specs,statusFile,before.status,invalidated);
   // Before any spec byte: later re-checks keep the scopes this proposal carries.
-  current();recordPrdTaskScopes(specs,proposal.features,Object.fromEntries(proposal.features
-    .map(feature=>[feature.directory,before.files[`${feature.directory}/tasks.md`]])));
+  current();recordPrdTaskScopes(specs,proposal.features,
+    approvedScopeExemptions(before,proposal.features.map(feature=>feature.directory),approvedGrammar(before)));
   for(const [file,content] of Object.entries(expected)){
     if(!selected.includes(file.split('/')[0])&&oldDirs.includes(file.split('/')[0]))continue;
     current();const dir=path.dirname(path.join(specs,file));try{fs.mkdirSync(dir,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}

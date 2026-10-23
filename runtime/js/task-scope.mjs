@@ -33,6 +33,8 @@ export function validScopePath(value){
   return protectedScopePaths([value]).length===0;
 }
 
+function scopeListAccepted(paths){try{readReviewScope(paths);return true;}catch{return false;}}
+
 function pathList(raw){
   const paths=[...raw.matchAll(/`([^`]*)`/g)].map(match=>match[1]);
   const rest=raw.replace(/`[^`]*`/g,'').replace(/[\s,，、]/g,'');
@@ -77,7 +79,8 @@ export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
     if(paths.length>256){fail(line,`${match[2]} 最多 256 个文件`);continue;}
     const bad=paths.filter(item=>!validScopePath(item));
     if(bad.length){fail(line,`不合法的路径（只许相对文件路径，不许目录、通配符或受保护文件）：${bad.join(', ')}`);continue;}
-    if(new Set(paths).size!==paths.length){fail(line,`${match[2]} 有重复路径`);continue;}
+    // The execution side takes the whole list at once, so it also refuses paths that differ only in case.
+    if(!scopeListAccepted(paths)){fail(line,`${match[2]} 有重复路径（含只差大小写的路径）`);continue;}
     current.fields.set(key,{value:paths,line:line.index+1});tasks.set(current.id,current);
   }
   const result=new Map(),serial=new Set();
@@ -103,14 +106,32 @@ export function scopesOverlap(a,b){const set=new Set(a);return b.some(item=>set.
 // The scope a feature's tasks.md declares for one task, or null when it declares
 // none. A malformed sub-item of that task refuses rather than falling back to a
 // session-supplied scope.
+const scopeInvalid=reason=>Object.assign(new Error('task_scope_invalid'),{code:'task_scope_invalid',reason});
+const inside=(root,target)=>target===root||target.startsWith(root+path.sep);
+// This runs before the admission's own file checks, so it repeats them: a regular
+// file inside the feature directory, opened without blocking (a FIFO never hangs).
+function readTasksText(specsDir,feature){
+  const root=path.join(specsDir,feature),target=path.join(root,'tasks.md');
+  let real;
+  try{real=fs.realpathSync(target);}catch(error){if(error.code==='ENOENT')return null;throw error;}
+  const featureRoot=fs.realpathSync(root);
+  if(!inside(fs.realpathSync(specsDir),featureRoot)||!inside(featureRoot,real))throw scopeInvalid(`${feature}/tasks.md 不在规格目录内`);
+  const fd=fs.openSync(real,fs.constants.O_RDONLY|fs.constants.O_NONBLOCK);
+  try{
+    const stat=fs.fstatSync(fd);
+    if(!stat.isFile()||stat.size>1048576)throw scopeInvalid(`${feature}/tasks.md 不是普通文件或超过 1 MiB`);
+    return fs.readFileSync(fd,'utf8');
+  }finally{fs.closeSync(fd);}
+}
 export function declaredTaskScope(specsDir,feature,taskId){
-  let text;
-  try{text=fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8');}
-  catch(error){if(error.code==='ENOENT')return null;throw error;}
+  const text=readTasksText(specsDir,feature);
+  if(text===null)return null;
   // Read with the grammar the approval bound, as every runtime task reader does.
   const parsed=parseTaskScopes(text,{grammar:approvedTaskGrammar(specsDir)}),problem=parsed.errors.find(item=>item.taskId===taskId);
-  if(problem)throw Object.assign(new Error('task_scope_invalid'),{code:'task_scope_invalid',
-    reason:`${feature}/tasks.md 第 ${problem.line} 行（${taskId}）：${problem.message}`});
+  if(problem)throw scopeInvalid(`${feature}/tasks.md 第 ${problem.line} 行（${taskId}）：${problem.message}`);
+  // 串行 is the scaffold's exit only; anywhere else it is a malformed declaration, not "none".
+  if(parsed.serial.has(taskId)&&!BOOTSTRAP_FEATURE.test(feature))
+    throw scopeInvalid(`${feature}/tasks.md（${taskId}）：范围: 串行 只用于脚手架功能（N.bootstrap），其余任务要列出文件`);
   return parsed.tasks.get(taskId)??null;
 }
 // Shared create boundary: a new run of a task whose tasks.md declares its files
