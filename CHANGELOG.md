@@ -10,7 +10,7 @@
   - 已完成运行的受控集成中，「审查者须与作者不同工具」等独立性判断提成单独函数并补测试，删掉工具比较会让测试变红；运行行为不变。
 
 - **任务编号与 PRD 资产的通用修复**（Codex 编写，从 Wue 审查拆分候选中单独抽出；拆分协议本身未合入，原样保存在 `parked/codex-wue-review-split`）：
-  - 核心任务解析、依赖解析与 `test-cases.json` 校验统一用一套任务编号语法（`T-` 后接字母数字及 `._-`），`taskIds` 也接受 `T-004a`、`T-FIX-api` 这类编号，非法编号明确报错。看板、像素验收、状态栏等展示脚本仍按纯数字编号显示，尚未统一。
+  - 核心任务解析、依赖解析与 `test-cases.json` 校验统一用一套任务编号语法（`T-` 后接字母数字及 `._-`），`taskIds` 也接受 `T-004a`、`T-FIX-api` 这类编号，非法编号明确报错。展示脚本的统一见上方「待办小改进」。
   - PRD 变更模式核对资产时按原始字节流式计算哈希，不再受文档读取 1 MB 上限限制，大字体、图片等资产不会让变更失败；路径从规格根逐级检查，任一层是符号链接、文件有多个硬链接都拒绝，从已有存档恢复时同样如此。与旧算法同为原始字节的 SHA-256，在途变更会话不受影响。
 
 - **已完成运行的受控集成（ai-tool-manager 收尾）**：已审交付因文档合并、跨 worktree 集成或 `package.json` 改名导致 `repositoryId` 分流而接不上原运行时，新增显式接纳入口：`scripts/cm-ai-integration-preview.mjs` 只读预检；独立审查（作者 Codex、审查须为另一工具）批准后，原 owner 以 `--integration-evidence`、`--accept-integration-digest` 和原 `--expected-control` 在 v2 resume 的 status 连接里接纳一次，只追加 `reviewed-integration-accepted` 记录，保留原历史、次数和 QA 结果。可选接纳固定的 `reports/**/AGENTS.md` 证据副本。说明见 `docs/reviewed-integration.md`。

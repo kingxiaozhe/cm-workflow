@@ -33,3 +33,9 @@ for(const path of ['templates/statusline/cm-statusline.sh','templates/pixel/cm-p
     assert.deepEqual(JSON.parse(out),expected);
   });
 }
+
+test('dashboard metrics table keeps full task IDs', ()=>{
+  const source=read('templates/dashboard/dashboard.html').match(/met\.matchAll\(\/(.+?)\/gm\)/)[1];
+  const met=['| T-001 | a |','| T-004a | b |','| T-FIX-api | c |','| T-002/a | d |'].join('\n')+'\n';
+  assert.deepEqual([...met.matchAll(new RegExp(source,'gm'))].map(m=>m[1]),['T-001','T-004a','T-FIX-api']);
+});
