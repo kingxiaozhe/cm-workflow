@@ -291,11 +291,12 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   function prepareGroup(group){
     const state=progress(),remaining=group.filter(key=>membership.has(key)&&!state.done.has(key));
-    // A member may only create files (js-host.md 3.1): every scope path of a member
-    // about to get its worktree must be absent from HEAD. Checked for the whole group
-    // before any worktree exists; started members are not rechecked.
-    for(const key of remaining)if(!fs.existsSync(location(key).worktree))for(const file of plans.get(key).scope)
-      need(spawnSync('git',['-C',config.codeProject,'cat-file','-e',`HEAD:${file}`],gitOptions()).status!==0,'parallel_scope_existing_file');
+    // Members may edit existing files. The group validator already requires
+    // pairwise-disjoint scopes and no dependency path, so members never write the
+    // same path; merges stay serial and a git conflict still stops as
+    // merge_conflict. The earlier create-only rule (#59, #187) existed because a
+    // task's scope was then guessed by the session; it now comes from the batch
+    // definition the scheduler validates.
     for(const key of remaining){
       const {worktree,branch}=location(key);
       if(!fs.existsSync(worktree)){

@@ -165,8 +165,14 @@ function preflight(){
   // Members the batch already rescheduled into a serial second generation
   // (batch_member_blocked). Their gen-2 run starts fresh at attempt 1.
   const rescheduled=new Set(),handedOff=new Set();
+  // The project log is shared by every run in this specs root; only rows this
+  // batch wrote (the scheduler's own decision rows, keyed by batchId) mean the
+  // batch already exists. Any earlier task, PRD or batch run leaves the file.
+  let batchRows=0;
   if(fs.existsSync(log))for(const line of fs.readFileSync(log,'utf8').split('\n')){
     if(!line.trim())continue;let row;try{row=JSON.parse(line);}catch{continue;}
+    if(row?.workflow==='cm-ai'&&row.event==='decision'&&row.run_id===batch.batchId
+      &&typeof row.phase==='string'&&row.phase.startsWith('batch_'))batchRows++;
     if(row?.workflow==='cm-ai'&&row.event==='decision'&&row.phase==='batch_member_blocked'&&row.run_id===batch.batchId
       &&row.generation===2&&typeof row.from_key==='string')rescheduled.add(row.from_key);
     // A handed-off task never develops again; a merged parallel member's worktree is gone,
@@ -175,7 +181,7 @@ function preflight(){
       &&typeof row.from_key==='string')handedOff.add(row.from_key);
   }
   const stores=Array.from(definitions.values(),d=>path.join(batch.specsDir,'.reviews','.execution',d.identity.runId,'state.json'));
-  const hasLog=fs.existsSync(log),hasStore=stores.some(file=>fs.existsSync(file));
+  const hasLog=batchRows>0,hasStore=stores.some(file=>fs.existsSync(file));
   if(plan.mode==='resume'&&!hasLog&&!hasStore)
     stop(2,`恢复存档不存在: ${log} / ${stores.join(', ')}`);
   if(plan.mode==='create'&&operation==='advance'&&(hasLog||hasStore))

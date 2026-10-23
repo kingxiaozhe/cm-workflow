@@ -150,11 +150,10 @@ export async function batchFixture(mode,options={}){
     });
     const open=(extra={})=>createCmAiBatch({configuration:config,executionFor,logHome:path.join(root,'logs'),...extra});
     if(mode==='parallel-existing'){
-      // T-002's scope file is committed on HEAD, so it is an edit, not a new file.
-      fs.writeFileSync(path.join(codeProject,'file1.js'),'existing\n');git(codeProject,['add','file1.js']);git(codeProject,['commit','-m','existing file']);
-      await assert.rejects(open().handle({operation:'advance',requestId:'existing'}),error=>error.code==='parallel_scope_existing_file');
-      assert.deepEqual(calls,[]);assert(!fs.existsSync(path.join(root,'.cm-worktrees')));
-      assert.equal(git(codeProject,['status','--porcelain']),'');return;
+      // Both members' scope files are committed on HEAD, so each member edits an
+      // existing file. The batch must run, merge both edits and finish as usual.
+      for(const file of ['file0.js','file1.js'])fs.writeFileSync(path.join(codeProject,file),'existing\n');
+      git(codeProject,['add','file0.js','file1.js']);git(codeProject,['commit','-m','existing files']);
     }
     if(mode==='parallel-dirty'){
       fs.writeFileSync(path.join(codeProject,'dirty.txt'),'user-owned\n');
@@ -405,6 +404,10 @@ export async function batchFixture(mode,options={}){
       assert.deepEqual(qaCalls,['T-003']);
       assert(fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8').includes('[x] T-003'));
       assert.equal(git(codeProject,['branch','--show-current']),'main');
+      if(mode==='parallel-existing')for(const file of ['file0.js','file1.js']){
+        assert.equal(fs.readFileSync(path.join(codeProject,file),'utf8'),'implemented\n');
+        assert.equal(git(codeProject,['show',`HEAD~3:${file}`]),'existing');
+      }
     }
     if(mode==='learning'){
       const handoff=JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','work-T-002-a1-handoff.json'),'utf8'));

@@ -40,7 +40,7 @@
 | `spec_approval`／`awaiting_spec_approval`、`not_approval` | 本文开头 |
 | `original_host_context_unavailable`、`review_configuration_required` | 本文「启动前」第 3、5 项 |
 | `fingerprint_mismatch`、`invalid_arguments`、`invalid_arguments`、`invalid_arguments`、`invalid_input`、`snapshot_changed` | control policy v2 文档「旧运行与迁移拒绝」「显式恢复」 |
-| `parallel_scope_existing_file`、`parallel_dependency_conflict` | 本文「启动前」3.1 |
+| `parallel_dependency_conflict`、`parallel_scope_overlap` | 本文「启动前」3.1 |
 | `runner_invocation`（旧 grant 审查登记） | 保留原 journal，用 `cm-ai-run.mjs inspect-history --config 原run.json` 只读查看历史；新版不回放或迁移这类登记 |
 | `fingerprint_mismatch`、`invalid_arguments`、换会话恢复、`host-joined` | R「恢复参数与跨会话接手」 |
 | `resume` 下的 `develop_checks_not_passed`、旧 `checks_not_passed`、`develop_package_too_large`、`develop_empty_changes`、`develop_requirement_missing`、`develop_unchanged_after_review`、`develop_call_timeout`（开发应答超时）、`develop_answer_invalid`（开发应答超出字段上限）；`unknown/limit_exceeded`、`store_failure`、`empty_changes`；`request_too_large`、`host_response_too_large`、`host_response_mismatch`；大小上限或 `runId` 长度致退出 2 | R「开发交付阻断与存档限额」 |
@@ -201,10 +201,10 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    两个 ID 相同等同未传新参数，create 传它报 `original_host_context_unavailable`。不能冒用旧 host-context。
 3.1 多任务批次可提议并行组，写进 batch 配置的可选 `parallel`（任务 key 的数组的数组）。
    只提议同时满足以下全部条件的任务，任一不满足就不进组；一个组都成立不了就**不写该字段**，正常串行：
-   - **纯新建文件**：该任务 scope 的每个路径在 `HEAD` 上都不存在（`git cat-file -e HEAD:{path}`
-     判定，不看工作区——成员工作树从 HEAD 创建，未跟踪文件不算数）。任务若需改动现有文件
-     来注册新模块（路由表、index 导出等），那些文件会出现在 scope 里，本条自动将其排除。runtime 在建成员工作树前对整组逐个核对，任一 scope 路径已在 `HEAD` 上就以 `parallel_scope_existing_file` 拒绝，不建任何工作树；已开工的成员不再复核。
-   - **scope 两两不交集**：候选之间不得有重复路径。
+   - **scope 写全**：任务可能改动的每个文件都在 scope 里，包括已有文件（例如注册新模块的路由表、
+     index 导出）和测试文件。成员可以修改已有文件；写到 scope 以外会以 `out_of_scope` 停下重做。
+     说不清会碰哪些文件的任务不进组。
+   - **scope 两两不交集**：候选之间不得有重复路径；runtime 建组时也会核对。
    - **无依赖路径**：按 `tasks.md` 依赖图计算**传递闭包**，组内任意两任务之间不得存在依赖路径。
      runner 也按传递闭包校验并以 `parallel_dependency_conflict` 拒绝，此处自行判定是为了
      提出合法的组而不是被拒后返工。
