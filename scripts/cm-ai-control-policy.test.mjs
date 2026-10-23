@@ -29,6 +29,19 @@ test('control choices are strict and cannot turn data presence into execution pe
     {...policy,qaFix:'auto'},{...policy,qa:'skip'},{...policy,bootstrap:'yes'}])assert.throws(()=>readControlPolicy(value));
   assert.deepEqual(readControlPolicy({...policy,qa:'run',qaFix:'manual'}).qaFix,'manual');
 });
+test('verification is an optional policy choice that keeps older policies byte-identical',()=>{
+  // Absent is the policy every earlier run saved; its digest must not move.
+  assert.equal(digest(readControlPolicy(policy)),digest(policy));
+  assert.deepEqual(readControlPolicy({...policy,verification:'precheck'}),{...policy,verification:'precheck'});
+  assert.deepEqual(readControlPolicy({...policy,verification:'disabled'}),{...policy,verification:'disabled'});
+  for(const verification of ['on',true,null,'','PRECHECK'])
+    assert.throws(()=>readControlPolicy({...policy,verification}),{code:'invalid_input'});
+  // The choice is part of the saved run: a launch cannot add or drop it.
+  assert.throws(()=>assertControlEntry(snapshot(),{...policy,verification:'precheck'}),{code:'fingerprint_mismatch'});
+  const saved={revision:digest('a'),records:[{payload:{type:'init',config:{controlPolicy:{...policy,verification:'precheck'}}}}]};
+  assert.throws(()=>assertControlEntry(saved,policy),{code:'fingerprint_mismatch'});
+  assertControlEntry(saved,{...policy,verification:'precheck'});
+});
 test('policy file rejects duplicate keys, invalid UTF8 and symbolic links',t=>{
   const root=temp(t),file=path.join(root,'control.json');
   fs.writeFileSync(file,JSON.stringify(policy));assert.deepEqual(readControlPolicyFile(file),policy);

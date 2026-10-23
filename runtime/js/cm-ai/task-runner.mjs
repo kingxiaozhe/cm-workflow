@@ -35,6 +35,7 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
   DOCUMENTATION_SYNC_CODES,documentationSyncSource,documentationSyncRetryCode,documentationSyncStopReason } from './durable-runner-state.mjs';
 import {splitDocumentationState} from './host-documentation.mjs';
 import {readControlPolicy} from './control-policy.mjs';
+import {encodeRequirementEvidence} from './requirement-evidence.mjs';
 import {scopeRevisionBinding,revisedScope,applyScopeRevision} from './scope-revision.mjs';
 import {readProcessStartTime,inspectWorkerGroup} from './worker-process-identity.mjs';
 import {recoverRunnerCommitImage} from './task-commit.mjs';
@@ -174,6 +175,8 @@ export function createTaskRunner(options) {
   // Opt-in gate between the task's own checks and the independent review. It may
   // only block: passing it grants nothing and never substitutes for that review.
   const verificationGate=options.verificationGate??null;
+  // The latest satisfied gate's handoff entry; reset on every gate run.
+  let requirementEvidence=null;
   need(verificationGate===null||typeof verificationGate==='function');
   if(taskMode)need(Object.hasOwn(options,'persistence'),'runner_completion');
   const config=json({root:options.root,identity:options.identity,scope:options.scope,requirements:options.requirements,
@@ -1148,6 +1151,7 @@ export function createTaskRunner(options) {
   // built, so a deliverable that does not satisfy the task's own written
   // verification never spends an independent review round.
   async function verificationSatisfied(checks) {
+    requirementEvidence=null;
     if(verificationGate===null)return true;
     // The description carries hard requirements too ("also confirm X/Y/Z do not
     // regress", "do not modify A"), and a gate that reads only the verification
@@ -1163,7 +1167,13 @@ export function createTaskRunner(options) {
         ...(written(description)?{description}:{}),
         ...(written(verification)?{verification}:{}),checks,
         ...(parsedHistory?.scopeRevisions?{scope:effectiveScope}: {})})));
-    shape(verdict,['satisfied']);need(typeof verdict.satisfied==='boolean','invalid_result');
+    shape(verdict,['satisfied',...(Object.hasOwn(verdict,'items')?['items']:[])]);
+    need(typeof verdict.satisfied==='boolean','invalid_result');
+    need(verdict.satisfied||!Object.hasOwn(verdict,'items'),'invalid_result');
+    // A satisfied gate may return its per-requirement answers; they become one
+    // handoff evidence entry bound to this identity and attempt.
+    requirementEvidence=Object.hasOwn(verdict,'items')
+      ?encodeRequirementEvidence({identity:{...config.identity,attempt},items:verdict.items}):null;
     return verdict.satisfied;
   }
   // Attempt 2 exists to answer the findings that rejected attempt 1. Code
@@ -1220,8 +1230,19 @@ export function createTaskRunner(options) {
     try{unchanged=unchangedSinceRejection();}catch(error){emptyDelivery(error);return false;}
     if(unchanged){halt('blocked','develop_unchanged_after_review',unchanged);return false;}
     try{createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
-      handoffPath:completion.handoffs[attempt-1],evidence:journal.filter(row=>row.payload.type==='completion-rework-requested')
-        .map(row=>'cm-completion-rework-v1: '+JSON.stringify({identity:{...config.identity,attempt:2},recordDigest:row.digest}))});}
+      handoffPath:completion.handoffs[attempt-1],evidence:[...journal.filter(row=>row.payload.type==='completion-rework-requested')
+        .map(row=>'cm-completion-rework-v1: '+JSON.stringify({identity:{...config.identity,attempt:2},recordDigest:row.digest})),
+        ...(requirementEvidence===null?[]:[requirementEvidence])]});}
+    catch(error){emptyDelivery(error);return false;}
+    return true;
+  }
+  // The Learning evidence is appended to the handoff hostDeliveryChecks just
+  // published. A delivery whose handoff fit before the append and not after
+  // (requirement evidence makes that reachable) is the same retryable package
+  // block as an oversized initial handoff, never an unknown effect.
+  function appendLearningHandoff(v,{application,retrospective,writeback}){
+    try{writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
+      identity:{...config.identity,attempt},learningInput:v.learningInput,application,retrospective,writeback});}
     catch(error){emptyDelivery(error);return false;}
     return true;
   }
@@ -1276,9 +1297,7 @@ export function createTaskRunner(options) {
       // the checks, the precheck, the handoff and the package. No developer call.
       if(recheck){
         if(!await hostDeliveryChecks())return;
-        writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
-          identity:{...config.identity,attempt},learningInput:v.learningInput,application:learningResult.application,
-          retrospective:learningResult.retrospective,writeback:learningResult.writeback});
+        if(!appendLearningHandoff(v,learningResult))return;
         await packageDelivery(v);return;
       }
       const previousLearning=learningResult;
@@ -1339,8 +1358,7 @@ export function createTaskRunner(options) {
         learningResult=freeze({application,retrospective,writeback,...(instructionEvidence?{bootstrap:instructionEvidence}:{})});
         if(writeback.outcome==='writeback_pending'){halt('blocked','learning_writeback_pending');return;}
         if(taskLearning.hostHandoff===true&&!await hostDeliveryChecks())return;
-        writeCmAiTaskLearningHandoff({handoffPath:completion.handoffs[attempt-1],feature:taskLearning.feature,
-          identity:{...config.identity,attempt},learningInput:v.learningInput,application,retrospective,writeback});
+        if(!appendLearningHandoff(v,{application,retrospective,writeback}))return;
       }
       need(result.response.result.outcome==='implemented','invalid_result');
       if(taskLearning?.hostHandoff!==true){

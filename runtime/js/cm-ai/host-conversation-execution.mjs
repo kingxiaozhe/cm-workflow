@@ -21,6 +21,7 @@ import {codexWorker,preflightMatches} from './worker-codex.mjs';
 import {createHostWorkflowCapabilities,createImplicitQaDecision} from './host-workflow-capabilities.mjs';
 import {resolveHostRole} from './host-role-routing.mjs';
 import {checklistGaps} from './checklist-coverage.mjs';
+import {readRequirementItems} from './requirement-evidence.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {createProjectExecution} from './host-project-execution.mjs';
 import {codeProjectPaths,codeProjectInstructionPaths,resolveCodeProjects} from './code-projects.mjs';
@@ -55,20 +56,10 @@ export const externalConversationDefinition=execution=>externalConversations.get
 // requirement is satisfied. Mechanical shape is not semantic coverage.
 export function readVerificationPrecheck(raw){
   const value=json(raw,256*1024);shape(value,['items']);
-  const items=arrayItems(value.items);
-  need(items.length>0&&items.length<=64,'verification_precheck_invalid');
-  for(const item of items){
-    shape(item,['requirement','satisfied','evidence']);
-    need(typeof item.satisfied==='boolean','verification_precheck_invalid');
-    for(const field of ['requirement','evidence']){
-      const text=item[field];
-      need(typeof text==='string'&&text.trim().length>0&&Buffer.byteLength(text,'utf8')<=2000
-        &&!/[\x00-\x08\x0b-\x1f]/.test(text),'verification_precheck_invalid');
-    }
-  }
+  const items=readRequirementItems(arrayItems(value.items));
   return freeze({satisfied:items.every(item=>item.satisfied===true),
     unsatisfied:items.filter(item=>item.satisfied!==true).map(item=>item.requirement),
-    evidence:items.map(item=>item.evidence).join('\n')});
+    evidence:items.map(item=>item.evidence).join('\n'),items});
 }
 
 // The delivered evidence usually lives in the scope files (a walkthrough
@@ -210,7 +201,9 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   // The runner contract is exactly {satisfied}. Which requirements failed is
   // what the operator needs to act on, so it goes to this process's stderr the
   // same way other host diagnostics do, not into the runner state.
-  const verificationGate=options.verificationPrecheck===true?async(request,control)=>{
+  // A v2 policy may enable the gate durably (it is part of the run fingerprint);
+  // the legacy launch flag keeps working for runs created without it.
+  const verificationGate=options.verificationPrecheck===true||controlPolicy?.verification==='precheck'?async(request,control)=>{
     const verdict=readVerificationPrecheck(await bridge.call('verification_precheck',
       {...request,codeProject:definition.codeProject,feature:definition.feature,
         scope:request.scope??definition.scope},control.signal));
@@ -231,7 +224,9 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         task:request.identity.taskId,attempt:request.identity.attempt,advisory:true,
         gaps:gaps.map(gap=>({total:gap.total,missing:gap.missing}))})+'\n');
     }catch{/* diagnostics never change the verdict */}
-    return {satisfied:verdict.satisfied};
+    // The answered items travel to the runner, which binds them into the host
+    // handoff the reviewer reads; a failed gate halts before any handoff exists.
+    return verdict.satisfied?{satisfied:true,items:verdict.items}:{satisfied:false};
   }:null;
   const outerTimeoutMs=provider?protection.timeoutMs:1800000;
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,

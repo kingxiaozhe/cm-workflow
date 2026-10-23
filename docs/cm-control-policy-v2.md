@@ -5,7 +5,7 @@ control policy v2 把运行能力集中到一个严格的策略文件。原配�
 
 ## 策略文件与能力
 
-`POLICY.json` 必须完整包含以下五个字段，不接受额外字段、缺失字段、布尔值或旧权限数组：
+`POLICY.json` 必须完整包含以下五个必填字段，另可带一个可选字段 `verification`；不接受其他字段、缺失字段、布尔值或旧权限数组。新建运行建议写成下例（含 `verification`）：
 
 ```json
 {
@@ -13,7 +13,8 @@ control policy v2 把运行能力集中到一个严格的策略文件。原配�
   "development": "conversation",
   "bootstrap": "disabled",
   "qa": "disabled",
-  "qaFix": "disabled"
+  "qaFix": "disabled",
+  "verification": "precheck"
 }
 ```
 
@@ -24,6 +25,7 @@ control policy v2 把运行能力集中到一个严格的策略文件。原配�
 | `bootstrap` | `disabled`、`write` | 禁用或启用已批准 bootstrap 目标的规范写入；启用仍需原 bootstrap 配置与固定目标 |
 | `qa` | `disabled`、`run` | 禁用或运行原测试合同与 QA 配置；必需 QA 不能靠 disabled 跳过 |
 | `qaFix` | `disabled`、`manual`、`auto` | 禁用 QA 修复、显式选择原修复入口，或使用原已配置的自动修复；不改变修复子运行的门禁 |
+| `verification`（可选） | `disabled`、`precheck` | 省略等同 `disabled`。`precheck` 开启交付前验证闸门：审查前逐条核对任务描述与验证要求，答案的证据写进交接文件供独立审查阅读。驾驶员 PLAN 须配置 `liveEvidence` 的 `verification_precheck` |
 
 `qaFix` 选择 `manual` 或 `auto` 时，`qa` 必须为 `run`；不满足时返回 `invalid_input`。
 批次目前不支持 QA 修复，`qaFix` 必须为 `disabled`。其他值返回 `invalid_arguments`。
@@ -32,6 +34,7 @@ control policy v2 把运行能力集中到一个严格的策略文件。原配�
 关键路径登记使用现有工作流配置的 `qa.criticalPaths`，详见 [JS workflow control](js-workflow-control.md)。未登记关键路径的项目，N6 不做任何风险识别，只有这两个固定点。两点为 feature 完成及连续五项未 QA。`policies.tests` 只控制执行类型，不取消必跑；blocking cases 与环境 BLOCKED 合同不变。
 触发必需 QA 却没有 executor 时，真实停点为 `qa_triggered`、`pendingAction:"qa_execution"`；不得报告 QA PASS 或 `run_done`。
 `qaFix:"auto"` 只启用原自动修复能力，不替代其故障分型、范围、诊断、测试、fresh Review 和完成门禁。
+`verification` 随策略写进运行配置并参与指纹，恢复时必须用同一份策略；此前创建、没有该字段的运行保持原样，恢复时也不能补加。旧的启动参数 `--verification-precheck` 仍可按次开启。
 
 审查不另加策略开关。当前已选任务在已确认范围内自动走最多两轮常规独立审查。
 第 1 轮要求修改时，修订后使用 fresh Review；第 2 轮仍有阻断就停止，不创建第 3 轮。
@@ -98,6 +101,7 @@ transport、模型选择与保护配置仍沿原合同；策略不是任意命�
   "hostContext": "{当前真实会话ID}",
   "runtime": "codex",
   "permissions": ["--review-config", "review.json"],
+  "liveEvidence": {"directory": "../private-exchange", "kinds": ["verification_precheck"]},
   "answers": "answers",
   "checks": [{"id": "syntax", "command": ["node", "--check", "target.mjs"]}]
 }
