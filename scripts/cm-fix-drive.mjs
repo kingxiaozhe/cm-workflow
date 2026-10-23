@@ -51,6 +51,7 @@ import {inspectFixDiagnosis,describeFixDiagnosisError} from '../runtime/js/cm-fi
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
 import {cmFixSessionBoundary} from '../runtime/js/session-boundary.mjs';
+import {printHandoff} from '../runtime/js/session-handoff.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const HOST=path.join(here,'cm-fix-host.mjs');
@@ -252,14 +253,17 @@ export function answerFor(row,answers,paths){
 
 function main(){
   const loaded=loadPlan();
-  const {answers,round}=preflight(loaded);
+  const {config,answers,round}=preflight(loaded);
   const {operation,plan,paths}=loaded;
+  const archive=config.specsRoot??path.join(path.resolve(plan.cwd),'docs','fixes');
+  if(plan.mode==='create')printHandoff(archive);
   driveHost({host:HOST,args:hostArgs(loaded).slice(1),cwd:path.resolve(plan.cwd),operation,
     request:{...(operation==='prepare_diagnosis_module_correction'?{expected:plan.expected,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_test_type_correction'?{expected:plan.expected,testTypeCorrection:plan.testTypeCorrection,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_command_correction'?{expected:plan.expected,commandCorrection:plan.commandCorrection,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),...(operation==='prepare_verification_recovery'?{expected:plan.expected,...(Object.hasOwn(plan,'sourceCorrection')?{sourceCorrection:plan.sourceCorrection}:{}),previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),
       ...(operation==='recover_final_review'?{invocationId:plan.invocationId,packageDigest:plan.packageDigest,previousInvocationStopped:plan.previousInvocationStopped,reason:plan.reason}:{}),
       ...(operation==='reconcile_review'?{invocationId:plan.invocationId}:{}),...(['abandon_step','abandon_review','rediagnose','rerun_blocked_step'].includes(operation)?{reason:plan.reason}:{}),
       ...(operation==='prepare_revision'&&Object.hasOwn(plan,'revisionTests')?{tests:plan.revisionTests}:{})},
-    answers,paths:{...paths,round},answerFor,sessionBoundary:cmFixSessionBoundary});
+    answers,paths:{...paths,round},answerFor,
+    sessionBoundary:(result,op)=>cmFixSessionBoundary(result,op,{archive,runId:config.identity?.runId})});
 }
 
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))main();

@@ -191,16 +191,25 @@ test(`closeout real driver completes the original workflow with ${mode}`,t=>{
   f.write('documentation-inspect.json',{status:'completed',reason:'Controlled required-document fixture',
     ...(mode==='report'?{closeout}:{})});
   plan.permissions=['--workflow-config','workflow.json','--allow-qa',...permissions];
+  // A previous session's handoff is printed when this new run is created, never on resume.
+  const handoff=path.join(f.specsDir,'.reviews','session-handoff.md');
+  if(mode==='report'){fs.mkdirSync(path.dirname(handoff),{recursive:true});fs.writeFileSync(handoff,'# 交接摘要\n- previous-session-marker\n');}
   let result,last;
   for(let n=0;n<4;n++){
     const out=f.drive(f.plan({...plan,...(n?{mode:'resume',originalHostContext:'drive-host-a'}:{})}),'advance');
     assert.equal(out.status,0,out.stderr);result=JSON.parse(out.stdout).result;last=out;
+    if(mode==='report')assert.equal(out.stderr.includes('previous-session-marker'),n===0,out.stderr);
     if(result.state==='run_done')break;
     assert.doesNotMatch(out.stderr,/会话边界：换新会话。/,'no verdict before run_done');
   }
   assert.equal(result.state,'run_done',JSON.stringify(result));
   // The real driver prints the session-boundary verdict itself at run_done.
   assert.match(last.stderr,/会话边界：换新会话。\n新会话里运行：无，1\.work 的任务已全部完成/);
+  // run_done writes this run's handoff over the previous one and names it in the verdict.
+  assert.match(last.stderr,/交接摘要：\S*\/\.reviews\/session-handoff\.md（/);
+  const written=fs.readFileSync(handoff,'utf8');
+  assert.match(written,/工作流：cm-ai/);assert.match(written,/1\.work T-001：已到 run_done/);
+  assert.match(written,/## 待做\n- 无/);assert.doesNotMatch(written,/previous-session-marker/);
   assert.equal(result.knowledgeCloseout.status,mode==='report'?'reported':mode==='off'?'disabled':'not_completed');
   if(mode==='report')assert.deepEqual(result.knowledgeCloseout.items,closeout.items);
   const state=JSON.parse(fs.readFileSync(f.store)),before=fs.readFileSync(path.join(f.codeProject,'target.mjs'));

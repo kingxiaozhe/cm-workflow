@@ -61,6 +61,7 @@ import {readRunnerHistory,attemptBaseline,projectedRunnerStatus,RECHECK_CODES,DO
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {cmAiSessionBoundary} from '../runtime/js/session-boundary.mjs';
+import {printHandoff} from '../runtime/js/session-handoff.mjs';
 import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
 import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 import {readControlPolicyFile,isControlRecovery as controlRecoveryRequest} from '../runtime/js/cm-ai/control-policy.mjs';
@@ -931,9 +932,10 @@ async function main(){
   // Rules init_verify commands really run once the host has accepted the launch
   // (host_ready) and before the operation is sent: a failure never becomes an
   // unknown develop effect, and the host's own launch validation came first.
+  if(plan.mode==='create')printHandoff(definition.specsDir);
   driveHost({host:HOST,args:[...buildCmAiDriveHostArgs(plan,permissions,config,loaded.control?.file),...(loaded.holdRevision?['--hold-revision']:[])],cwd:definition.codeProject,operation,request,
     answers:answer,paths:{answers:loaded.answers},answerFor,
-    sessionBoundary:result=>cmAiSessionBoundary(result,{specsDir:definition.specsDir,feature:definition.feature}),
+    sessionBoundary:result=>cmAiSessionBoundary(result,{specsDir:definition.specsDir,feature:definition.feature,identity:definition.identity}),
     ...(loaded.bootstrapRules?{beforeRequest:()=>loaded.bootstrapRules.prepare(plan.mode)}:{})});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))

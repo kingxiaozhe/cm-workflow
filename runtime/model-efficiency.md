@@ -67,7 +67,17 @@ Work the table top to bottom; the first match wins:
 | 3 | Any other case: a new unit (next task, next defect, next feature, or the implementation run after approval), or a next step whose inputs are all on disk (`tasks.md`, specs, `.reviews/`, run log, defect archive) | Start a fresh session (the default) |
 
 There is no "write a handoff file" verdict: CM resumes from disk records, so a
-fresh session re-runs the documented entry or the original command. Compaction
+fresh session re-runs the documented entry or the original command. The JS
+drivers do write one reference file for the next session, though: at the same
+closing boundary they overwrite `.reviews/session-handoff.md` under the specs
+directory (`cm-ai`) or the defect archive (`cm-fix`) with what was done, what is
+still open in `tasks.md`, and the next command, and add a fourth line
+`交接摘要：<path>` to the verdict (or `交接摘要：未写成（…）` when the write fails).
+When a new run is created (`mode:create`) the driver prints that file first. It
+is reference data only: it carries no session identity or authorization and
+never resumes the run it describes. Batches do not write it. A real 23-day
+session (2026-09-27 to 10-20) never switched sessions; restating where the work
+stood was the cost the file removes. Compaction
 comes last because a summary can flatten a decision and leave the next session
 confidently wrong.
 
