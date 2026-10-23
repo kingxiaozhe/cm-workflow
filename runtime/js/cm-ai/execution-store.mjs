@@ -173,6 +173,28 @@ function acquireWriter(p,create) {
     return {db,inode:regular(p,64*1024),certificate:current,inspectionFd,release};
   }catch(error){release();if(error.errcode===5)need(false,'store_busy');throw error;}
 }
+// Every create probes the legacy shared writer. Another process creating a run
+// in the same specs root holds that probe's write lock for a moment, so two
+// creates started together used to fail one of them with store_busy (seen in a
+// real two-task run). Only that transient contention is retried, briefly, and
+// only here, before this create has written anything; any other failure, or a
+// legacy writer that stays held, still refuses with store_busy as before.
+export const LEGACY_PROBE_ATTEMPTS=20;
+export const LEGACY_PROBE_DELAY_MS=50;
+const pause=ms=>Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,ms);
+function probeLegacyWriter(legacyPath){
+  for(let attempt=1;;attempt++){
+    // Probe with the full existing protocol; never create or migrate old files.
+    // release closes SQLite before its inspection fd and removes the inode key.
+    let probe;
+    try{probe=acquireWriter(legacyPath,false);}
+    catch(error){
+      if(error?.code==='store_busy'&&attempt<LEGACY_PROBE_ATTEMPTS){pause(LEGACY_PROBE_DELAY_MS);continue;}
+      need(false,'store_busy');
+    }
+    probe.release();return;
+  }
+}
 export { appendFits } from './execution-store-limits.mjs';
 export function openExecutionStore(input) {
   const options=json(input);shape(options,['specsRoot','identity','fingerprints','create']);
@@ -189,13 +211,7 @@ export function openExecutionStore(input) {
   if(options.create) {
     const legacyPath=path.join(execution,'writer.sqlite');let legacy=false;
     try{fs.lstatSync(legacyPath);legacy=true;}catch(error){if(error.code!=='ENOENT')throw error;}
-    if(legacy) {
-      // Probe with the full existing protocol; never create or migrate old files.
-      // release closes SQLite before its inspection fd and removes the inode key.
-      let probe;
-      try{probe=acquireWriter(legacyPath,false);}catch{need(false,'store_busy');}
-      probe.release();
-    }
+    if(legacy)probeLegacyWriter(legacyPath);
   }
   const existed=fs.existsSync(dir);
   directory(dir,options.create);

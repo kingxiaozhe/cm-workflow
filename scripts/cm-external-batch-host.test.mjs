@@ -1,5 +1,6 @@
 import {hostDiagnostic} from './fixtures/host-diagnostic.mjs';
 import {EXECUTION_POLICY_V1} from '../runtime/js/cm-ai/execution-policy.mjs';
+import {batchSegment} from '../runtime/js/cm-ai/batch-location.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -75,7 +76,7 @@ function execute(f,{cancel=false,args=[]}={}){
           if(row.type==='host_request'){
             const payload=row.payload,identity=payload.identity??payload.request.identity;
             const cwd=f.parallel&&identity.taskId!=='T-003'
-              ?path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),identity.taskId):f.codeProject;
+              ?path.join(f.root,'.cm-worktrees',batchSegment(f.batch.batchId),identity.taskId):f.codeProject;
             calls.push(`${identity.taskId}:${row.kind}`);
             if(cancel){send({operation:'status',requestId:'status'});send({operation:'cancel',requestId:'cancel'});continue;}
             if(row.kind==='develop'){
@@ -155,7 +156,7 @@ test('new parallel batch merges reviewed members without committing private bind
     for(const args of [['add','README.md'],['commit','-m','fixture documentation']])assert.equal(spawnSync('git',['-C',f.codeProject,...args]).status,0);
     const end=await execute(f);assert.equal(end.result.code,'run_done',end.stderr+JSON.stringify(end.result));
     const tracked=spawnSync('git',['-C',f.codeProject,'ls-files'],{encoding:'utf8'}).stdout;assert(!tracked.includes('.cm-external-models-v1.json'));assert(!tracked.includes('.cm-model-config.lock'));
-    for(const n of [1,2])assert(!fs.existsSync(path.join(f.root,'.cm-worktrees',f.batch.batchId.slice(0,8),'T-00'+n)));
+    for(const n of [1,2])assert(!fs.existsSync(path.join(f.root,'.cm-worktrees',batchSegment(f.batch.batchId),'T-00'+n)));
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 

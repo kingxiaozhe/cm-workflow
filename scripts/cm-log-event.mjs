@@ -471,10 +471,52 @@ export function inspectRunClosure(file,runId){
 
 function compactJson(value){return `${JSON.stringify(value)}\n`;}
 function ensureDirectory(directory,mode){fs.mkdirSync(directory,{recursive:true,mode});if(process.platform!=='win32')fs.chmodSync(directory,mode);}
+// The bytes after the last LF of a JSON Lines log. Readers accept a final record
+// without LF, but appending straight after it would glue two records together.
+const LOG_TAIL_LIMIT=4*1024*1024;
+function unterminatedTail(descriptor){
+  const size=fs.fstatSync(descriptor).size;
+  if(size===0)return null;
+  const last=Buffer.alloc(1);fs.readSync(descriptor,last,0,1,size-1);
+  if(last[0]===0x0a)return null;
+  const chunk=64*1024;let end=size,tail=Buffer.alloc(0);
+  while(end>0&&tail.length<=LOG_TAIL_LIMIT){
+    const start=Math.max(0,end-chunk),piece=Buffer.alloc(end-start);
+    fs.readSync(descriptor,piece,0,piece.length,start);
+    const newline=piece.lastIndexOf(0x0a);
+    if(newline!==-1){
+      const found=Buffer.concat([piece.subarray(newline+1),tail]);
+      return found.length<=LOG_TAIL_LIMIT?found:false;
+    }
+    tail=Buffer.concat([piece,tail]);end=start;
+  }
+  return end===0&&tail.length<=LOG_TAIL_LIMIT?tail:false;
+}
+// JSON whitespace only (space, tab, CR): harmless padding the next record can
+// start after, exactly as the plain O_APPEND writer always did.
+const blankTail=tail=>tail.every(byte=>byte===0x20||byte===0x09||byte===0x0d);
+// Readers decode logs as strict UTF-8; a tail they would reject is not complete.
+// ignoreBOM keeps a leading BOM in the text, so JSON.parse rejects it as the host reader does.
+const strictUtf8=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
 function appendLine(file,value,{privateFile=false}={}){
   fs.mkdirSync(path.dirname(file),{recursive:true});
-  const descriptor=fs.openSync(file,fs.constants.O_APPEND|fs.constants.O_CREAT|fs.constants.O_WRONLY,privateFile?0o600:0o644);
-  try{fs.writeFileSync(descriptor,compactJson(value));fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+  const descriptor=fs.openSync(file,fs.constants.O_APPEND|fs.constants.O_CREAT|fs.constants.O_RDWR,privateFile?0o600:0o644);
+  try{
+    // Callers hold the log's write lock, so the tail cannot change underneath.
+    // A complete final record without LF is closed first; a half-written one is
+    // left byte for byte and refused rather than buried under a new record.
+    const tail=unterminatedTail(descriptor);
+    let complete=false,blank=false;
+    if(tail!==null&&tail!==false){
+      blank=blankTail(tail);
+      if(!blank)try{JSON.parse(strictUtf8.decode(tail));complete=true;}catch{}
+    }
+    if(tail!==null&&!complete&&!blank){
+      const error=new Error(`log_tail_incomplete: ${file} ends with an incomplete record; repair or move that last line before writing more events`);
+      error.code='log_tail_incomplete';throw error;
+    }
+    fs.writeFileSync(descriptor,(complete?'\n':'')+compactJson(value));fs.fsyncSync(descriptor);
+  }finally{fs.closeSync(descriptor);}
   if(privateFile&&process.platform!=='win32')fs.chmodSync(file,0o600);
 }
 
