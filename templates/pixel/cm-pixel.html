@@ -365,7 +365,7 @@ async function poll() {
                     && (Date.now()-new Date(lm).getTime()) > 600_000);
       if (cur.feature && mode!=="wait") {
         const md = await (await fetch(cur.feature+"/tasks.md?ts="+Date.now())).text();
-        const items = md.match(/^- \[( |x)\] T-\d+/gm)||[];
+        const items = md.match(/^- \[( |x)\] T-[A-Za-z0-9][A-Za-z0-9._-]*(?=[:：\s])/gm)||[];
         setBar(items.filter(l=>l.includes("[x]")).length, items.length);
       } else setBar(0,0);
       document.getElementById("hint").textContent = "";

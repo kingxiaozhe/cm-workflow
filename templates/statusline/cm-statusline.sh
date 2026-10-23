@@ -33,7 +33,7 @@ def progress(feature):
     """当前 feature 的任务进度: (完成数, 总数, 当前序号)"""
     try:
         md = open(os.path.join(SPECS, feature, "tasks.md"), encoding="utf-8").read()
-        items = re.findall(r"^- \[( |x)\] (T-\d+)", md, re.M)
+        items = re.findall(r"^- \[( |x)\] (T-[A-Za-z0-9][A-Za-z0-9._-]*)(?=[:：\s])", md, re.M)
         active = [(c, t) for c, t in items]
         done = sum(1 for c, _ in active if c == "x")
         cur = next((i + 1 for i, (c, _) in enumerate(active) if c == " "), len(active))

@@ -175,6 +175,15 @@ function resolveSources(plan,{root,specsRoot,deliveries,after}){
   return result;
 }
 
+export function integrationReviewIndependent({reviewRunId,targetRunId,hostContextId,authorContextId,
+  reviewerProvider,authorProvider,reviewerThreadId,previousThreads,developerThreadId}){
+  return reviewRunId!==targetRunId
+    &&hostContextId===authorContextId
+    &&reviewerProvider!==authorProvider
+    &&!previousThreads.includes(reviewerThreadId)
+    &&reviewerThreadId!==developerThreadId;
+}
+
 function verifyReview(review,plan,records){
   need(review!==null,'integration_review_required');
   shape(review,['configuration','registration','started','result']);
@@ -185,11 +194,11 @@ function verifyReview(review,plan,records){
   const pkg=readReviewPackage(registration.request.payload.reviewPackage);
   const config=records[0].payload.config;
   const previousThreads=readRunnerHistory(records,config,3).reviewerThreads;
-  need(pkg.identity.runId!==plan.target.identity.runId
-    &&review.configuration.hostContextId===plan.author.contextId
-    &&registration.request.provider!==plan.author.provider
-    &&!previousThreads.includes(checked.providerThreadId)
-    &&checked.providerThreadId!==config.reviewInvocation.developerThreadId,'integration_review_not_independent');
+  need(integrationReviewIndependent({reviewRunId:pkg.identity.runId,targetRunId:plan.target.identity.runId,
+    hostContextId:review.configuration.hostContextId,authorContextId:plan.author.contextId,
+    reviewerProvider:registration.request.provider,authorProvider:plan.author.provider,
+    reviewerThreadId:checked.providerThreadId,previousThreads,developerThreadId:config.reviewInvocation.developerThreadId}),
+    'integration_review_not_independent');
   const file=pkg.requirements.find(item=>item.path==='integration/plan.json')
     ??pkg.changes.find(item=>item.path==='integration/plan.json')?.after;
   need(file?.contentBase64===canonical(plan).toString('base64'),'integration_review_binding_mismatch');
