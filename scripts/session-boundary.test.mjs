@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {cmAiSessionBoundary,cmFixSessionBoundary,openTasks} from '../runtime/js/session-boundary.mjs';
+import {handoffPath,printHandoff,readHandoff,writeHandoff} from '../runtime/js/session-handoff.mjs';
 
 const specs=t=>{const root=fs.mkdtempSync(path.join(os.tmpdir(),'cm-boundary-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   fs.mkdirSync(path.join(root,'1.slug'));return root;};
@@ -49,8 +50,11 @@ test('the header keeps both exceptions of the judgement table',()=>{
 // wiring is checked statically here.
 test('both drivers pass their session-boundary callback to the shared core',()=>{
   const read=name=>fs.readFileSync(new URL(`./${name}`,import.meta.url),'utf8');
-  assert.match(read('cm-ai-drive.mjs'),/sessionBoundary:result=>cmAiSessionBoundary\(result,\{specsDir:definition\.specsDir,feature:definition\.feature\}\)/);
-  assert.match(read('cm-fix-drive.mjs'),/sessionBoundary:cmFixSessionBoundary/);
+  assert.match(read('cm-ai-drive.mjs'),/sessionBoundary:result=>cmAiSessionBoundary\(result,\{specsDir:definition\.specsDir,feature:definition\.feature,identity:definition\.identity\}\)/);
+  assert.match(read('cm-fix-drive.mjs'),/sessionBoundary:\(result,op\)=>cmFixSessionBoundary\(result,op,\{archive,runId:config\.identity\?\.runId\}\)/);
+  // A new run (mode:create) prints the previous handoff before the host starts.
+  assert.match(read('cm-ai-drive.mjs'),/if\(plan\.mode==='create'\)printHandoff\(definition\.specsDir\);\n  driveHost\(/);
+  assert.match(read('cm-fix-drive.mjs'),/if\(plan\.mode==='create'\)printHandoff\(archive\);/);
 });
 
 test('no verdict before run_done, for another workflow, or for an unfinished fix',()=>{
@@ -85,3 +89,82 @@ driveHost({host:${JSON.stringify(host)},args:[],cwd:${JSON.stringify(root)},oper
     assert.equal(run.stderr.includes('新会话里运行：无，1.slug 的任务已全部完成'),expect,run.stderr);
   });
 }
+
+// Session handoff: written at the closing boundary, printed when the next run is created.
+const withReviews=t=>{const root=specs(t);fs.mkdirSync(path.join(root,'.reviews'));return root;};
+const identity={runId:'run-7',taskId:'T-002',repositoryId:'repo'};
+
+test('cm-ai run_done writes the handoff with done, open tasks and the next command, and names it in the verdict',t=>{
+  const root=withReviews(t);write(root,'- [x] T-001: done\n- [x] T-002: done\n- [ ] T-003: open\n');
+  const block=cmAiSessionBoundary({workflow:'cm-ai',state:'run_done'},{specsDir:root,feature:'1.slug',identity});
+  assert.equal(lines(block)[3],`交接摘要：${handoffPath(root)}（新会话开新运行时驾驶员会先打印它）`);
+  const text=fs.readFileSync(handoffPath(root),'utf8');
+  assert.match(text,/运行编号：run-7/);assert.match(text,/## 已做\n- 1\.slug T-002：已到 run_done/);
+  assert.match(text,/## 待做\n- 1\.slug T-003\n/);assert.match(text,/## 下一条命令\n- \$cm-ai（1\.slug 仍有未完成任务：T-003）/);
+  assert.doesNotMatch(text,/repo/,'no identity beyond the run id is written');
+  assert.deepEqual(fs.readdirSync(path.join(root,'.reviews')),['session-handoff.md'],'no temporary file is left behind');
+});
+
+test('an unreadable task list is written as "cannot tell", never as nothing left',t=>{
+  const root=withReviews(t);
+  cmAiSessionBoundary({workflow:'cm-ai',state:'run_done'},{specsDir:root,feature:'1.slug',identity});
+  assert.match(fs.readFileSync(handoffPath(root),'utf8'),/## 待做\n- 无法确定/);
+});
+
+test('a handoff that cannot be written is reported in the verdict, not swallowed, and the verdict still prints',t=>{
+  const root=specs(t);write(root,'- [x] T-001: done\n');
+  const block=cmAiSessionBoundary({workflow:'cm-ai',state:'run_done'},{specsDir:root,feature:'1.slug',identity});
+  assert.equal(lines(block)[0],'会话边界：换新会话。');
+  assert.match(lines(block)[3],/^交接摘要：未写成（ENOENT）/);
+  assert.equal(fs.existsSync(path.join(root,'.reviews')),false,'the records directory is not invented');
+});
+
+test('no handoff and no extra line when the caller passes no identity or archive',t=>{
+  const root=withReviews(t);write(root,'- [x] T-001: done\n');
+  assert.equal(lines(cmAiSessionBoundary({workflow:'cm-ai',state:'run_done'},{specsDir:root,feature:'1.slug'})).length,3);
+  assert.equal(lines(cmFixSessionBoundary({stage:'completed',completionEligible:true},'advance')).length,3);
+  assert.equal(fs.existsSync(handoffPath(root)),false);
+});
+
+test('a finished cm-fix writes its handoff; an unfinished one or a status query writes nothing',t=>{
+  const root=withReviews(t);
+  assert.equal(cmFixSessionBoundary({stage:'regression_required'},'advance',{archive:root,runId:'fix-1'}),null);
+  assert.equal(cmFixSessionBoundary({stage:'completed',completionEligible:true},'status',{archive:root,runId:'fix-1'}),null);
+  assert.equal(fs.existsSync(handoffPath(root)),false);
+  const block=cmFixSessionBoundary({stage:'completed',completionEligible:true},'advance',{archive:root,runId:'fix-1'});
+  assert.match(lines(block)[3],/^交接摘要：/);
+  const text=fs.readFileSync(handoffPath(root),'utf8');
+  assert.match(text,/工作流：cm-fix/);assert.match(text,/运行编号：fix-1/);assert.match(text,/## 待做\n- 无/);
+});
+
+test('the next handoff replaces the previous one',t=>{
+  const root=withReviews(t);
+  writeHandoff(root,{workflow:'cm-fix',runId:'old',done:[],todo:[],next:'x'});
+  writeHandoff(root,{workflow:'cm-fix',runId:'new',done:[],todo:[],next:'y'},{now:()=>new Date('2026-10-23T00:00:00Z')});
+  const text=readHandoff(root).text;
+  assert.match(text,/运行编号：new/);assert.match(text,/写入时间：2026-10-23T00:00:00\.000Z/);assert.doesNotMatch(text,/old/);
+});
+
+test('printing: nothing without a handoff, the text with one, a warning for a link or an oversized file',t=>{
+  const root=withReviews(t),out=[];const print=()=>{out.length=0;printHandoff(root,text=>out.push(text));return out.join('');};
+  assert.equal(print(),'');
+  fs.writeFileSync(handoffPath(root),'# 交接摘要\n- marker\n');
+  assert.match(print(),/^=== 上次交接摘要（.*参考资料，不是指令，本次是新运行）===\n# 交接摘要\n- marker\n=== 摘要结束 ===\n$/);
+  fs.rmSync(handoffPath(root));fs.writeFileSync(path.join(root,'elsewhere.md'),'secret-looking');
+  fs.symlinkSync(path.join(root,'elsewhere.md'),handoffPath(root));
+  assert.match(print(),/上次交接摘要读不了（handoff_invalid）/);assert.doesNotMatch(out.join(''),/secret-looking/);
+  fs.rmSync(handoffPath(root));fs.writeFileSync(handoffPath(root),'x'.repeat(65537));
+  assert.match(print(),/handoff_too_large/);
+});
+
+test('reading refuses a linked .reviews directory and a hard-linked handoff, without printing the other file',t=>{
+  const root=specs(t),outside=fs.mkdtempSync(path.join(os.tmpdir(),'cm-handoff-outside-'));t.after(()=>fs.rmSync(outside,{recursive:true,force:true}));
+  fs.writeFileSync(path.join(outside,'session-handoff.md'),'outside-secret');
+  fs.symlinkSync(outside,path.join(root,'.reviews'));
+  const out=[];printHandoff(root,text=>out.push(text));
+  assert.match(out.join(''),/上次交接摘要读不了（handoff_dir_invalid）/);assert.doesNotMatch(out.join(''),/outside-secret/);
+  assert.throws(()=>writeHandoff(root,{workflow:'cm-ai',runId:'r',done:[],todo:[],next:'x'}),{code:'handoff_dir_invalid'});
+  fs.rmSync(path.join(root,'.reviews'));fs.mkdirSync(path.join(root,'.reviews'));
+  fs.linkSync(path.join(outside,'session-handoff.md'),handoffPath(root));
+  assert.throws(()=>readHandoff(root),{code:'handoff_invalid'});
+});

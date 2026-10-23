@@ -116,7 +116,7 @@ detail 用一句大白话；不直接拼 JSON，避免跨会话格式漂移。
 测试/审查/外部回答只写专项凭证，不灌主日志。长步骤和临时资源严格按
 `runtime/logging.md` 配对，禁止用后台心跳制造虚假活跃。
 
-**会话边界（省 token）：** 单任务运行以 `run_done` 收尾时，按 `runtime/model-efficiency.md`「Session boundary」的判断表给出结论；批次只在整批结束后给。换新会话时，新会话作为新运行的 `--host-context`；单任务运行中途换会话按 `--original-host-context` 规则接手。不得为换会话改写记录、跳过审查或重置授权。
+**会话边界（省 token）：** 单任务运行以 `run_done` 收尾时，按 `runtime/model-efficiency.md`「Session boundary」的判断表给出结论；批次只在整批结束后给。驾驶员同时把已做、待做与下一条命令写进 `{SPECS_DIR}/.reviews/session-handoff.md`，结论多一行「交接摘要：…」；新会话建运行（`mode:create`）时驾驶员先打印它，只作参考，不续接旧运行、不带授权。换新会话时，新会话作为新运行的 `--host-context`；单任务运行中途换会话按 `--original-host-context` 规则接手。不得为换会话改写记录、跳过审查或重置授权。
 
 **角色路由投影：** N1 用代码项目根读取有效配置；N3 每个实现任务解析 `coder`，N3
 任务检查解析 `tester`，N4 解析 `reviewer`，并在 N6 QA 解析 `tester`。使用：
