@@ -126,7 +126,7 @@ def scene(node, state, frame):
 def progress(specs, feature):
     try:
         md = open(os.path.join(specs, feature, "tasks.md"), encoding="utf-8").read()
-        items = re.findall(r"^- \[( |x)\] (T-\d+)", md, re.M)
+        items = re.findall(r"^- \[( |x)\] (T-[A-Za-z0-9][A-Za-z0-9._-]*)(?=[:：\s])", md, re.M)
         return sum(1 for c, _ in items if c == "x"), len(items)
     except Exception:
         return None
