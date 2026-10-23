@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {parseTaskScopes,declaredTaskScope,sameScope,validScopePath} from '../runtime/js/task-scope.mjs';
 import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
+import {recordPrdTaskScopes,prdTaskScopeOptions} from '../runtime/js/cm-prd/task-scope-record.mjs';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {BATCH_SEGMENT_FIELD,batchSegment} from '../runtime/js/cm-ai/batch-location.mjs';
 
@@ -59,7 +60,11 @@ test('a task that cannot list its files declares 串行 and is never treated as 
   const parsed=parseTaskScopes(tasksText(['- [ ] T-001: scaffold','  - 范围: 串行','- [ ] T-002: b','  - scope: serial','  - 设备: 需要']));
   assert.deepEqual([...parsed.serial],['T-001']);assert.equal(parsed.tasks.size,0);
   assert.match(parsed.errors[0].message,/串行/);
-  assert.equal(checkPrdDraftMechanics(draft('- [ ] T-001: scaffold\n  - 范围: 串行\n'),{rules:3}).status,'mechanical_subset_passed');
+  // Only a scaffold feature (N.bootstrap) may use it; a business feature must list files.
+  const scaffold=draft('- [ ] T-001: scaffold\n  - 范围: 串行\n');scaffold.features[0].directory='1.bootstrap';
+  assert.equal(checkPrdDraftMechanics(scaffold,{rules:3}).status,'mechanical_subset_passed');
+  const business=checkPrdDraftMechanics(draft('- [ ] T-001: feature\n  - 范围: 串行\n'),{rules:3});
+  assert.deepEqual(codes(business),['task_scope_invalid']);assert.match(business.findings[0].reason.problems[0],/只用于脚手架功能/);
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-task-scope-serial-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   fs.mkdirSync(path.join(root,'1.work'));fs.writeFileSync(path.join(root,'1.work','tasks.md'),'- [ ] T-001: scaffold\n  - 范围: 串行\n');
@@ -95,6 +100,25 @@ test('rule 3 in a change proposal requires scope only for tasks the approved fil
   assert.equal(checkPrdDraftMechanics(kept,{rules:3,change:true,previous}).status,'mechanical_subset_passed');
   const added=draft('- [x] T-001: old\n- [ ] T-002: new\n');
   assert.deepEqual(checkPrdDraftMechanics(added,{rules:3,change:true,previous}).findings[0].reason.tasks,['T-002']);
+});
+
+test('a saved scope record holds later re-checks to the scope rule, approved tasks exempt',t=>{
+  const specs=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-task-scope-record-')));
+  t.after(()=>fs.rmSync(specs,{recursive:true,force:true}));
+  const feature=tasks=>draft(tasks).features[0];
+  // Without a record the re-check is unchanged (rule 1 asks nothing about scope).
+  assert.deepEqual(prdTaskScopeOptions(specs,'1.sample'),{});
+  recordPrdTaskScopes(specs,[feature('- [ ] T-001: old\n- [ ] T-002: new\n  - 范围: `b.js`\n')],{'1.sample':'- [ ] T-001: old\n'});
+  const options=prdTaskScopeOptions(specs,['1.sample']);
+  assert.deepEqual(options,{scopes:{'1.sample':{exempt:['T-001']}}});
+  assert.equal(checkPrdDraftMechanics(draft('- [ ] T-001: old\n- [ ] T-002: new\n'),options).findings[0].code,'task_scope_missing');
+  assert.equal(checkPrdDraftMechanics(draft('- [ ] T-001: old\n- [ ] T-002: new\n'),{}).status,'mechanical_subset_passed');
+  assert.equal(checkPrdDraftMechanics(draft('- [ ] T-001: old\n- [ ] T-002: new\n  - 范围: `b.js`\n'),options).status,'mechanical_subset_passed');
+  // A draft without scopes records that, and stays on the old rule.
+  recordPrdTaskScopes(specs,[feature('- [ ] T-001: a\n')]);
+  assert.deepEqual(prdTaskScopeOptions(specs,'1.sample'),{});
+  fs.writeFileSync(path.join(specs,'.reviews/prd-sample-task-scope.json'),'{"version":1,"enforced":"yes","exempt":[]}\n',{mode:0o600});
+  assert.throws(()=>prdTaskScopeOptions(specs,'1.sample'),/prd_task_scope_record_invalid/);
 });
 
 function batchSpecs(t,{tasks,log=[]}){

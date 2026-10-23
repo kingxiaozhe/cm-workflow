@@ -10,6 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange,assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {recordPrdReview} from './cm-prd-review-gate.mjs';
+import {parseFeatureTaskText} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 
 // Keep runtime declarations and log mirrors independent of the invoking user's home.
 const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-completion-home-'));
@@ -139,6 +140,10 @@ test('controlled inventory revision retains old review and archives removed feat
     {directory:'3.examples',documents:docs().map(doc=>({...doc,content:doc.content.replace('[x]','[ ]')})),testCasesReason:'no_observable_behavior'}]};
   const selected=['1.guide','2.obsolete'],proposal=inspectPrdChangeProposal(before,raw,selected,loadConfig({projectRoot:dir}));
   const result=applyPrdChange({specs:dir,before,proposal,selected});assert.deepEqual(result.features,['1.guide','3.examples']);
+  // Later re-checks of these files keep the scope rule; approved tasks stay exempt.
+  const record=name=>JSON.parse(fs.readFileSync(path.join(dir,`.reviews/prd-${name}-task-scope.json`),'utf8'));
+  assert.deepEqual(record('guide').exempt,parseFeatureTaskText(before.files['1.guide/tasks.md']).tasks.map(task=>task.id).sort());
+  assert.deepEqual(record('examples').exempt,[]);
   assert.ok(fs.readFileSync(evidence).equals(originalReview));assert.equal(fs.existsSync(path.join(dir,'2.obsolete')),false);
   assert.equal(fs.readFileSync(path.join(dir,`.reviews/prd-change-${proposal.proposalDigest}-removed/2.obsolete/asset.txt`),'utf8'),'original retained asset');
   assert.equal(applyPrdChange({specs:dir,before,proposal,selected}).status,'awaiting_review');
@@ -173,12 +178,13 @@ test('change guards completed tasks written without a colon or with a full-width
 // approval an unfenced full-width example is prose, not the completed task.
 test('change guard reads the approved original with the legacy grammar',t=>{
   const dir=fixture(t),config=loadConfig({projectRoot:dir}),example='- [ ] T-001：旧写法示例';
-  fs.writeFileSync(path.join(dir,'1.guide/tasks.md'),docs()[2].content.replace('- [x] T-001: Existing guide\n',
-    `- [x] T-001: Existing guide\n${example}\n`),{mode:0o600});
+  // The example sits after T-001's own sub-item, so it never splits a task from its scope.
+  const owned='- [x] T-001: Existing guide\n  - 范围: `README.md`\n';
+  fs.writeFileSync(path.join(dir,'1.guide/tasks.md'),docs()[2].content.replace(owned,`${owned}${example}\n`),{mode:0o600});
   const before=inspectPrdChangeSnapshot(dir),task=revised().find(doc=>doc.path==='tasks.md');
   const fenced={status:'draft',summary:'Fence the old example',removed:[],features:[{directory:'1.guide',
-    documents:revised().map(doc=>doc.path==='tasks.md'?{...doc,content:task.content.replace('- [x] T-001: Existing guide\n',
-      `- [x] T-001: Existing guide\n\`\`\`md\n${example}\n\`\`\`\n`)}:doc),testCasesReason:'no_observable_behavior'}]};
+    documents:revised().map(doc=>doc.path==='tasks.md'?{...doc,content:task.content.replace(owned,
+      `${owned}\`\`\`md\n${example}\n\`\`\`\n`)}:doc),testCasesReason:'no_observable_behavior'}]};
   const proposal=inspectPrdChangeProposal(before,fenced,['1.guide'],config);
   assert.equal(proposal.proposalDigest.length,64);
 });

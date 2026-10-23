@@ -11,12 +11,14 @@ import {recordPrdHostDisposition,createPrdDispositionOwner} from '../runtime/js/
 import {createPrdCorrectionOwner,inspectPrdCorrectionRecovery,resumePrdCorrection} from '../runtime/js/cm-prd/review-correction.mjs';
 import {createPrdSummaryOwner,publishPrdAwaitingReview} from '../runtime/js/cm-prd/summary.mjs';
 import {claimPrdReview} from './cm-prd-review-gate.mjs';
+import {recordPrdTaskScopes} from '../runtime/js/cm-prd/task-scope-record.mjs';
 const sha=content=>createHash('sha256').update(content).digest('hex');
-function fixture(t,{stage='design',finding=false,blocked=false,twoFindings=false,testCases=false}={}){
+const SCOPED_TASKS='- [ ] T-001: Guide\n  - 范围: `README.md`';
+function fixture(t,{stage='design',finding=false,blocked=false,twoFindings=false,testCases=false,scoped=false}={}){
   const specs=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-disposition-')));
   t.after(()=>fs.rmSync(specs,{recursive:true,force:true}));fs.mkdirSync(path.join(specs,'.reviews'));
   const feature='1.guide',documents=[{path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Document setup.'},
-    {path:'design.md',content:'## 方案摘要\nDocumentation'}, {path:'tasks.md',content:'- [ ] T-001: Guide'}];
+    {path:'design.md',content:'## 方案摘要\nDocumentation'}, {path:'tasks.md',content:scoped?SCOPED_TASKS:'- [ ] T-001: Guide'}];
   if(testCases)documents.push({path:'test-cases.json',content:JSON.stringify({schemaVersion:'1.0',feature:'guide',cases:[{id:'TC-001',origin:'user',kind:'logic',blocking:true,acIds:['AC-001'],taskIds:['T-001'],title:'Check guide',preconditions:[],steps:['Read'],expected:['Explained'],cleanup:[]}]})});
   const prepared=preparePrdReview({specs,stage,feature,draft:{draftDigest:'a'.repeat(64),features:[{name:'guide',directory:feature,documents}]}});
   claimPrdReview({...prepared.paths,package_sha256:prepared.packageDigest});
@@ -28,7 +30,9 @@ function fixture(t,{stage='design',finding=false,blocked=false,twoFindings=false
         examinedPaths:(stage==='design'?documents.slice(0,2):documents.slice(0,3)).map(item=>`${feature}/${item.path}`).sort(),findings,summary:'Synthetic review'}}});
   const args={specs,stage,feature,packageDigest:prepared.packageDigest,decisions:[],
     artifacts:documents.map(item=>({path:`${feature}/${item.path}`,sha256:sha(item.content)})),writeEnabled:true};
-  const save=()=>{fs.mkdirSync(path.join(specs,feature));for(const item of documents)fs.writeFileSync(path.join(specs,feature,item.path),item.content,{mode:0o600});};
+  const save=()=>{fs.mkdirSync(path.join(specs,feature));for(const item of documents)fs.writeFileSync(path.join(specs,feature,item.path),item.content,{mode:0o600});
+    // The draft save records that these tasks carry scopes.
+    if(scoped)recordPrdTaskScopes(specs,[{directory:feature,name:'guide',documents}]);};
   return {args,save,receipt:prepared.paths.receipt};
 }
 test('no-findings requires saved original artifacts and records only original receipt',t=>{
@@ -202,9 +206,23 @@ for(const mode of ['ready','design-required','missing-review','drift'])test(`hum
   }
 });
 
+// A draft saved with scopes keeps them through the split correction; one saved
+// before the rule (no record) is checked exactly as before.
+for(const recorded of [true,false])test(`correction cannot drop a recorded task scope (record ${recorded})`,async t=>{
+  const {args,save}=fixture(t,{stage:'split',finding:true,scoped:true});
+  save();if(!recorded)fs.unlinkSync(path.join(args.specs,'.reviews/prd-guide-task-scope.json'));
+  const owner=createPrdCorrectionOwner({correct:async({documents})=>({
+    documents:documents.map(doc=>({path:doc.path,content:doc.path.endsWith('/tasks.md')?'- [ ] T-001: Guide':doc.content+(doc.path.endsWith('/design.md')?'\nClarified':'')})),
+    decisions:[{id:'R1',status:'applied',evidence:['Clarified'],changedPaths:['1.guide/design.md','1.guide/tasks.md']}]})});
+  const run=owner({specs:args.specs,stage:'split',feature:'1.guide',writeEnabled:true},new AbortController().signal);
+  if(recorded){await assert.rejects(run,/prd_correction_mechanics_failed/);
+    assert.equal(fs.readFileSync(path.join(args.specs,'1.guide/tasks.md'),'utf8'),SCOPED_TASKS);}
+  else assert.equal((await run).status,'correction_saved');
+});
+
 // F2: a saved correction whose single check fails must still reach the human.
-async function failedCorrectionFixture(t,{mechanical=false}={}){
-  const f=fixture(t,{stage:'split',finding:true});f.save();let calls=0;
+async function failedCorrectionFixture(t,{mechanical=false,scopeDropped=false}={}){
+  const f=fixture(t,{stage:'split',finding:true,scoped:scopeDropped});f.save();let calls=0;
   const correction=await createPrdCorrectionOwner({correct:async({documents})=>({
     documents:documents.map(doc=>({path:doc.path,content:doc.content+(doc.path.endsWith('/design.md')?'\nCorrection':'')})),
     decisions:[{id:'R1',status:'applied',evidence:['Saved original correction'],changedPaths:['1.guide/design.md']}]
@@ -213,6 +231,12 @@ async function failedCorrectionFixture(t,{mechanical=false}={}){
   if(mechanical){const file='1.guide/tasks.md',content='- [ ] T-001: Guide\n- [ ] T-002: Other [depends: T-999]';
     // Direct disposition also supports saved manual corrections.
     fs.writeFileSync(path.join(f.args.specs,file),content.replace('- [ ] T-001','- [x] T-001'));
+    f.args.artifacts.find(a=>a.path===file).sha256=sha(fs.readFileSync(path.join(f.args.specs,file)));
+    f.args.decisions[0].changedPaths.push(file);
+  }
+  if(scopeDropped){const file='1.guide/tasks.md';
+    // A saved manual correction that drops the task's scope.
+    fs.writeFileSync(path.join(f.args.specs,file),'- [ ] T-001: Guide');
     f.args.artifacts.find(a=>a.path===file).sha256=sha(fs.readFileSync(path.join(f.args.specs,file)));
     f.args.decisions[0].changedPaths.push(file);
   }
@@ -225,8 +249,21 @@ const humanSummary=()=>createPrdSummaryOwner({summarize:async({evidenceDigest})=
   contextScope:'Fixture',platformReadiness:'N/A',uiBaseline:'None',designRisk:[{feature:'1.guide',
     signals:{greenfieldAdr:false,architectureOrDataFlow:false,newRuntimeDependencyOrToolchain:false,publicContractDataOrSecurity:false,fiveOrMoreFunctions:false},evidence:['Fixture']} ]})});
 
-for(const mechanical of [false,true])test(`F2 failed correction reaches human and revision (mechanical ${mechanical})`,async t=>{
-  const f=await failedCorrectionFixture(t,{mechanical}),signal=new AbortController().signal;
+// The summary re-checks the saved files with the same record: a scope missing from
+// a feature whose save recorded scopes blocks the human summary.
+for(const recorded of [true,false])test(`summary holds a recorded feature to its task scopes (record ${recorded})`,async t=>{
+  const clean=fixture(t,{stage:'split'});clean.save();
+  if(recorded)fs.writeFileSync(path.join(clean.args.specs,'.reviews/prd-guide-task-scope.json'),
+    JSON.stringify({version:1,enforced:true,exempt:[]})+'\n',{mode:0o600});
+  assert.equal(recordPrdHostDisposition(clean.args).gate.disposition,'no_findings');
+  const summary=await humanSummary()(clean.args.specs);
+  assert.deepEqual(summary.blockers,recorded?['mechanical_self_check_failed']:[]);
+  if(recorded)assert.deepEqual(summary.mechanicalSelfCheck.findings.map(item=>item.code),['task_scope_missing']);
+});
+
+for(const mode of [false,true,'scope'])test(`F2 failed correction reaches human and revision (mechanical ${mode})`,async t=>{
+  const mechanical=mode!==false;
+  const f=await failedCorrectionFixture(t,{mechanical:mode===true,scopeDropped:mode==='scope'}),signal=new AbortController().signal;
   const result=await f.owner(f.args,signal);
   assert.equal(result.status,'disposition_recorded');assert.equal(result.gate.disposition,'self_check_failed');
   assert.equal(result.next,'prepare_human_summary_with_failed_checks');assert.equal(result.completionAuthorized,false);
@@ -241,7 +278,7 @@ for(const mechanical of [false,true])test(`F2 failed correction reaches human an
   assert.equal(summary.riskCard[0].status,'awaiting_human_ruling');
   assert.ok(summary.riskCard[0].failedChecks.length>0);
   assert.match(summary.details.risks,/自检失败.*待人工裁决/);
-  assert.match(summary.details.risks,mechanical?/new_task_not_pending/:/Cannot prove original correction/);
+  assert.match(summary.details.risks,mode==='scope'?/task_scope_missing/:mechanical?/new_task_not_pending/:/Cannot prove original correction/);
   assert.equal(publishPrdAwaitingReview({specs:f.args.specs,summary,writeEnabled:true}).status,'awaiting_review');
   const {assertPrdReviewsSettled}=await import('../runtime/js/cm-prd/change.mjs');
   assert.doesNotThrow(()=>assertPrdReviewsSettled(f.args.specs,['1.guide'],{requireSplit:true}));

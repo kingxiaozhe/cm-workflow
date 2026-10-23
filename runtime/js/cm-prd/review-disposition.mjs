@@ -9,6 +9,7 @@ import {recordPrdReview,inspectPrdReview} from '../../../scripts/cm-prd-review-g
 import {need,json,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdDispositionPlan} from './disposition-plan.mjs';
 import {checkPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
+import {prdTaskScopeOptions} from './task-scope-record.mjs';
 import {correctionCheckStore} from './correction-check.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
@@ -81,7 +82,7 @@ export function createPrdDispositionOwner({checkContext,canRecoverRecorded=()=>f
       content:new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(readCmInitSource(input.specs,item.path))}));
     let draft={draftDigest:digest(input.artifacts),features:[{directory:input.feature,
       name:input.feature.replace(/^\d+\./,''),documents}]};
-    draft.mechanicalSelfCheck=checkPrdDraftMechanics(draft);
+    draft.mechanicalSelfCheck=checkPrdDraftMechanics(draft,prdTaskScopeOptions(input.specs,input.feature));
     draft=json(draft,256*1024);
     const review=inspectPrdFindings({specs:input.specs,stage:input.stage,feature:input.feature});
     const checkInput={draft,decisions:input.decisions,review};

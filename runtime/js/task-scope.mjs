@@ -13,7 +13,8 @@
 // under (specification-material already carries indented lines with their task).
 import fs from 'node:fs';
 import path from 'node:path';
-import {taskLines} from './spec-task-line.mjs';
+import {taskLines,TASK_GRAMMAR,approvedTaskGrammar} from './spec-task-line.mjs';
+import {readReviewScope} from './cm-ai/review-package.mjs';
 import {protectedScopePaths} from './cm-ai/developer-adapter.mjs';
 
 const KEYS=new Map([['范围','scope'],['scope','scope'],['测试文件','tests'],['tests','tests'],['设备','device'],['device','device']]);
@@ -22,12 +23,13 @@ const DEVICE_VALUES=new Set(['需要','required']);
 // A task whose files cannot be listed up front (a scaffold generator) says so
 // explicitly; it counts as declared for the split check but never runs in parallel.
 const SERIAL_VALUES=new Set(['串行','serial']);
-const indentOf=body=>body.match(/^\s*/)[0].replace(/\t/g,'    ').length;
+// Same ownership rule as specification-material taskScopeText: a space or a tab
+// is one column, and only lines indented deeper than the task line belong to it.
+const indentOf=body=>/^[ \t]*/.exec(body)[0].length;
 
 export function validScopePath(value){
-  if(typeof value!=='string'||value.length===0||value.length>512)return false;
-  if(value.startsWith('/')||value.endsWith('/')||/[\\:*?[\]\x00-\x1f]/.test(value))return false;
-  if(!value.split('/').every(part=>part&&part!=='.'&&part!=='..'))return false;
+  if(typeof value!=='string'||value.endsWith('/')||/[*?[\]]/.test(value))return false;
+  try{readReviewScope([value]);}catch{return false;}
   return protectedScopePaths([value]).length===0;
 }
 
@@ -39,25 +41,26 @@ function pathList(raw){
 
 // {tasks: Map<taskId,{scope,tests,device,line}>, errors: [{taskId,line,message}]}.
 // A task without any scope sub-item is simply absent from `tasks`.
-export function parseTaskScopes(text){
+export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
   const tasks=new Map(),errors=[];let current=null;
   const fail=(line,message)=>errors.push({taskId:current?.id??null,line:line.index+1,message});
-  for(const line of taskLines(text)){
-    if(line.fenced)continue;
-    if(line.declaration){current={id:line.declaration.id,indent:indentOf(line.body),fields:new Map()};continue;}
-    if(/^\s*#/.test(line.body)){current=null;continue;}
+  for(const line of taskLines(text,{grammar})){
     if(!line.body.trim())continue;
+    if(line.declaration){current={id:line.declaration.id,indent:indentOf(line.body),fields:new Map()};continue;}
+    // Exactly taskScopeText's ownership: a heading, or any line (fenced or not)
+    // that is not indented under the task, ends the task's item.
+    if(current!==null&&!(indentOf(line.body)>current.indent&&!/^\s*#/.test(line.body)))current=null;
+    if(line.fenced)continue;
     const match=SUB_ITEM.exec(line.body);
     const key=match?KEYS.get(match[2].toLowerCase())??KEYS.get(match[2]):undefined;
-    if(current===null||indentOf(line.body)<=current.indent){
-      // Back at (or above) the task's own level: this task's sub-items are over.
-      // A scope-looking item here is almost always a missing indent; say so. Prose
+    if(current===null){
+      // Not under any task: a scope-looking item here is almost always a missing indent. Prose
       // bullets elsewhere (a risk list naming a device) are left alone.
       const looksLikeScope=key==='device'?DEVICE_VALUES.has(match[3].trim().toLowerCase())||DEVICE_VALUES.has(match[3].trim())
         :key!==undefined&&pathList(match[3].trim())!==null;
-      if(looksLikeScope)errors.push({taskId:current?.id??null,line:line.index+1,
-        message:`${match[2]} 不在任何任务行下面（要缩进写在任务行的下一行）`});
-      current=null;continue;
+      if(looksLikeScope)errors.push({taskId:null,line:line.index+1,
+        message:`${match[2]} 不在任何任务行下面（要缩进写在任务行的下一行，用空格缩进）`});
+      continue;
     }
     if(key===undefined)continue;
     if(current.fields.has(key)){fail(line,`${match[2]} 重复`);continue;}
@@ -71,6 +74,7 @@ export function parseTaskScopes(text){
     }
     const paths=pathList(value);
     if(paths===null){fail(line,`${match[2]} 必须是用反引号括起的文件路径，用逗号或空格分隔`);continue;}
+    if(paths.length>256){fail(line,`${match[2]} 最多 256 个文件`);continue;}
     const bad=paths.filter(item=>!validScopePath(item));
     if(bad.length){fail(line,`不合法的路径（只许相对文件路径，不许目录、通配符或受保护文件）：${bad.join(', ')}`);continue;}
     if(new Set(paths).size!==paths.length){fail(line,`${match[2]} 有重复路径`);continue;}
@@ -103,9 +107,18 @@ export function declaredTaskScope(specsDir,feature,taskId){
   let text;
   try{text=fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8');}
   catch(error){if(error.code==='ENOENT')return null;throw error;}
-  const parsed=parseTaskScopes(text),problem=parsed.errors.find(item=>item.taskId===taskId);
+  // Read with the grammar the approval bound, as every runtime task reader does.
+  const parsed=parseTaskScopes(text,{grammar:approvedTaskGrammar(specsDir)}),problem=parsed.errors.find(item=>item.taskId===taskId);
   if(problem)throw Object.assign(new Error('task_scope_invalid'),{code:'task_scope_invalid',
     reason:`${feature}/tasks.md 第 ${problem.line} 行（${taskId}）：${problem.message}`});
   return parsed.tasks.get(taskId)??null;
 }
+// Shared create boundary: a new run of a task whose tasks.md declares its files
+// must carry exactly those files, whichever entry built the run definition.
+export function assertDeclaredScope(definition){
+  const declared=declaredTaskScope(definition.specsDir,definition.feature,definition.identity.taskId);
+  if(declared&&!sameScope(declared.scope,definition.scope))throw Object.assign(new Error('task_scope_mismatch'),{code:'task_scope_mismatch',
+    reason:`tasks.md 为 ${definition.feature}/${definition.identity.taskId} 写的范围是 ${declared.scope.join(', ')}，运行定义给的是 ${definition.scope.join(', ')}`});
+}
+export const BOOTSTRAP_FEATURE=/^\d+\.bootstrap$/;
 export const sameScope=(a,b)=>a.length===b.length&&new Set(a).size===a.length&&a.every(item=>b.includes(item));

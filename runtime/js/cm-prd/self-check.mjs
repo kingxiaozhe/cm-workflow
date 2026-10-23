@@ -1,7 +1,7 @@
 // Mechanical subset of the existing Step 10.5 checklist. No semantic approval.
 import {parseFeatureTaskText,validDependencies,declaredAcceptanceIds,DEPENDENCY} from '../cm-ai/cm-ai-admission.mjs';
 import {specLines,taskLines} from '../spec-task-line.mjs';
-import {parseTaskScopes} from '../task-scope.mjs';
+import {parseTaskScopes,BOOTSTRAP_FEATURE} from '../task-scope.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
 import {json,shape,need,digest} from '../cm-ai/effect-contract.mjs';
 
@@ -89,7 +89,12 @@ function strictFindings(source,previous,parsed){
 export function matchesPrdDraftMechanics(draft,recorded,options={}){
   return [PRD_SELF_CHECK_RULES,2,1].some(rules=>digest(checkPrdDraftMechanics(draft,{...options,rules}))===digest(recorded));
 }
-export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1}={}){
+// `scopes` ({directory: {exempt:[taskId...]}}) applies only rule 3's per-task scope
+// check, to those features, on top of `rules`. Re-checks of a saved draft
+// (correction, disposition, summary) pass it when the save recorded that the draft
+// carried scopes (task-scope-record.mjs), so a correction cannot drop them while
+// every other check stays on its old rule.
+export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1,scopes=null}={}){
   need([1,2,PRD_SELF_CHECK_RULES].includes(rules),'prd_self_check_rules_invalid');
   const findings=[],features=[];
   for(const feature of draft.features){
@@ -115,14 +120,18 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
       for(const code of strictFindings(files.get('tasks.md'),previous?.[feature.directory]??null,parsed))
         if(!reported.has(code))add(code);
     }
-    if(rules>=3&&!parsed.error){
+    const scope=scopes!==null&&Object.hasOwn(scopes,feature.directory)?scopes[feature.directory]:null;
+    if((rules>=3||scope!==null)&&!parsed.error){
       const scopes=parseTaskScopes(files.get('tasks.md'));
-      if(scopes.errors.length)add('task_scope_invalid',{field:`${feature.directory}/tasks.md`,
-        problems:scopes.errors.slice(0,10).map(item=>`${item.taskId??'(无任务)'} 第 ${item.line} 行：${item.message}`)});
+      const problems=scopes.errors.map(item=>`${item.taskId??'(无任务)'} 第 ${item.line} 行：${item.message}`);
+      // 串行 is the scaffold generator's exit (a N.bootstrap feature), not an opt-out for business tasks.
+      if(!BOOTSTRAP_FEATURE.test(feature.directory))for(const id of scopes.serial)problems.push(`${id}：范围: 串行 只用于脚手架功能（N.bootstrap），其余任务要列出文件`);
+      if(problems.length)add('task_scope_invalid',{field:`${feature.directory}/tasks.md`,problems:problems.slice(0,10)});
       const before=previous?.[feature.directory]==null?null:parseFeatureTaskText(previous[feature.directory]);
-      const known=new Set(before&&!before.error?before.tasks.map(task=>task.id):[]);
+      // Tasks an approved tasks.md already had may stay without scope.
+      const known=new Set([...(before&&!before.error?before.tasks.map(task=>task.id):[]),...(scope?.exempt??[])]);
       const missing=parsed.tasks.filter(task=>!task.dropped&&!scopes.tasks.has(task.id)&&!scopes.serial.has(task.id)&&!scopes.errors.some(item=>item.taskId===task.id)
-        &&(!change||!known.has(task.id))).map(task=>task.id);
+        &&!known.has(task.id)).map(task=>task.id);
       if(missing.length)add('task_scope_missing',{field:`${feature.directory}/tasks.md`,tasks:missing,
         expected:'每个任务下写一行缩进子项，例如 - 范围: `src/a.js`, `test/a.test.js`；列不出文件的任务写 - 范围: 串行'});
     }

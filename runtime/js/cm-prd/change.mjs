@@ -15,6 +15,7 @@ import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdDraft} from './draft.mjs';
 import {checkPrdDraftMechanics,inspectPrdContextCheck,PRD_SELF_CHECK_RULES} from './self-check.mjs';
+import {recordPrdTaskScopes} from './task-scope-record.mjs';
 import {replaceSessionFile} from './session.mjs';
 const names=['requirements.md','design.md','tasks.md','test-cases.json'];
 const valid=name=>/^[1-9]\d*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
@@ -281,6 +282,9 @@ export function applyPrdChange({specs,before,proposal,selected}){
     // Carry the last approval's tasks.md grammar to the next approval.
     ...(approvedGrammar(before)===TASK_GRAMMAR?{taskGrammar:TASK_GRAMMAR}:{})})+'\n';
   if(read(specs,statusFile)===before.status)replaceSessionFile(specs,statusFile,before.status,invalidated);
+  // Before any spec byte: later re-checks keep the scopes this proposal carries.
+  current();recordPrdTaskScopes(specs,proposal.features,Object.fromEntries(proposal.features
+    .map(feature=>[feature.directory,before.files[`${feature.directory}/tasks.md`]])));
   for(const [file,content] of Object.entries(expected)){
     if(!selected.includes(file.split('/')[0])&&oldDirs.includes(file.split('/')[0]))continue;
     current();const dir=path.dirname(path.join(specs,file));try{fs.mkdirSync(dir,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}

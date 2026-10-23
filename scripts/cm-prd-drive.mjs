@@ -35,6 +35,7 @@ import {loadConfig} from './cm-workflow-config.mjs';
 import {inspectPrdDraft,inspectPrdDesignDraft,nextPrdFeatureIndex,prdFeatureInventory} from '../runtime/js/cm-prd/draft.mjs';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal} from '../runtime/js/cm-prd/change.mjs';
 import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
+import {prdTaskScopeOptions} from '../runtime/js/cm-prd/task-scope-record.mjs';
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
 import {inspectPrdDispositionPlan} from '../runtime/js/cm-prd/disposition-plan.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
@@ -216,7 +217,7 @@ function load(){
       if(documents.some(doc=>!nonempty(doc.content)))stop(2,'review_disposition 缺少已保存的 artifact 内容');
       draft={draftDigest:digest(request.artifacts),features:[{directory:request.feature,
         name:request.feature.replace(/^\d+\./,''),documents}]};
-      draft.mechanicalSelfCheck=checkPrdDraftMechanics(draft);
+      draft.mechanicalSelfCheck=checkPrdDraftMechanics(draft,prdTaskScopeOptions(specs,request.feature));
     }
     if(!draft)stop(2,'prd_self_check 缺少当前草稿');
     for(const feature of draft.features)for(const id of draft.mechanicalSelfCheck.pending){

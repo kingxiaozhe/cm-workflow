@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {need} from './effect-contract.mjs';
+import {scanRows} from './log-rows.mjs';
 
 export const BATCH_SEGMENT_FIELD='worktree_segment';
 
@@ -22,14 +23,14 @@ export function batchSegment(batchId){
 }
 
 export function batchStarted({specsDir,batchId}){return startRow(specsDir,batchId)!==null;}
+// The same bounded, no-follow, strict reader the scheduler's progress() uses: a
+// log it would refuse is refused here too, before any decision rests on it.
 function startRow(specsDir,batchId){
   const log=path.join(specsDir,'运行日志.jsonl');
   if(!fs.existsSync(log))return null;
-  for(const line of fs.readFileSync(log,'utf8').split('\n')){
-    if(!line.trim())continue;let row;try{row=JSON.parse(line);}catch{continue;}
-    if(row?.workflow==='cm-ai'&&row.event==='decision'&&row.phase==='batch_start'&&row.run_id===batchId)return row;
-  }
-  return null;
+  let found=null;
+  scanRows(log,row=>{if(found===null&&row?.workflow==='cm-ai'&&row.event==='decision'&&row.phase==='batch_start'&&row.run_id===batchId)found=row;});
+  return found;
 }
 
 // {dir, ref}: the directory segment and the ref segment. They differ only for a

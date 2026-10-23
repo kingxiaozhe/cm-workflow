@@ -5,6 +5,7 @@ import {need,shape,digest,json} from '../cm-ai/effect-contract.mjs';
 import {correctionCheckStore} from './correction-check.mjs';
 import {inspectPrdDispositionPlan} from './disposition-plan.mjs';
 import {matchesPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
+import {prdTaskScopeOptions} from './task-scope-record.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
 export function inspectPrdFailedCorrection({specs,receipt}){
@@ -33,7 +34,7 @@ export function inspectPrdFailedCorrection({specs,receipt}){
   need(digest(artifacts)===digest(receipt.artifacts),'prd_failed_check_binding');
   // The recorded report must be exactly what one known rule version produces.
   const mechanical=draft.mechanicalSelfCheck;
-  need(matchesPrdDraftMechanics(draft,mechanical),'prd_failed_check_binding');
+  need(matchesPrdDraftMechanics(draft,mechanical,prdTaskScopeOptions(specs,feature)),'prd_failed_check_binding');
   const stored=correctionCheckStore({specs,feature,packageDigest:review.packageDigest,inputDigest:digest(proof.input)}).inspect();
   need(stored.status==='recorded','prd_failed_check_evidence_required');
   need(digest(stored.result)===proof.resultDigest,'prd_failed_check_result_changed');

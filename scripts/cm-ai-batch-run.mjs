@@ -22,7 +22,7 @@ import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durab
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readControlPolicy,controlTarget,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
 import {BATCH_SEGMENT_FIELD,batchSegment,batchSegments,batchStarted,batchMemberWorktree,batchMemberBranch} from '../runtime/js/cm-ai/batch-location.mjs';
-import {declaredTaskScope,sameScope} from '../runtime/js/task-scope.mjs';
+import {declaredTaskScope,assertDeclaredScope} from '../runtime/js/task-scope.mjs';
 import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
@@ -130,9 +130,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       try{
         assertCreatableScope(definition.scope);
         // tasks.md is the authority for a task's files once it declares them.
-        const declared=declaredTaskScope(config.specsDir,task.feature,task.taskId);
-        if(declared&&!sameScope(declared.scope,definition.scope))throw Object.assign(new Error('task_scope_mismatch'),{code:'task_scope_mismatch',
-          reason:`tasks.md 写的范围是 ${declared.scope.join(', ')}，批次配置写的是 ${definition.scope.join(', ')}`});
+        assertDeclaredScope(definition);
       }catch(error){error.reason=`${key(task)}: ${error.reason}`;throw error;}
     plans.set(key(task),definition);
   }

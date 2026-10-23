@@ -7,6 +7,7 @@ import {TextDecoder} from 'node:util';
 import {inspectPrdFindings} from './review-findings.mjs';
 import {inspectPrdDispositionPlan} from './disposition-plan.mjs';
 import {checkPrdDraftMechanics} from './self-check.mjs';
+import {prdTaskScopeOptions} from './task-scope-record.mjs';
 import {inspectPrdDesignDraft} from './draft.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {writeReviewEvidence} from '../cm-ai/review-evidence-file.mjs';
@@ -18,7 +19,7 @@ function readCorrectionFile(specs,file){
   const bytes=readCmInitSource(specs,file);
   need(bytes!==null&&(fs.lstatSync(path.join(specs,file)).mode&0o777)===0o600,'prd_correction_file_invalid');return bytes;
 }
-function inspectProposal(review,proposal){
+function inspectProposal(specs,review,proposal){
   shape(proposal,['decisions','documents']);need(Array.isArray(proposal.documents),'prd_correction_documents_invalid');
   const after=proposal.documents.map(doc=>{
     shape(doc,['path','content']);need(typeof doc.content==='string'&&doc.content.trim(),'prd_correction_content_invalid');
@@ -33,7 +34,8 @@ function inspectProposal(review,proposal){
     inspectPrdDesignDraft({status:'design',summary:'Original design correction',features:[{name,documents}]},
       {nextIndex:Number(feature.split('.')[0])});
   }else{
-    const mechanics=checkPrdDraftMechanics({draftDigest:digest(after),features:[{directory:feature,name,documents}]});
+    const mechanics=checkPrdDraftMechanics({draftDigest:digest(after),features:[{directory:feature,name,documents}]},
+      prdTaskScopeOptions(specs,feature));
     need(mechanics.status==='mechanical_subset_passed','prd_correction_mechanics_failed');
   }
   return {after,plan};
@@ -60,7 +62,7 @@ export function createPrdCorrectionOwner({correct}){
     need(!attempts.has(key),'prd_correction_already_attempted');attempts.add(key);
     const proposal=json(await correct(json({review,documents:before,
       instructions:'Resolve only these original findings. Return {decisions:[{id,status:applied|escalated,evidence:[reason],changedPaths:[path]}],documents:[{path,content}]} with the complete unchanged path inventory. Escalate disagreement or unprovable changes; do not invent human approval. design may change design.md only. Do not write files, change task status, add/remove files, call another reviewer/provider or retry. Corrected split specs will go through the original self-check.'}),signal),256*1024);
-    need(!signal.aborted,'cancelled');const {after,plan}=inspectProposal(review,proposal);
+    need(!signal.aborted,'cancelled');const {after,plan}=inspectProposal(specs,review,proposal);
     const current=()=>{
       const latest=inspectPrdFindings({specs,stage,feature});
       need(latest.packageDigest===review.packageDigest&&latest.gate.outcome==='resume_disposition'
@@ -127,7 +129,7 @@ function loadCorrection({specs,stage,feature}){
       &&Buffer.from(item.content).toString('utf8')===item.content&&sha(Buffer.from(item.content))===item.sha256,
       'prd_correction_archive_original_mismatch');seen.add(item.path);
   }
-  const {after,plan}=inspectProposal(review,value.proposal),states=[];
+  const {after,plan}=inspectProposal(specs,review,value.proposal),states=[];
   // V6 (O04): reconcile each reviewed file against the archive: the corrected
   // bytes continue, the original bytes are still to be written, anything else
   // is a conflict for a person (listed with all three digests, never overwritten).
