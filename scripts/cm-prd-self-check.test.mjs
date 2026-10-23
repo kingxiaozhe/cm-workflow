@@ -108,5 +108,9 @@ test('only a fresh draft round and a change proposal use rule 2; re-checks keep 
   assert.deepEqual(checkPrdDraftMechanics(odd),checkPrdDraftMechanics(odd,{rules:1}),'the default is rule 1');
   for(const file of ['review-disposition.mjs','review-correction.mjs','summary.mjs','failed-correction.mjs','self-check-revision.mjs'])
     assert.doesNotMatch(read(file),/PRD_SELF_CHECK_RULES|rules:\s*2/,file);
-  assert.doesNotMatch(fs.readFileSync(new URL('./cm-prd-drive.mjs',import.meta.url),'utf8'),/PRD_SELF_CHECK_RULES|rules:\s*2/);
+  // The driver's disposition re-check stays on rule 1; its change preflight follows the operation.
+  const drive=fs.readFileSync(new URL('./cm-prd-drive.mjs',import.meta.url),'utf8');
+  assert.match(drive,/draft\.mechanicalSelfCheck=checkPrdDraftMechanics\(draft\);/);
+  assert.equal([...drive.matchAll(/PRD_SELF_CHECK_RULES/g)].length,2,'import plus the change preflight rule');
+  assert.match(drive,/const rules=ctx\.operation==='resume'\?ctx\.state\.active\?\.selfCheckRules\?\?1:PRD_SELF_CHECK_RULES;/);
 });

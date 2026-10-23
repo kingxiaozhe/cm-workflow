@@ -34,7 +34,7 @@ import {inspectCmPrdAdmission,inspectCmPrdSources} from './cm-prd-entry.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {inspectPrdDraft,inspectPrdDesignDraft,nextPrdFeatureIndex,prdFeatureInventory} from '../runtime/js/cm-prd/draft.mjs';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal} from '../runtime/js/cm-prd/change.mjs';
-import {checkPrdDraftMechanics} from '../runtime/js/cm-prd/self-check.mjs';
+import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
 import {inspectPrdDispositionPlan} from '../runtime/js/cm-prd/disposition-plan.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
@@ -200,7 +200,7 @@ function load(){
   const answers=preflightAnswers([...new Set(asks.filter(k=>FILES[k]))],kind=>{
     const file=path.join(answersRoot??base,FILES[kind]);const value=readJson(file,kind);
     if(value===undefined)stop(2,`步骤 ${operation} 会反问 ${kind}，但答案文件不存在: ${file}`);
-    validate(kind,value,{stage,change,sources,config,specs,state,request,admission,hostContext:plan.hostContext});return value;
+    validate(kind,value,{stage,change,sources,config,specs,state,request,operation,admission,hostContext:plan.hostContext});return value;
   });
   if(asks.includes('prd_self_check')){
     if(!Array.isArray(plan.contextChecks)||plan.contextChecks.length===0)
@@ -246,7 +246,10 @@ function validate(kind,value,ctx){
     else if(ctx.change){
       exact(value,['status','summary','features','removed'],'generate.json');
       if(ctx.stage==='change_tasks'||ctx.stage==='change_check_failed'){
-        try{inspectPrdChangeProposal(inspectPrdChangeSnapshot(ctx.specs),value,ctx.state.checkpoint.change.selected,ctx.config);}
+        // Same rule the host applies: a resumed operation keeps the rule it began
+        // under (none recorded = rule 1); a new operation uses the current one.
+        const rules=ctx.operation==='resume'?ctx.state.active?.selfCheckRules??1:PRD_SELF_CHECK_RULES;
+        try{inspectPrdChangeProposal(inspectPrdChangeSnapshot(ctx.specs),value,ctx.state.checkpoint.change.selected,ctx.config,{rules});}
         catch(e){fail('generate.json 不符合变更草稿或 scope',e.code??e.message);}
       }else{
         check(value.status==='documents'&&nonempty(value.summary)&&Array.isArray(value.features)&&Array.isArray(value.removed),'generate.json');

@@ -192,3 +192,35 @@ test('resume with a static result for pending self-check evidence points to aban
   const missing=f.drive('resume',{session:runId,request:{resolution:null}});
   assert.equal(missing.status,2);assert.match(missing.stderr,/abandon:true 放弃后重发原操作/);
 });
+
+// A change_tasks operation begun before self-check rules were recorded is
+// re-answered (discard) under rule 1, exactly as the host will judge it; one
+// begun under rule 2 is refused by the same preflight.
+for(const recorded of [null,2])test(`change_tasks re-answer preflight follows the operation rule: ${recorded??'legacy'}`,t=>{
+  const f=fixture(t);fs.mkdirSync(path.join(f.project,'1.guide'));
+  const docs=Object.fromEntries(draft.features[0].documents.map(doc=>[doc.path,doc.content]));
+  for(const [name,content] of Object.entries(docs))fs.writeFileSync(path.join(f.project,'1.guide',name),content);
+  f.plan.change='1.guide';f.write('analyze.json',{status:'analyzed',summary:'Change need',openQuestions:[]});
+  assert.equal(f.drive('start').status,0);
+  f.plan.session=fs.readdirSync(path.join(f.project,'.reviews/prd-sessions'))[0];
+  const parts=paths=>({status:'documents',summary:'Unchanged parts',removed:[],
+    features:[{directory:'1.guide',documents:paths.map(p=>({path:p,content:docs[p]}))}]});
+  f.plan.request={text:'Requirements'};f.write('generate.json',parts(['requirements.md']));assert.equal(f.drive('advance').status,0);
+  f.plan.request={text:'Design'};f.write('generate.json',parts(['requirements.md','design.md']));
+  const designed=f.drive('advance');assert.equal(designed.status,0,designed.stderr);assert.equal(designed.json.result.stage,'change_tasks');
+  // The state a crashed change_tasks operation leaves: its refused answer is recorded.
+  const store=f.store(f.plan.session),state=JSON.parse(fs.readFileSync(store,'utf8'));
+  state.active={request:{requestId:'drive',operation:'advance',text:'Tasks'},before:state.checkpoint,
+    calls:[{kind:'prd_generate',callId:'call-1',requestDigest:'0'.repeat(64),payload:{},result:{status:'blocked',reason:'refused'}}],
+    ...(recorded===null?{}:{selfCheckRules:recorded})};
+  fs.writeFileSync(store,JSON.stringify(state),{mode:0o600});
+  // Rule 1 skips the new T-002/a line; rule 2 rejects it.
+  f.write('generate.json',{status:'draft',summary:'Tasks',removed:[],features:[{directory:'1.guide',testCasesReason:'no_observable_behavior',
+    documents:[...['requirements.md','design.md'].map(p=>({path:p,content:docs[p]})),
+      {path:'tasks.md',content:`${docs['tasks.md']}\n- [ ] T-002/a: Hidden task\n\n| v2 | Synthetic change |`}]}]});
+  const before=fs.readFileSync(store);
+  const run=f.drive('resume',{request:{resolution:{callId:'call-1',requestDigest:'0'.repeat(64),discard:true,evidence:'Re-answer the refused draft'}}});
+  if(recorded===null){assert.equal(run.status,0,run.stderr);assert.equal(run.json.result.stage,'change_check');}
+  else{assert.equal(run.status,2,run.stderr);assert.match(run.stderr,/不符合变更草稿.*prd_change_mechanics_failed/s);
+    assert.deepEqual(fs.readFileSync(store),before);}
+});
