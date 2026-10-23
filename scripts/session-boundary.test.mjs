@@ -156,3 +156,15 @@ test('printing: nothing without a handoff, the text with one, a warning for a li
   fs.rmSync(handoffPath(root));fs.writeFileSync(handoffPath(root),'x'.repeat(65537));
   assert.match(print(),/handoff_too_large/);
 });
+
+test('reading refuses a linked .reviews directory and a hard-linked handoff, without printing the other file',t=>{
+  const root=specs(t),outside=fs.mkdtempSync(path.join(os.tmpdir(),'cm-handoff-outside-'));t.after(()=>fs.rmSync(outside,{recursive:true,force:true}));
+  fs.writeFileSync(path.join(outside,'session-handoff.md'),'outside-secret');
+  fs.symlinkSync(outside,path.join(root,'.reviews'));
+  const out=[];printHandoff(root,text=>out.push(text));
+  assert.match(out.join(''),/上次交接摘要读不了（handoff_dir_invalid）/);assert.doesNotMatch(out.join(''),/outside-secret/);
+  assert.throws(()=>writeHandoff(root,{workflow:'cm-ai',runId:'r',done:[],todo:[],next:'x'}),{code:'handoff_dir_invalid'});
+  fs.rmSync(path.join(root,'.reviews'));fs.mkdirSync(path.join(root,'.reviews'));
+  fs.linkSync(path.join(outside,'session-handoff.md'),handoffPath(root));
+  assert.throws(()=>readHandoff(root),{code:'handoff_invalid'});
+});

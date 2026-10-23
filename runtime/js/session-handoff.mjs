@@ -30,14 +30,31 @@ export function writeHandoff(recordsRoot,fields,{now=()=>new Date()}={}){
   return target;
 }
 
-// 没有摘要返回 null；是链接、不是普通文件或超长时抛错，由调用方打警告。
+// 没有摘要返回 null；.reviews 是链接、摘要不是普通文件、有多个硬链接或超长时抛错，由调用方打警告。
+// 用 O_NOFOLLOW 打开后对同一描述符做检查和有界读取，检查与读取之间换不了文件；
+// 打开前后核对 .reviews 是同一个目录，换不了父目录。
 export function readHandoff(recordsRoot){
-  const target=handoffPath(recordsRoot);
-  let info;
-  try{info=fs.lstatSync(target);}catch(error){if(error.code==='ENOENT')return null;throw error;}
-  if(!info.isFile())throw Object.assign(Error(`${target} 不是普通文件`),{code:'handoff_invalid'});
-  if(info.size>READ_LIMIT)throw Object.assign(Error(`${target} 超过 ${READ_LIMIT} 字节`),{code:'handoff_too_large'});
-  return {path:target,text:fs.readFileSync(target,'utf8')};
+  const dir=path.join(recordsRoot,'.reviews'),target=handoffPath(recordsRoot);
+  const invalid=(code,message)=>Object.assign(Error(message),{code});
+  const directory=()=>{const info=fs.lstatSync(dir,{bigint:true});
+    if(info.isSymbolicLink()||!info.isDirectory())throw invalid('handoff_dir_invalid',`${dir} 不是普通目录`);return info;};
+  let before;
+  try{before=directory();}catch(error){if(error.code==='ENOENT')return null;throw error;}
+  let fd;
+  try{fd=fs.openSync(target,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|(fs.constants.O_NONBLOCK??0));}
+  catch(error){if(error.code==='ENOENT')return null;
+    if(error.code==='ELOOP')throw invalid('handoff_invalid',`${target} 是链接`);throw error;}
+  try{
+    const after=directory();
+    if(after.dev!==before.dev||after.ino!==before.ino)throw invalid('handoff_dir_invalid',`${dir} 在读取时被替换`);
+    const info=fs.fstatSync(fd);
+    if(!info.isFile()||info.nlink!==1)throw invalid('handoff_invalid',`${target} 不是普通文件`);
+    if(info.size>READ_LIMIT)throw invalid('handoff_too_large',`${target} 超过 ${READ_LIMIT} 字节`);
+    const buffer=Buffer.alloc(READ_LIMIT+1);let length=0,read;
+    while(length<buffer.length&&(read=fs.readSync(fd,buffer,length,buffer.length-length,null))>0)length+=read;
+    if(length>READ_LIMIT)throw invalid('handoff_too_large',`${target} 超过 ${READ_LIMIT} 字节`);
+    return {path:target,text:buffer.subarray(0,length).toString('utf8')};
+  }finally{fs.closeSync(fd);}
 }
 
 // 新运行开工前打印上次的摘要；读不了只警告，不挡开工。
