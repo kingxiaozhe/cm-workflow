@@ -2,7 +2,7 @@
 import {createHash} from 'node:crypto';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {need,json,digest,shape} from '../cm-ai/effect-contract.mjs';
-import {checkPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
+import {matchesPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const names=['requirements.md','design.md'];
 export const prdSelfCheckRevisionPath=feature=>{
@@ -35,7 +35,7 @@ export function inspectPrdSelfCheckRevision(value){
   need(failedDraft.draftDigest===digest({summary:failedDraft.summary,features:failedDraft.features})
     &&failedSelfCheck.draftDigest===failedDraft.draftDigest&&digest(failedSelfCheck)===revision.failedSelfCheckDigest
     &&digest(failedDraft.mechanicalSelfCheck)===digest(failedSelfCheck.mechanical)
-    &&digest(checkPrdDraftMechanics(failedDraft))===digest(failedSelfCheck.mechanical),'prd_self_check_revision_binding_changed');
+    &&matchesPrdDraftMechanics(failedDraft,failedSelfCheck.mechanical),'prd_self_check_revision_binding_changed');
   let failed=failedSelfCheck.mechanical.status==='failed';
   if(failedSelfCheck.contextCheck!==null){
     const {draftDigest,features}=failedSelfCheck.contextCheck;
