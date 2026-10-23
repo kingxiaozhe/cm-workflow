@@ -39,7 +39,7 @@ test('parallel groups reject transitive prerequisites, not just direct edges',()
   fs.writeFileSync(path.join(code,'req.md'),'# r\n');
   // T-009 <- T-005 <- T-003 <- T-001; T-007 is unrelated.
   fs.writeFileSync(path.join(specs,feature,'tasks.md'),
-    '- [ ] T-001: a\n- [ ] T-003: b\n- [ ] T-005: c\n- [ ] T-007: d\n- [ ] T-009: final\n\n'+
+    '- [ ] T-001: a\n  - 范围: `a.js`\n- [ ] T-003: b\n  - 范围: `b.js`\n- [ ] T-005: c\n  - 范围: `c.js`\n- [ ] T-007: d\n  - 范围: `e.js`\n- [ ] T-009: final\n  - 范围: `d.js`\n\n'+
     '- T-003 依赖 T-001\n- T-005 依赖 T-003\n- T-009 依赖 T-005\n');
   const task=(taskId,scope)=>({feature,taskId,scope:[scope],requirements:['req.md']});
   const tasks=[task('T-001','a.js'),task('T-003','b.js'),task('T-005','c.js'),task('T-007','e.js'),task('T-009','d.js')];

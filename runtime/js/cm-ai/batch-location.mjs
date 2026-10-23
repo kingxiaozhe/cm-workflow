@@ -21,6 +21,7 @@ export function batchSegment(batchId){
   return `${batchId.slice(0,8).replace(/\./g,'-')}-${createHash('sha256').update(batchId).digest('hex').slice(0,12)}`;
 }
 
+export function batchStarted({specsDir,batchId}){return startRow(specsDir,batchId)!==null;}
 function startRow(specsDir,batchId){
   const log=path.join(specsDir,'运行日志.jsonl');
   if(!fs.existsSync(log))return null;

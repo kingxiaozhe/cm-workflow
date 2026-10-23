@@ -41,7 +41,7 @@ test('exact PRD change saves and recovers with large original assets, rejects la
   const asset=path.join(feature,'font.otf'),bytes=Buffer.alloc(1024*1024+13,0x92);fs.writeFileSync(asset,bytes);
   const before=inspectPrdChangeSnapshot(dir),selected=['1.example'];
   const documents=original.map(d=>({...d,content:d.content.replace('| 2026-10-19 | v1 | original |',
-    '| 2026-10-19 | v1 | original |\n| 2026-10-22 | v2 | change |')+(d.path==='tasks.md'?'\n- [ ] T-004a: [NEW] Review task\n':'\nClarification\n')}));
+    '| 2026-10-19 | v1 | original |\n| 2026-10-22 | v2 | change |')+(d.path==='tasks.md'?'\n- [ ] T-004a: [NEW] Review task\n  - 范围: `README.md`\n':'\nClarification\n')}));
   const proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Clarify review ownership',removed:[],
     features:[{directory:'1.example',documents,testCasesReason:'no_observable_behavior'}]},selected,loadConfig({projectRoot:dir}));
   assert.equal(applyPrdChange({specs:dir,before,proposal,selected}).status,'awaiting_review');
@@ -63,7 +63,7 @@ test('recovering a saved PRD change refuses an asset directory swapped for a lin
   const bytes=Buffer.from('logo bytes\n');fs.writeFileSync(path.join(feature,'assets','logo.png'),bytes);
   const before=inspectPrdChangeSnapshot(dir),selected=['1.example'];
   const documents=original.map(d=>({...d,content:d.content.replace('| 2026-10-19 | v1 | original |',
-    '| 2026-10-19 | v1 | original |\n| 2026-10-22 | v2 | change |')+(d.path==='tasks.md'?'\n- [ ] T-002: [NEW] Next task\n':'\nClarification\n')}));
+    '| 2026-10-19 | v1 | original |\n| 2026-10-22 | v2 | change |')+(d.path==='tasks.md'?'\n- [ ] T-002: [NEW] Next task\n  - 范围: `README.md`\n':'\nClarification\n')}));
   const proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Clarify logo use',removed:[],
     features:[{directory:'1.example',documents,testCasesReason:'no_observable_behavior'}]},selected,loadConfig({projectRoot:dir}));
   assert.equal(applyPrdChange({specs:dir,before,proposal,selected}).status,'awaiting_review');

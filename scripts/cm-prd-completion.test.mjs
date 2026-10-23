@@ -21,9 +21,9 @@ const version='\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08
 const docs=()=>[
   {path:'requirements.md',content:'## 需求版本'+version+'\n## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Read guide\n'},
   {path:'design.md',content:'## 设计版本'+version+'\n## 方案摘要\nExisting guide\n'},
-  {path:'tasks.md',content:'## 任务版本'+version+'\n- [x] T-001: Existing guide\n- [ ] T-002: Draft appendix\n'}];
+  {path:'tasks.md',content:'## 任务版本'+version+'\n- [x] T-001: Existing guide\n  - 范围: `README.md`\n- [ ] T-002: Draft appendix\n  - 范围: `README.md`\n'}];
 const revised=()=>docs().map(doc=>({path:doc.path,content:doc.content.replace('| 2026-09-08 | v1 | original |','| 2026-09-08 | v1 | original |\n| 2026-09-08 | v2 | change |')
-  .replace('Existing guide\n','Existing guide\n')+(doc.path==='tasks.md'?'\n- [ ] T-003: [NEW] Add example\n':'\nUpdated example\n')}));
+  .replace('Existing guide\n','Existing guide\n')+(doc.path==='tasks.md'?'\n- [ ] T-003: [NEW] Add example\n  - 范围: `README.md`\n':'\nUpdated example\n')}));
 function fixture(t){const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-complete-')));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));fs.mkdirSync(path.join(dir,'docs'));fs.mkdirSync(path.join(dir,'mirror'));
   fs.writeFileSync(path.join(dir,'docs/input.md'),'Synthetic guide');fs.mkdirSync(path.join(dir,'1.guide'));
@@ -103,7 +103,7 @@ test('approved change retains revision history for the next real cm-prd change',
   assert.doesNotThrow(()=>assertPrdReviewsSettled(dir,['1.guide'],{requireSplit:true}));
   const nextDocs=revised().map(doc=>({path:doc.path,content:doc.content.replace('| 2026-09-08 | v2 | change |',
       '| 2026-09-08 | v2 | change |\n| 2026-09-08 | v3 | another change |')+
-      (doc.path==='tasks.md'?'\n- [ ] T-004: [NEW] More examples\n':'\nMore detail\n')}));
+      (doc.path==='tasks.md'?'\n- [ ] T-004: [NEW] More examples\n  - 范围: `README.md`\n':'\nMore detail\n')}));
   const nextBefore=inspectPrdChangeSnapshot(dir);
   const nextProposal=inspectPrdChangeProposal(nextBefore,{status:'draft',summary:'Another guide change',removed:[],features:[
     {directory:'1.guide',documents:nextDocs,testCasesReason:'no_observable_behavior'}]},selected,config);
@@ -150,7 +150,7 @@ test('change cannot invent completion or erase completed lines; user case change
   const dir=fixture(t),before=inspectPrdChangeSnapshot(dir),config=loadConfig({projectRoot:dir});
   const raw={status:'draft',summary:'Change',removed:[],features:[{directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'}]};
   for(const mode of ['erase','invent']){const bad=structuredClone(raw);const task=bad.features[0].documents.find(doc=>doc.path==='tasks.md');
-    task.content=mode==='erase'?task.content.replace('[x]','[ ]'):task.content.replace('- [ ] T-002: Draft appendix','- [x] T-002: Draft appendix [CHANGED]');
+    task.content=mode==='erase'?task.content.replace('[x]','[ ]'):task.content.replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [x] T-002: Draft appendix [CHANGED]');
     assert.throws(()=>inspectPrdChangeProposal(before,bad,['1.guide'],config),/prd_completed_task/);}
   const synthetic={...before,files:{...before.files,'1.guide/test-cases.json':JSON.stringify({cases:[{id:'TC-001',origin:'user',expected:'Original user intent'}]})}};
   const proposal=inspectPrdChangeProposal(synthetic,raw,['1.guide'],config);assert.equal(proposal.changedUserCases.length,1);
@@ -186,11 +186,11 @@ test('change guard reads the approved original with the legacy grammar',t=>{
 // last approval bound, carried through the awaiting_review status of the first.
 function sharedGrammarFixture(t){
   const dir=fixture(t),tasks=path.join(dir,'1.guide/tasks.md');
-  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix','- [ ] T-002：Draft appendix'),{mode:0o600});
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix'),{mode:0o600});
   fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2}),{mode:0o600});
   return dir;
 }
-const fullWidth=docs=>docs.map(doc=>doc.path==='tasks.md'?{...doc,content:doc.content.replace('- [ ] T-002: Draft appendix','- [ ] T-002：Draft appendix')}:doc);
+const fullWidth=docs=>docs.map(doc=>doc.path==='tasks.md'?{...doc,content:doc.content.replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix')}:doc);
 const status=dir=>JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'),'utf8'));
 test('a second change of the same feature before re-approval keeps the approved grammar',t=>{
   const dir=sharedGrammarFixture(t),config=loadConfig({projectRoot:dir}),selected=['1.guide'];
@@ -201,7 +201,7 @@ test('a second change of the same feature before re-approval keeps the approved 
   applyPrdChange({specs:dir,before,proposal,selected});
   assert.equal(status(dir).status,'awaiting_review');assert.equal(status(dir).taskGrammar,2);
   const second=first.map(doc=>({...doc,content:doc.content+'\n| 2026-09-08 | v3 | again |\n'
-    +(doc.path==='tasks.md'?'- [ ] T-004: [NEW] Another example\n':'Again\n')}));
+    +(doc.path==='tasks.md'?'- [ ] T-004: [NEW] Another example\n  - 范围: `README.md`\n':'Again\n')}));
   before=inspectPrdChangeSnapshot(dir);
   proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Second',removed:[],features:[{directory:'1.guide',
     documents:second,testCasesReason:'no_observable_behavior'}]},selected,config);
@@ -222,7 +222,7 @@ test('a second change of another feature before re-approval still carries the ap
 });
 test('an unapproved legacy status never switches the change guard to the shared grammar',t=>{
   const dir=fixture(t),config=loadConfig({projectRoot:dir}),tasks=path.join(dir,'1.guide/tasks.md');
-  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix','- [ ] T-002：Draft appendix'),{mode:0o600});
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix'),{mode:0o600});
   fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'awaiting_review'}),{mode:0o600});
   const before=inspectPrdChangeSnapshot(dir);
   // Under the old grammar the full-width line is prose, so rewriting it as a

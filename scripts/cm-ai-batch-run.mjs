@@ -21,7 +21,8 @@ import {releaseVerifiedQaResources} from '../runtime/js/cm-ai/qa-resource-releas
 import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readControlPolicy,controlTarget,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
-import {BATCH_SEGMENT_FIELD,batchSegment,batchSegments,batchMemberWorktree,batchMemberBranch} from '../runtime/js/cm-ai/batch-location.mjs';
+import {BATCH_SEGMENT_FIELD,batchSegment,batchSegments,batchStarted,batchMemberWorktree,batchMemberBranch} from '../runtime/js/cm-ai/batch-location.mjs';
+import {declaredTaskScope,sameScope} from '../runtime/js/task-scope.mjs';
 import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
@@ -126,7 +127,13 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     // A member that will be created is refused before the batch locks, logs or
     // prepares a worktree; an existing member keeps its own recovery path.
     if(!bootstrapKeys.includes(key(task))&&!fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json')))
-      try{assertCreatableScope(definition.scope);}catch(error){error.reason=`${key(task)}: ${error.reason}`;throw error;}
+      try{
+        assertCreatableScope(definition.scope);
+        // tasks.md is the authority for a task's files once it declares them.
+        const declared=declaredTaskScope(config.specsDir,task.feature,task.taskId);
+        if(declared&&!sameScope(declared.scope,definition.scope))throw Object.assign(new Error('task_scope_mismatch'),{code:'task_scope_mismatch',
+          reason:`tasks.md 写的范围是 ${declared.scope.join(', ')}，批次配置写的是 ${definition.scope.join(', ')}`});
+      }catch(error){error.reason=`${key(task)}: ${error.reason}`;throw error;}
     plans.set(key(task),definition);
   }
   // Tasks whose second-round answer is not written yet stop after a changes_requested review.
@@ -137,7 +144,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     &&Array.isArray(memberActions[name])&&memberActions[name].every(item=>plans.has(item))),'invalid_input');
   // One-shot per launch and member, like the single-task flags.
   const actionGrants=new Map(Object.keys(BATCH_MEMBER_ACTIONS).map(name=>[name,new Set(memberActions[name]??[])]));
-  const groups=validateGroups(config,plans),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
+  const groups=validateGroups(config,plans,{declared:!batchStarted({specsDir:config.specsDir,batchId:config.batchId})}),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
   const originalMembership=new Map(membership),originalPlans=new Map(plans);
   const first=plans.keys().next().value,planDigest=digest(config),log=path.join(config.specsDir,'运行日志.jsonl');
   const batchControlTarget=async(taskKey,state=progress())=>{
@@ -704,7 +711,10 @@ function taskDescription(config,definition){
     {allowDependencyPunctuation:true,grammar:approvedTaskGrammar(config.specsDir)});
   need(!parsed.error,'parallel_task_invalid');return parsed.tasks.find(task=>task.id===definition.identity.taskId)?.description??definition.identity.taskId;
 }
-function validateGroups(config,plans){
+// declared: a batch that has not started yet takes parallel members only from
+// tasks.md scope (written at split time) and never a device task. A batch that
+// started before that rule keeps resuming under the rules it began with.
+function validateGroups(config,plans,{declared=false}={}){
   const groups=config.parallel??[];need(Array.isArray(groups),'invalid_parallel_groups');const used=new Set();
   for(const group of groups){
     need(Array.isArray(group)&&group.length>=2&&group.length<=4,'invalid_parallel_group');
@@ -729,6 +739,10 @@ function validateGroups(config,plans){
     const paths=new Set();
     for(const key of group)for(const file of plans.get(key).scope){
       need(!paths.has(file),'parallel_scope_overlap');paths.add(file);
+    }
+    if(declared)for(const key of group){
+      const scope=declaredTaskScope(config.specsDir,plans.get(key).feature,plans.get(key).identity.taskId);
+      need(scope!==null,'parallel_scope_undeclared');need(!scope.device,'parallel_device_task');
     }
     for(const key of group)used.add(key);
   }
