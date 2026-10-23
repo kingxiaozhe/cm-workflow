@@ -180,10 +180,10 @@ test('a v2 policy without the verification field keeps the gate off',t=>{
 });
 
 // The requirement entry can push a handoff that fit before the Learning append
-// over the 256 KiB limit only after it. Reaching that window needs the run
-// definition, the check commands and the precheck answer all near their own
-// bounds at once, so this pins the structure instead: every append goes through
-// the guarded helper, which maps a size failure to the retryable package block.
+// over the 256 KiB limit only after it. The behaviour test below reaches that
+// window through a direct live host; this one pins the structure: every append
+// goes through the guarded helper, which maps a size failure to the retryable
+// package block.
 test('every Learning append to the host handoff takes the retryable package boundary',()=>{
   const source=fs.readFileSync(new URL('../runtime/js/cm-ai/task-runner.mjs',import.meta.url),'utf8');
   const calls=[...source.matchAll(/writeCmAiTaskLearningHandoff\(/g)].length;
@@ -196,6 +196,84 @@ test('every Learning append to the host handoff takes the retryable package boun
   assert.equal([...source.matchAll(/if\(!appendLearningHandoff\(v,/g)].length,2);
   // emptyDelivery is where limit_exceeded becomes develop_package_too_large.
   assert.match(source,/if\(error\?\.code==='limit_exceeded'&&metadata\.bootstrap\?\.mode!=='instructions'\)\{\n\s*halt\('blocked','develop_package_too_large'/);
+});
+// The behaviour behind that structure, through a direct live host (no driver):
+// its check answer is not bounded by the driver's 32 KiB command list, so the
+// check commands and the precheck answer together bring the published handoff
+// right under 256 KiB, and only the Learning append pushes it over.
+const QUOTE_ITEMS=16,QUOTE_TEXT=1990;
+function paddedLiveSession(f,{mode,commandPad,items}){
+  const wrapper=path.join(f.root,`padded-${mode}-${Math.random().toString(36).slice(2)}.mjs`);
+  fs.writeFileSync(wrapper,`import fs from 'node:fs';
+import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
+import {createHostCheck} from ${JSON.stringify(HOST_CHECK)};
+const cwd=${JSON.stringify(f.codeProject)};
+driveHost({host:${JSON.stringify(HOST)},args:['serve','--config',${JSON.stringify(f.config)},'--mode',${JSON.stringify(mode)},
+  '--host-context','drive-host-a','--allow-development','--verification-precheck','--review-config',${JSON.stringify(path.join(f.root,'review.json'))}],
+  cwd,operation:'start',answers:{},request:{version:1,identity:${JSON.stringify(f.identity)}},
+  answerFor:async row=>{
+    if(row.kind==='develop'){for(const file of ${JSON.stringify(f.scope)}){fs.mkdirSync(cwd+'/'+file.replace(/[^/]*$/,''),{recursive:true});
+      fs.writeFileSync(cwd+'/'+file,'export const value = 42;\\n');}
+      return {status:'succeeded',value:${JSON.stringify(developValue)}};}
+    if(row.kind==='check'){
+      const checks=await createHostCheck({cwd,commands:[{id:'noop',command:[process.execPath,'-e','0']}]})
+        ({identity:row.payload.identity},{signal:new AbortController().signal});
+      return checks.map(check=>({...check,command:[...check.command,'"'.repeat(${commandPad})]}));
+    }
+    if(row.kind==='verification_precheck')return {items:${JSON.stringify(items)}};
+    return null;
+  }});
+`);
+  return spawnSync(process.execPath,[wrapper],{encoding:'utf8',timeout:60000,env:f.env});
+}
+const quoteItems=count=>Array.from({length:count},(_,index)=>({requirement:`记录实现前基线 ${index}`,satisfied:true,
+  evidence:'"'.repeat(QUOTE_TEXT)}));
+const LEARNING_PREFIX='cm-learning-';
+// Long changed paths add the last few KiB the two bounded answers cannot reach.
+const paddedScope=['target.mjs',...Array.from({length:40},(_,index)=>`pad/${'p'.repeat(200)}-${index}.mjs`)];
+function paddedFixture(t){
+  const f=fixture(t,{scope:paddedScope});f.scope=paddedScope;
+  fs.writeFileSync(path.join(f.specsDir,'1.work/tasks.md'),'- [ ] T-001: fixture\n  - 验证: 记录实现前基线；value is 42\n');
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  return f;
+}
+test('a Learning append that overflows the published handoff blocks retryably and the same attempt resumes',t=>{
+  const handoffFile=f=>path.join(f.specsDir,'.reviews','work-T-001-a1-handoff.json');
+  // Probe: the same delivery with a small command pad. Every extra quote in the
+  // command costs exactly four handoff bytes (escaped once by the command's own
+  // JSON, once by the handoff), so the size at any pad follows from this one.
+  const probe=paddedFixture(t),probePad=1000;
+  const fit=paddedLiveSession(probe,{mode:'create',commandPad:probePad,items:quoteItems(QUOTE_ITEMS)});
+  assert.equal(fit.status,0,fit.stderr);assert.equal(result(fit).state,'awaiting_review',fit.stdout);
+  const fitted=fs.readFileSync(handoffFile(probe));
+  const learning=JSON.parse(fitted).evidence.filter(item=>item.includes(LEARNING_PREFIX));
+  assert(learning.length>0,'the probe handoff carries Learning evidence');
+  const limit=256*1024,pad=probePad+Math.ceil((limit+1-fitted.length)/4);
+  assert(pad>probePad,`probe ${fitted.length} bytes leaves room to pad`)
+
+  const f=paddedFixture(t);
+  const blocked=paddedLiveSession(f,{mode:'create',commandPad:pad,items:quoteItems(QUOTE_ITEMS)});
+  assert.equal(blocked.status,0,blocked.stderr);
+  assert.equal(result(blocked).state,'blocked',blocked.stdout);
+  assert.equal(result(blocked).code,'develop_package_too_large');
+  assert.equal(result(blocked).pendingAction,'resume');
+  // The initial handoff was published within the limit; only the append failed.
+  const published=fs.readFileSync(handoffFile(f));
+  assert(published.length<=limit,`published ${published.length}`);
+  const evidence=JSON.parse(published).evidence;
+  assert.equal(evidence.filter(item=>item.includes(LEARNING_PREFIX)).length,0,'Learning was not appended');
+  assert.equal(requirementEntries({evidence}).length,1);
+  const kinds=()=>records(f).filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.kind);
+  assert(!kinds().includes('review'),'no review was dispatched');
+
+  // Smaller evidence on resume: the same attempt redoes its delivery and reaches review.
+  const resumed=paddedLiveSession(f,{mode:'resume',commandPad:probePad,items:quoteItems(QUOTE_ITEMS)});
+  assert.equal(resumed.status,0,resumed.stderr);
+  assert.equal(result(resumed).state,'awaiting_review',resumed.stdout);
+  assert.equal(result(resumed).identity.attempt,1);
+  assert.deepEqual(records(f).filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.id),
+    ['develop-1','develop-1-retry-1']);
+  assert(JSON.parse(fs.readFileSync(handoffFile(f))).evidence.some(item=>item.includes(LEARNING_PREFIX)));
 });
 test('complete under a precheck policy needs no verification runner',async t=>{
   const f=precheckFixture(t);v2Policy(f,{verification:'precheck'});
