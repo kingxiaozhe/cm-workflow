@@ -4,7 +4,7 @@ import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {need,shape,digest,json} from '../cm-ai/effect-contract.mjs';
 import {correctionCheckStore} from './correction-check.mjs';
 import {inspectPrdDispositionPlan} from './disposition-plan.mjs';
-import {checkPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
+import {matchesPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
 export function inspectPrdFailedCorrection({specs,receipt}){
@@ -31,8 +31,9 @@ export function inspectPrdFailedCorrection({specs,receipt}){
     &&draft.features[0].directory===feature&&draft.features[0].name===receipt.feature,'prd_failed_check_binding');
   const artifacts=draft.features[0].documents.map(doc=>({path:`${feature}/${doc.path}`,sha256:sha(Buffer.from(doc.content))}));
   need(digest(artifacts)===digest(receipt.artifacts),'prd_failed_check_binding');
-  const mechanical=checkPrdDraftMechanics(draft);
-  need(digest(mechanical)===digest(draft.mechanicalSelfCheck),'prd_failed_check_binding');
+  // The recorded report must be exactly what one known rule version produces.
+  const mechanical=draft.mechanicalSelfCheck;
+  need(matchesPrdDraftMechanics(draft,mechanical),'prd_failed_check_binding');
   const stored=correctionCheckStore({specs,feature,packageDigest:review.packageDigest,inputDigest:digest(proof.input)}).inspect();
   need(stored.status==='recorded','prd_failed_check_evidence_required');
   need(digest(stored.result)===proof.resultDigest,'prd_failed_check_result_changed');

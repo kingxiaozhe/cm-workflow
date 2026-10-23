@@ -14,7 +14,7 @@ import {prdTreeFileDigest} from './tree-digest.mjs';
 import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdDraft} from './draft.mjs';
-import {checkPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
+import {checkPrdDraftMechanics,inspectPrdContextCheck,PRD_SELF_CHECK_RULES} from './self-check.mjs';
 import {replaceSessionFile} from './session.mjs';
 const names=['requirements.md','design.md','tasks.md','test-cases.json'];
 const valid=name=>/^[1-9]\d*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
@@ -74,7 +74,7 @@ function approvedGrammar(before){
 function sourceLines(source){return specLines(source).map(line=>line.body);}
 function userCases(files){return Object.entries(files).filter(([file])=>file.endsWith('/test-cases.json'))
   .flatMap(([file,content])=>JSON.parse(content).cases.filter(c=>c.origin==='user').map(c=>({feature:file.split('/')[0],value:c})));}
-export function inspectPrdChangeProposal(before,raw,selected,config){
+export function inspectPrdChangeProposal(before,raw,selected,config,{rules=PRD_SELF_CHECK_RULES}={}){
   const grammar=approvedGrammar(before);
   shape(raw,['status','summary','features','removed']);need(raw.status==='draft'&&text(raw.summary)&&Array.isArray(raw.features)
     &&Array.isArray(raw.removed)&&new Set(raw.removed).size===raw.removed.length,'prd_change_proposal_invalid');
@@ -126,7 +126,8 @@ export function inspectPrdChangeProposal(before,raw,selected,config){
   const changedUserCases=userCases(before.files).filter(item=>selected.includes(item.feature)
     &&!userCases(files).some(next=>next.feature===item.feature&&digest(next.value)===digest(item.value)));
   const draft={summary:raw.summary,features,draftDigest:digest({summary:raw.summary,features})};
-  const mechanics=checkPrdDraftMechanics(draft,{change:true});
+  const mechanics=checkPrdDraftMechanics(draft,{change:true,rules,
+    previous:Object.fromEntries(selected.map(directory=>[directory,before.files[`${directory}/tasks.md`]]))});
   need(mechanics.status==='mechanical_subset_passed','prd_change_mechanics_failed');
   return json({...draft,mechanicalSelfCheck:mechanics,removed:raw.removed,files,changedUserCases,
     proposalDigest:digest({before,raw,selected}),counts:{added:resultDirs.filter(dir=>!before.directories.includes(dir)).length,
@@ -134,7 +135,8 @@ export function inspectPrdChangeProposal(before,raw,selected,config){
       preservedCompletedTasks:selected.reduce((n,dir)=>n+completedLines(before.files[`${dir}/tasks.md`],grammar).length,0)}},4*1024*1024);
 }
 
-export function createPrdChange({admission,runtime,call,restored=null,selected=[admission.feature],reason=null}){
+export function createPrdChange({admission,runtime,call,restored=null,selected=[admission.feature],reason=null,
+  selfCheckRules=()=>PRD_SELF_CHECK_RULES}){
   assertPrdBatchActive(admission.specs,selected);
   const config=loadConfig({projectRoot:admission.project}),configDigest=digest(config);
   const readUserCases=()=>admission.cases===null?null:{path:admission.cases,
@@ -184,7 +186,7 @@ export function createPrdChange({admission,runtime,call,restored=null,selected=[
       if(response.status==='question'){need(text(response.question),'prd_change_reply_invalid');state.messages.push({role:'user',text:answer},{role:'assistant',result:response});state.question=response.question;return this.status();}
       if(response.status==='blocked'){state.stage='blocked';state.analysis=response;return this.status();}
       if(phase==='change_tasks'){
-        const proposal=inspectPrdChangeProposal(state.before,response,state.selected,config);
+        const proposal=inspectPrdChangeProposal(state.before,response,state.selected,config,{rules:selfCheckRules()});
         need(state.userCases===null||userCases(proposal.files).length>0,'prd_user_cases_missing');
         this.checkParts(proposal.features,proposal.removed,state.parts,true);
         state.proposal=proposal;state.round++;state.stage='change_check';

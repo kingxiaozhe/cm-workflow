@@ -96,7 +96,11 @@ export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
         originalStateSha256:createHash('sha256').update(bytes).digest('hex'),repair:call.responseRepair});
       save();return json(call.responseRepair);
     },
-    begin(request,before){need(state.active===null,'prd_operation_recovery_required');state.active={request,before,calls:[]};cursor=0;save();},
+    // An operation records the self-check rule it started under; one begun before
+    // rules were recorded replays under rule 1, so a reply registered then is judged as then.
+    begin(request,before,{selfCheckRules=null}={}){need(state.active===null,'prd_operation_recovery_required');
+      state.active={request,before,calls:[],...(selfCheckRules===null?{}:{selfCheckRules})};cursor=0;save();},
+    selfCheckRules(){return state.active?.selfCheckRules??1;},
     replay(){need(state.active!==null,'prd_nothing_to_resume');cursor=0;return json(state.active,12*1024*1024);},
     commit(checkpoint){state.checkpoint=checkpoint;state.active=null;save();},
     checkpoint(checkpoint){state.checkpoint=checkpoint;save();},
