@@ -55,14 +55,17 @@ export function inspectPrdChangeSnapshot(specs){
   }
   const status=read(specs,'.cm-specs-status');
   // Version 2 also binds the task-scope records (task-scope-record.mjs). A
-  // snapshot taken before it has no version and is compared without them.
+  // snapshot taken before it has no version and is compared in its own shape.
   return json({directories,files,trees,reviews,status,snapshotVersion:2,scopeRecords:prdTaskScopeRecords(specs,directories)},4*1024*1024);
 }
-// The current specs still match a session's snapshot, in that snapshot's version.
+// The current specs still match a session's snapshot, in that snapshot's shape:
+// version 2 as a whole; an unversioned one that carries scopeRecords (bound only
+// when a record existed) still binds them; one without either binds neither.
 function snapshotUnchanged(specs,before){
   const now=inspectPrdChangeSnapshot(specs);
   if(Object.hasOwn(before,'snapshotVersion'))return digest(now)===digest(before);
   const {snapshotVersion,scopeRecords,...legacy}=now;
+  if(Object.hasOwn(before,'scopeRecords'))return digest({...legacy,scopeRecords})===digest(before);
   return digest(legacy)===digest(before);
 }
 // Same declaration grammar as admission and N5 mark-done (spec-task-line.mjs):

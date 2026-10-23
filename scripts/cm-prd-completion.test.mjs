@@ -167,8 +167,24 @@ test('change snapshot binds scope records only from version 2; earlier snapshots
   const fresh=inspectPrdChangeProposal(current,raw,selected,config);
   fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n',{mode:0o600});
   assert.throws(()=>applyPrdChange({specs:dir,before:current,proposal:fresh,selected}),/prd_change_inputs_changed/);
+  // Unversioned with scopeRecords (bound only when a record existed): unchanged resumes, drift is refused.
+  const unversioned={...legacy,scopeRecords:{'1.guide':JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n'}};
+  const middle=inspectPrdChangeProposal(unversioned,raw,selected,config);
+  fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:[]})+'\n',{mode:0o600});
+  assert.throws(()=>applyPrdChange({specs:dir,before:unversioned,proposal:middle,selected}),/prd_change_inputs_changed/);
+  fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n',{mode:0o600});
+  // Neither field: the oldest shape binds no record.
   const old=inspectPrdChangeProposal(legacy,raw,selected,config);
   assert.equal(applyPrdChange({specs:dir,before:legacy,proposal:old,selected}).status,'awaiting_review');
+});
+test('an unversioned snapshot with scopeRecords resumes while its records are unchanged',t=>{
+  const dir=fixture(t),config=loadConfig({projectRoot:dir}),selected=['1.guide'];
+  fs.mkdirSync(path.join(dir,'.reviews'));
+  fs.writeFileSync(path.join(dir,'.reviews/prd-guide-task-scope.json'),JSON.stringify({version:1,enforced:true,exempt:[]})+'\n',{mode:0o600});
+  const {snapshotVersion,...unversioned}=inspectPrdChangeSnapshot(dir);
+  const raw={status:'draft',summary:'Change',removed:[],features:[{directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'}]};
+  const proposal=inspectPrdChangeProposal(unversioned,raw,selected,config);
+  assert.equal(applyPrdChange({specs:dir,before:unversioned,proposal,selected}).status,'awaiting_review');
 });
 test('change cannot invent completion or erase completed lines; user case changes are surfaced',t=>{
   const dir=fixture(t),before=inspectPrdChangeSnapshot(dir),config=loadConfig({projectRoot:dir});
