@@ -108,6 +108,42 @@ test('JS log persistence writes project authority, mirrors globally, and dedupli
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 
+// The project log is shared by every run in a specs root. A final record without
+// LF (a truncated write, a hand-made recovery) must not be glued to the next one.
+function seededLog(tail){
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-log-tail-')));
+  const project=path.join(root,'project'),specs=path.join(root,'specs'),globalHome=path.join(root,'logs');
+  fs.mkdirSync(project);fs.mkdirSync(specs);
+  const log=path.join(specs,'运行日志.jsonl');
+  const earlier=JSON.stringify({schema_version:1,at:'2026-07-29T09:00:00-07:00',workflow:'cm-prd',event:'run_done',run_id:'prd-earlier',status:'done'});
+  fs.writeFileSync(log,earlier+'\n'+tail);
+  const write=()=>spawnSync(process.env.CM_PYTHON_BIN||'python3',[pythonWriter,'--workflow','cm-ai','--event','run_start','--phase','start',
+    '--runtime','codex','--project-root',project,'--specs-dir',specs,'--run-id','20260729T160000Z-active02','--detail','开始执行',
+    '--at','2026-07-29T09:10:00-07:00','--data-json','{"feature":"1.login"}'],{encoding:'utf8',env:{...process.env,CM_WORKFLOW_LOG_HOME:globalHome}});
+  return {root,log,earlier,write};
+}
+test('appending after a complete final record without LF closes that record first',()=>{
+  const tail=JSON.stringify({schema_version:1,at:'2026-07-29T09:05:00-07:00',workflow:'cm-ai',event:'progress',run_id:'other-run',detail:'no newline'});
+  const f=seededLog(tail);
+  try{
+    const result=f.write();assert.equal(result.status,0,result.stderr);
+    const text=fs.readFileSync(f.log,'utf8');
+    assert(text.endsWith('\n'));
+    const rows=text.trimEnd().split('\n').map(line=>JSON.parse(line));
+    assert.equal(rows.length,3);
+    assert.equal(JSON.stringify(rows[0]),f.earlier);assert.equal(JSON.stringify(rows[1]),tail);
+    assert.equal(rows[2].run_id,'20260729T160000Z-active02');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('a half-written final record is refused and the log keeps its exact bytes',()=>{
+  const f=seededLog('{"schema_version":1,"workflow":"cm-ai","run_id":"half');
+  try{
+    const before=fs.readFileSync(f.log);
+    const result=f.write();
+    assert.notEqual(result.status,0);assert.match(result.stderr,/log_tail_incomplete/);
+    assert.deepEqual(fs.readFileSync(f.log),before);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
 test('QA environment-failure supersession needs the matching completed FAIL, both case lists and a single-line reason',()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-log-env-failure-')));
   try{

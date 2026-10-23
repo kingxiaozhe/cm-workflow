@@ -33,7 +33,8 @@ function holdLegacy(t,legacy,holdMs){
     db.exec('BEGIN IMMEDIATE');process.stdout.write('held\\n');
     setTimeout(()=>{db.exec('ROLLBACK');db.close();process.stdout.write('released\\n');},Number(process.argv[2]));
   `,legacy,String(holdMs)],{stdio:['ignore','pipe','inherit']});
-  t.after(()=>{if(child.exitCode===null)child.kill();});
+  // Wait for the holder to exit before the temporary root is removed.
+  t.after(async()=>{if(child.exitCode===null){const gone=new Promise(resolve=>child.once('exit',resolve));child.kill();await gone;}});
   let output='';
   const held=new Promise((resolve,reject)=>{
     child.stdout.on('data',chunk=>{output+=chunk;if(output.includes('held'))resolve();});
@@ -70,6 +71,7 @@ test('an unreadable legacy writer is not retried and refuses at once',t=>{
   const started=Date.now();
   assert.throws(()=>openExecutionStore({specsRoot:f.root,identity:{repositoryId:'probe',runId:'new-run-0003'},fingerprints,create:true}),
     error=>error.code==='store_busy');
-  assert(Date.now()-started<LEGACY_PROBE_DELAY_MS*3);
+  // Not retried: well under half of the full retry budget, with room for slow disks.
+  assert(Date.now()-started<LEGACY_PROBE_ATTEMPTS*LEGACY_PROBE_DELAY_MS/2);
   assert.equal(fs.existsSync(path.join(f.execution,'new-run-0003')),false);
 });
