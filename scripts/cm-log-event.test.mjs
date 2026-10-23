@@ -171,6 +171,24 @@ test('a final record past the 4 MiB tail bound is refused even when an earlier L
     assert.equal(fs.statSync(f.log).size,before);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
+test('a closed final record that starts with a UTF-8 BOM is refused as the host reader would',()=>{
+  const f=seededLog(Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),Buffer.from('{"schema_version":1,"run_id":"bom"}')]));
+  try{
+    const before=fs.readFileSync(f.log);
+    const result=f.write();
+    assert.notEqual(result.status,0);assert.match(result.stderr,/log_tail_incomplete/);
+    assert.deepEqual(fs.readFileSync(f.log),before);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+test('a U+FEFF inside a record string is ordinary text and the record is closed first',()=>{
+  const tail=JSON.stringify({schema_version:1,run_id:'feff',detail:'a\ufeffb'});
+  const f=seededLog(tail);
+  try{
+    const result=f.write();assert.equal(result.status,0,result.stderr);
+    const lines=fs.readFileSync(f.log,'utf8').trimEnd().split('\n');
+    assert.equal(lines.length,3);assert.equal(JSON.parse(lines[1]).detail,'a\ufeffb');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
 test('QA environment-failure supersession needs the matching completed FAIL, both case lists and a single-line reason',()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-log-env-failure-')));
   try{

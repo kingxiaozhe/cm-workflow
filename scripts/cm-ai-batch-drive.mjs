@@ -16,6 +16,7 @@
 // develop_redo/abandon_effect/abandon_review/bootstrap_review_recover -> none:
 //   batch-run.mjs memberAction forwards one to the stopped member's cm-ai entry (Q24).
 import {readBatchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
+import {batchSegments,batchMemberWorktree} from '../runtime/js/cm-ai/batch-location.mjs';
 import {readBatchExternalModels,batchModelsFile} from '../runtime/js/cm-ai/external-group-models.mjs';
 import {loadConfig,resolveProtectedRuntimes} from './cm-workflow-config.mjs';
 import fs from 'node:fs';
@@ -83,7 +84,8 @@ function actualCwd(bundle,key,generation=1){
   const group=bundle.batch.parallel?.find(group=>group.includes(key));
   if(!group)return bundle.batch.codeProject;
   const id=key.slice(key.lastIndexOf('/')+1);
-  return path.resolve(bundle.batch.codeProject,'..','.cm-worktrees',bundle.batch.batchId.slice(0,8),id);
+  return batchMemberWorktree({codeProject:bundle.batch.codeProject,taskId:id,
+    segments:batchSegments({specsDir:bundle.batch.specsDir,batchId:bundle.batch.batchId})});
 }
 function checkCommandShape(commands,key,plan,executionPolicy){
   if(!Array.isArray(commands)||!commands.length||commands.length>32)stop(2,`任务 ${key} 会反问 check，但 PLAN.checks.${key} 缺少真实命令列表`);

@@ -496,7 +496,8 @@ function unterminatedTail(descriptor){
 // start after, exactly as the plain O_APPEND writer always did.
 const blankTail=tail=>tail.every(byte=>byte===0x20||byte===0x09||byte===0x0d);
 // Readers decode logs as strict UTF-8; a tail they would reject is not complete.
-const strictUtf8=new TextDecoder('utf-8',{fatal:true});
+// ignoreBOM keeps a leading BOM in the text, so JSON.parse rejects it as the host reader does.
+const strictUtf8=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
 function appendLine(file,value,{privateFile=false}={}){
   fs.mkdirSync(path.dirname(file),{recursive:true});
   const descriptor=fs.openSync(file,fs.constants.O_APPEND|fs.constants.O_CREAT|fs.constants.O_RDWR,privateFile?0o600:0o644);

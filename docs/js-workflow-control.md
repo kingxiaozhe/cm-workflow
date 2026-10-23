@@ -1371,8 +1371,11 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 
 **执行方式。** 每个成员分到一个 Git 工作树与独立分支，由调度器创建：
 
-- 工作树：`{codeProject}/../.cm-worktrees/{batchId 前 8 个字符}/{taskId}`
-- 分支：`cm/{feature 去掉数字前缀}/{taskId}`，从 `HEAD` 创建
+- 工作树：`{codeProject}/../.cm-worktrees/{批次段}/{taskId}`
+- 分支：`cm/{批次段}/{feature 去掉数字前缀}/{taskId}`，从 `HEAD` 创建
+- 批次段：新批次取 batchId 前 8 个字符（点换成 `-`）加完整 batchId 的 SHA-256 前 12 位，写进 `batch_start` 的
+  `worktree_segment`，前缀相同的两个批次不再共用工作树和分支；此前已开始、`batch_start` 没有该字段的批次
+  恢复时仍用前 8 个字符。驾驶员、批次宿主与调度器共用 `runtime/js/cm-ai/batch-location.mjs`。
 
 启动前对整组跑一次 `check-parallel-write`。成员各自完成开发、检查与审查后在自己
 分支提交，再由调度器按任务顺序逐个 `git merge --no-ff` 合回主 checkout——**合并是串行的**，
