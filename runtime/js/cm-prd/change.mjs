@@ -54,9 +54,16 @@ export function inspectPrdChangeSnapshot(specs){
     if(bytes!==null)reviews[file]=sha(bytes);
   }
   const status=read(specs,'.cm-specs-status');
-  // Bound like the failure outcome above: present only where a save recorded one.
-  const scopeRecords=prdTaskScopeRecords(specs,directories);
-  return json({directories,files,trees,reviews,status,...(Object.keys(scopeRecords).length?{scopeRecords}:{})},4*1024*1024);
+  // Version 2 also binds the task-scope records (task-scope-record.mjs). A
+  // snapshot taken before it has no version and is compared without them.
+  return json({directories,files,trees,reviews,status,snapshotVersion:2,scopeRecords:prdTaskScopeRecords(specs,directories)},4*1024*1024);
+}
+// The current specs still match a session's snapshot, in that snapshot's version.
+function snapshotUnchanged(specs,before){
+  const now=inspectPrdChangeSnapshot(specs);
+  if(Object.hasOwn(before,'snapshotVersion'))return digest(now)===digest(before);
+  const {snapshotVersion,scopeRecords,...legacy}=now;
+  return digest(legacy)===digest(before);
 }
 // Same declaration grammar as admission and N5 mark-done (spec-task-line.mjs):
 // the approved original is read with the grammar its approval bound, the
@@ -148,7 +155,7 @@ export function createPrdChange({admission,runtime,call,restored=null,selected=[
   let state=restored?structuredClone(restored):{stage:'ready',before:inspectPrdChangeSnapshot(admission.specs),selected,
     messages:[],analysis:null,parts:null,proposal:null,contextCheck:null,round:0,confirmation:null,reason,configDigest,userCases:readUserCases()};
   need(state.configDigest===configDigest,'prd_change_config_changed');
-  const current=()=>need(digest(inspectPrdChangeSnapshot(admission.specs))===digest(state.before)
+  const current=()=>need(snapshotUnchanged(admission.specs,state.before)
     &&digest(loadConfig({projectRoot:admission.project}))===configDigest&&digest(readUserCases())===digest(state.userCases),'prd_change_inputs_changed');
   const invoke=async(kind,payload,signal,role)=>{
     const route=resolveRole(config,role,runtime);need(route.route_state==='current-runtime','prd_change_adapter_unavailable');
@@ -251,7 +258,7 @@ export function applyPrdChange({specs,before,proposal,selected}){
   need(fs.realpathSync(reviews)===reviews,'prd_change_archive_invalid');
   const name=`prd-change-${proposal.proposalDigest}.json`,archive={version:1,before,proposal,selected};
   const existing=read(specs,`.reviews/${name}`);
-  if(existing===null){need(digest(inspectPrdChangeSnapshot(specs))===digest(before),'prd_change_inputs_changed');assertPrdReviewsSettled(specs,selected);}
+  if(existing===null){need(snapshotUnchanged(specs,before),'prd_change_inputs_changed');assertPrdReviewsSettled(specs,selected);}
   const archiveBytes=JSON.stringify(archive)+'\n';
   if(existing===null)replaceSessionFile(specs,`.reviews/${name}`,null,archiveBytes);
   else need(existing===archiveBytes,'prd_change_archive_changed');

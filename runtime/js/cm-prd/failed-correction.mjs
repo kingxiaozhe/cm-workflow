@@ -5,6 +5,7 @@ import {need,shape,digest,json} from '../cm-ai/effect-contract.mjs';
 import {correctionCheckStore} from './correction-check.mjs';
 import {inspectPrdDispositionPlan} from './disposition-plan.mjs';
 import {matchesPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
+import {prdTaskScopeOptions} from './task-scope-record.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
 export function inspectPrdFailedCorrection({specs,receipt}){
@@ -38,7 +39,11 @@ export function inspectPrdFailedCorrection({specs,receipt}){
   need(scopes===undefined||(scopes!==null&&typeof scopes==='object'&&Object.keys(scopes).every(key=>key===feature)
     &&Array.isArray(scopes[feature]?.exempt)&&scopes[feature].exempt.every(id=>typeof id==='string')
     &&Object.keys(scopes[feature]).length===1),'prd_failed_check_binding');
-  need(matchesPrdDraftMechanics(draft,mechanical,scopes===undefined?{}:{scopes}),'prd_failed_check_binding');
+  // Evidence recorded before the policy joined the check input has no taskScopes:
+  // it ran either without a scope record or under the record still on disk.
+  need(scopes!==undefined?matchesPrdDraftMechanics(draft,mechanical,{scopes})
+    :matchesPrdDraftMechanics(draft,mechanical)||matchesPrdDraftMechanics(draft,mechanical,prdTaskScopeOptions(specs,feature)),
+  'prd_failed_check_binding');
   const stored=correctionCheckStore({specs,feature,packageDigest:review.packageDigest,inputDigest:digest(proof.input)}).inspect();
   need(stored.status==='recorded','prd_failed_check_evidence_required');
   need(digest(stored.result)===proof.resultDigest,'prd_failed_check_result_changed');

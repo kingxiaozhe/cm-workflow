@@ -116,3 +116,13 @@ test('only a fresh draft round and a change proposal use rule 2; re-checks keep 
   assert.equal([...drive.matchAll(/PRD_SELF_CHECK_RULES/g)].length,2,'import plus the change preflight rule');
   assert.match(drive,/const rules=ctx\.operation==='resume'\?ctx\.state\.active\?\.selfCheckRules\?\?1:PRD_SELF_CHECK_RULES;/);
 });
+test('a rule-3 report recorded with the earlier missing-scope hint still matches',()=>{
+  const missing=draft('- [ ] T-001: Implement behavior');
+  const current=checkPrdDraftMechanics(missing,{rules:PRD_SELF_CHECK_RULES});
+  assert.equal(current.findings[0].code,'task_scope_missing');
+  const earlier={...current,findings:current.findings.map(item=>({...item,reason:{...item.reason,
+    expected:'每个任务下写一行缩进子项，例如 - 范围: `src/a.js`, `test/a.test.js`；列不出文件的任务写 - 范围: 串行'}}))};
+  assert.ok(matchesPrdDraftMechanics(missing,current));assert.ok(matchesPrdDraftMechanics(missing,earlier));
+  const forged={...current,findings:current.findings.map(item=>({...item,reason:{...item.reason,expected:'other'}}))};
+  assert.equal(matchesPrdDraftMechanics(missing,forged),false);
+});

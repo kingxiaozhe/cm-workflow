@@ -261,6 +261,25 @@ for(const recorded of [true,false])test(`summary holds a recorded feature to its
   if(recorded)assert.deepEqual(summary.mechanicalSelfCheck.findings.map(item=>item.code),['task_scope_missing']);
 });
 
+// Evidence recorded before the scope policy joined the check input (no taskScopes)
+// still verifies, without options or under the record on disk.
+test('F2 legacy failed-check evidence without taskScopes still verifies',async t=>{
+  const {digest}=await import('../runtime/js/cm-ai/effect-contract.mjs');
+  const {inspectPrdFailedCorrection}=await import('../runtime/js/cm-prd/failed-correction.mjs');
+  const f=await failedCorrectionFixture(t,{scopeDropped:true});await f.owner(f.args,new AbortController().signal);
+  const reviews=path.join(f.args.specs,'.reviews'),rewrite=(name,value)=>fs.writeFileSync(path.join(reviews,name),JSON.stringify(value)+'\n',{mode:0o600});
+  const receipt=JSON.parse(fs.readFileSync(f.receipt)),input=receipt.correction_check.input;
+  assert.ok(input.draft.taskScopes);delete input.draft.taskScopes;
+  const start={...JSON.parse(fs.readFileSync(path.join(reviews,'prd-guide-split-correction-check-start.json'))),inputDigest:digest(input)};
+  const result={...JSON.parse(fs.readFileSync(path.join(reviews,'prd-guide-split-correction-check-result.json'))),startDigest:digest(start)};
+  rewrite('prd-guide-split-correction-check-start.json',start);rewrite('prd-guide-split-correction-check-result.json',result);
+  receipt.correction_check.resultDigest=digest(result);
+  assert.equal(inspectPrdFailedCorrection({specs:f.args.specs,receipt}).status,'failed');
+  // The legacy path still binds the exact report: a changed finding is refused.
+  const forged=structuredClone(receipt);forged.correction_check.input.draft.mechanicalSelfCheck.findings[0].reason.tasks=['T-009'];
+  assert.throws(()=>inspectPrdFailedCorrection({specs:f.args.specs,receipt:forged}),/prd_failed_check_binding|prd_check_inputs_changed/);
+});
+
 for(const mode of [false,true,'scope'])test(`F2 failed correction reaches human and revision (mechanical ${mode})`,async t=>{
   const mechanical=mode!==false;
   const f=await failedCorrectionFixture(t,{mechanical:mode===true,scopeDropped:mode==='scope'}),signal=new AbortController().signal;

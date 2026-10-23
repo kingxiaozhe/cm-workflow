@@ -7,7 +7,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {once} from 'node:events';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
-import {createHash} from 'node:crypto';
+import {semanticDigest} from './cm-spec-manifest.mjs';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange,assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {recordPrdReview} from './cm-prd-review-gate.mjs';
@@ -138,7 +138,7 @@ test('controlled inventory revision retains old review and archives removed feat
     artifact:docs().map(doc=>path.join(dir,'1.guide',doc.path))});
   // The approval covers 1.guide's tasks, so they may stay without scope in the change.
   fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2,features:['1.guide','2.obsolete'],
-    specFiles:[{path:'1.guide/tasks.md',sha256:createHash('sha256').update(fs.readFileSync(path.join(dir,'1.guide/tasks.md'))).digest('hex')}]}),{mode:0o600});
+    specFiles:[{path:'1.guide/tasks.md',sha256:semanticDigest(path.join(dir,'1.guide/tasks.md'))}]}),{mode:0o600});
   const originalReview=fs.readFileSync(evidence),before=inspectPrdChangeSnapshot(dir),raw={status:'draft',summary:'Explicit inventory revision',removed:['2.obsolete'],features:[
     {directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'},
     {directory:'3.examples',documents:docs().map(doc=>({...doc,content:doc.content.replace('[x]','[ ]')})),testCasesReason:'no_observable_behavior'}]};
@@ -154,6 +154,21 @@ test('controlled inventory revision retains old review and archives removed feat
   fs.writeFileSync(path.join(dir,'1.guide/design.md'),'User third version');
   assert.throws(()=>applyPrdChange({specs:dir,before,proposal,selected}),/conflict/);
   assert.equal(fs.readFileSync(path.join(dir,'1.guide/design.md'),'utf8'),'User third version');
+});
+// A session's snapshot keeps its own version: one taken before scope records were
+// bound still matches; a version-2 snapshot notices a changed record.
+test('change snapshot binds scope records only from version 2; earlier snapshots still resume',t=>{
+  const dir=fixture(t),config=loadConfig({projectRoot:dir}),selected=['1.guide'];
+  fs.mkdirSync(path.join(dir,'.reviews'));const record=path.join(dir,'.reviews/prd-guide-task-scope.json');
+  fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:[]})+'\n',{mode:0o600});
+  const current=inspectPrdChangeSnapshot(dir);assert.equal(current.snapshotVersion,2);assert.ok(current.scopeRecords['1.guide']);
+  const {snapshotVersion,scopeRecords,...legacy}=current;
+  const raw={status:'draft',summary:'Change',removed:[],features:[{directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'}]};
+  const fresh=inspectPrdChangeProposal(current,raw,selected,config);
+  fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n',{mode:0o600});
+  assert.throws(()=>applyPrdChange({specs:dir,before:current,proposal:fresh,selected}),/prd_change_inputs_changed/);
+  const old=inspectPrdChangeProposal(legacy,raw,selected,config);
+  assert.equal(applyPrdChange({specs:dir,before:legacy,proposal:old,selected}).status,'awaiting_review');
 });
 test('change cannot invent completion or erase completed lines; user case changes are surfaced',t=>{
   const dir=fixture(t),before=inspectPrdChangeSnapshot(dir),config=loadConfig({projectRoot:dir});
@@ -199,7 +214,7 @@ function sharedGrammarFixture(t){
   fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix'),{mode:0o600});
   // A real approval lists the approved bytes; its tasks may stay without scope in a change.
   fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2,features:['1.guide'],
-    specFiles:[{path:'1.guide/tasks.md',sha256:createHash('sha256').update(fs.readFileSync(tasks)).digest('hex')}]}),{mode:0o600});
+    specFiles:[{path:'1.guide/tasks.md',sha256:semanticDigest(tasks)}]}),{mode:0o600});
   return dir;
 }
 const fullWidth=docs=>docs.map(doc=>doc.path==='tasks.md'?{...doc,content:doc.content.replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix')}:doc);

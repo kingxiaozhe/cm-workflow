@@ -15,6 +15,7 @@ import {need} from '../cm-ai/effect-contract.mjs';
 import {parseFeatureTaskText} from '../cm-ai/cm-ai-admission.mjs';
 import {checkPrdDraftMechanics} from './self-check.mjs';
 import {readPrdSessionFile,replaceSessionFile} from './session.mjs';
+import {normalizeRuntimeMarkBytes} from '../../../scripts/cm-spec-manifest.mjs';
 
 const SCOPE_CODES=new Set(['task_scope_invalid','task_scope_missing']);
 const recordPath=directory=>`.reviews/prd-${directory.replace(/^\d+\./,'')}-task-scope.json`;
@@ -44,10 +45,12 @@ export function prdTaskScopeRecords(specs,directories){
 export function approvedScopeExemptions(before,directories,grammar){
   let status=null;try{status=JSON.parse(before.status??'null');}catch{status=null;}
   const approved=status?.status==='approved'&&Array.isArray(status.specFiles)?status.specFiles:[];
-  const sha=text=>createHash('sha256').update(text).digest('hex');
+  // Approval rows are semantic digests (runtime [x] marks reset), current or legacy rule.
+  const digests=text=>[{},{legacy:true}].map(options=>
+    createHash('sha256').update(normalizeRuntimeMarkBytes(Buffer.from(text),'tasks.md',options)).digest('hex'));
   return Object.fromEntries(directories.map(directory=>{
     const file=`${directory}/tasks.md`,text=before.files[file];
-    if(typeof text==='string'&&approved.some(item=>item?.path===file&&item.sha256===sha(text)))
+    if(typeof text==='string'&&approved.some(item=>item?.path===file&&digests(text).includes(item.sha256)))
       return [directory,{exempt:taskIds(text,grammar)}];
     const record=before.scopeRecords?.[directory];
     return [directory,{exempt:record===undefined?[]:parseRecord(record).exempt}];

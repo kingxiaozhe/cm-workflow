@@ -10,6 +10,7 @@ import {parseTaskScopes,declaredTaskScope,sameScope,validScopePath} from '../run
 import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
 import {recordPrdTaskScopes,prdTaskScopeOptions,approvedScopeExemptions} from '../runtime/js/cm-prd/task-scope-record.mjs';
 import {createHash} from 'node:crypto';
+import {normalizeRuntimeMarkBytes} from './cm-spec-manifest.mjs';
 import {spawnSync} from 'node:child_process';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {BATCH_SEGMENT_FIELD,batchSegment} from '../runtime/js/cm-ai/batch-location.mjs';
@@ -125,6 +126,10 @@ test('change exemptions come from the approved bytes and grammar, or the save re
   const record=JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n';
   assert.deepEqual(approvedScopeExemptions(before('- [ ] T-001: edited\n',null,{'1.sample':record}),['1.sample'],2),{'1.sample':{exempt:['T-001']}});
   assert.deepEqual(approvedScopeExemptions(before('x',null),['2.added'],2),{'2.added':{exempt:[]}});
+  // Approval rows are semantic digests: a task completed after approval still matches.
+  const done='- [x] T-001: 原任务\n',semantic=sha(normalizeRuntimeMarkBytes(Buffer.from(done),'tasks.md'));
+  const approval=JSON.stringify({status:'approved',specFiles:[{path:'1.sample/tasks.md',sha256:semantic}]});
+  assert.deepEqual(approvedScopeExemptions(before(done,approval),['1.sample'],2),{'1.sample':{exempt:['T-001']}});
 });
 
 test('scope paths that differ only in case are refused, as the execution side would',()=>{

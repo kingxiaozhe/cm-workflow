@@ -86,8 +86,17 @@ function strictFindings(source,previous,parsed){
   }
   return [...codes];
 }
+// The missing-scope hint text a recorded rule-3 report may carry (persisted
+// reports are matched by digest, so a reworded hint keeps its old form here).
+const SCOPE_HINT='每个任务下写一行缩进子项，例如 - 范围: `src/a.js`, `test/a.test.js`（只有 N.bootstrap 脚手架里列不出文件的任务才写 - 范围: 串行）';
+const SCOPE_HINTS=[SCOPE_HINT,'每个任务下写一行缩进子项，例如 - 范围: `src/a.js`, `test/a.test.js`；列不出文件的任务写 - 范围: 串行'];
 export function matchesPrdDraftMechanics(draft,recorded,options={}){
-  return [PRD_SELF_CHECK_RULES,2,1].some(rules=>digest(checkPrdDraftMechanics(draft,{...options,rules}))===digest(recorded));
+  const want=digest(recorded);
+  return [PRD_SELF_CHECK_RULES,2,1].some(rules=>{
+    const report=checkPrdDraftMechanics(draft,{...options,rules});
+    return SCOPE_HINTS.some(hint=>digest({...report,findings:report.findings.map(item=>
+      item.code==='task_scope_missing'?{...item,reason:{...item.reason,expected:hint}}:item)})===want);
+  });
 }
 // `scopes` ({directory: {exempt:[taskId...]}}) applies only rule 3's per-task scope
 // check, to those features, on top of `rules`. Re-checks of a saved draft
@@ -133,7 +142,7 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
       const missing=parsed.tasks.filter(task=>!task.dropped&&!scopes.tasks.has(task.id)&&!scopes.serial.has(task.id)&&!scopes.errors.some(item=>item.taskId===task.id)
         &&!known.has(task.id)).map(task=>task.id);
       if(missing.length)add('task_scope_missing',{field:`${feature.directory}/tasks.md`,tasks:missing,
-        expected:'每个任务下写一行缩进子项，例如 - 范围: `src/a.js`, `test/a.test.js`（只有 N.bootstrap 脚手架里列不出文件的任务才写 - 范围: 串行）'});
+        expected:SCOPE_HINT});
     }
     if(files.has('test-cases.json')){
       let cases;try{cases=JSON.parse(files.get('test-cases.json'));}catch{add('test_cases_invalid');}
