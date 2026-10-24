@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {readLaunchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
+import {assertDeclaredScope} from '../runtime/js/task-scope.mjs';
 import {readLaunchExternalModels} from '../runtime/js/cm-ai/external-model-launch.mjs';
 import {loadExternalModels,externalPair} from '../runtime/js/cm-ai/external-models.mjs';
 // Current-conversation host. Legacy keeps explicit attempt choices; v2 uses
@@ -339,7 +340,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       definition={...definition,featureSelection:{version:1,feature:definition.feature}};
     }
     // Before any frozen model/policy configuration, execution or journal write.
-    if(argv[4]==='create'&&bootstrap===null)assertCreatableScope(definition.scope);
+    if(argv[4]==='create'&&bootstrap===null){assertCreatableScope(definition.scope);assertDeclaredScope(definition);}
     const boundRuntime=extra.get('--runtime')??'codex';
     const routes=extra.has('--protected-config')?resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),boundRuntime):{reviewerRuntime:boundRuntime};
     const executionPolicy=readLaunchExecutionPolicy({definition,mode:argv[4],enabled:extra.has('--execution-optimizations')});

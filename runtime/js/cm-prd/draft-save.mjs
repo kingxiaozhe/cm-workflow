@@ -10,6 +10,7 @@ import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {need,json,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdFindings} from './review-findings.mjs';
 import {replacePrdDocument} from './review-correction.mjs';
+import {recordPrdTaskScopes} from './task-scope-record.mjs';
 
 export function savePrdDraft(input){
   assertPrdBatchActive(input.specs);
@@ -59,6 +60,7 @@ export function savePrdPromotedDraft({specs,writeEnabled,getDraft,getOriginal}){
       need(readCmInitSource(specs,`.reviews/prd-${feature.name}-split${suffix}`)===null,'prd_promoted_save_split_started');
   };
   current();
+  recordPrdTaskScopes(specs,draft.features);
   const reviews=path.join(specs,'.reviews');
   const name=`prd-task-revision-${original.draftDigest}.md`;
   const bytes=Buffer.from('# Saved draft task revision\n\nNot approval. Original and successor bytes for explicit recovery.\n```json\n'
@@ -111,6 +113,8 @@ function saveDocuments({specs,writeEnabled,getDraft},designOnly){
     need(before===null||before.equals(file.bytes),'prd_spec_save_conflict');
     if(before!==null)permissions(path.join(specs,file.relative));
   }
+  // Before any spec byte: later re-checks of these files read this record.
+  if(!designOnly)recordPrdTaskScopes(specs,draft.features);
   const saved=[];
   try{
     for(const file of files){
@@ -204,6 +208,7 @@ function saveSelfCheckRevision({specs,writeEnabled,getDraft,getSelfCheckRevision
   for(const feature of changed)writeImmutableWorkflowFile({reviewsDir:reviews,
     name:path.basename(prdSelfCheckRevisionPath(feature.directory)),bytes:Buffer.from(JSON.stringify(revision)+'\n'),
     validate:file=>need((fs.lstatSync(file).mode&0o777)===0o600,'prd_spec_save_permissions')});
+  current();recordPrdTaskScopes(specs,draft.features);
   try{
     for(const file of files){
       current();if(readCmInitSource(specs,file.relative).equals(Buffer.from(file.content)))continue;

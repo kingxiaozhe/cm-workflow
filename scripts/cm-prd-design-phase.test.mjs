@@ -82,7 +82,7 @@ test('saved promotion archives both versions, resumes identically and preserves 
   const make=task=>inspectPrdDraft({status:'draft',summary:'Fixture',features:[{...design().features[0],
     testCasesReason:'no_observable_behavior',documents:[...design().features[0].documents,{path:'tasks.md',content:task}]}]},
   {nextIndex:1,generateCases:true,userCasesProvided:false});
-  const original=make('- [ ] T-001: Original'),draft=make('- [ ] T-001: Revised');
+  const original=make('- [ ] T-001: Original\n  - 范围: `README.md`'),draft=make('- [ ] T-001: Revised\n  - 范围: `README.md`');
   savePrdDraft({specs:dir,writeEnabled:true,getDraft:()=>original});
   const input={specs:dir,writeEnabled:true,getDraft:()=>draft,getOriginal:()=>original};
   assert.throws(()=>savePrdPromotedDraft({...input,writeEnabled:false}));
@@ -152,14 +152,14 @@ for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','
             assert.ok(message.payload.riskDiscovery);result=design();
             if(promotes)result={status:'draft',summary:'Original full draft',features:[{...design().features[0],
               testCasesReason:'no_observable_behavior',documents:[...design().features[0].documents,
-                {path:'tasks.md',content:'- [ ] T-001: Original task before risk discovery'}]}]};
+                {path:'tasks.md',content:'- [ ] T-001: Original task before risk discovery\n  - 范围: `README.md`'}]}]};
           }
           else{
             assert.equal(message.payload.phase,'tasks_after_design');
             assert.equal(message.payload.acceptedDesign.features[0].directory,'1.guide');
             assert.ok(message.payload.acceptedDesign.features[0].documents[1].content.includes('Corrected architecture'));
             result={status:'draft',summary:'Tasks from disposed design',features:message.payload.acceptedDesign.features.map(feature=>({
-              name:feature.name,testCasesReason:'no_observable_behavior',documents:[...feature.documents,{path:'tasks.md',content:'- [ ] T-001: Update guide'}]}))};
+              name:feature.name,testCasesReason:'no_observable_behavior',documents:[...feature.documents,{path:'tasks.md',content:'- [ ] T-001: Update guide\n  - 范围: `README.md`'}]}))};
             if(mode==='self-check-revision'&&message.payload.selfCheckRevision){
               result.selfCheckRevisionReason='AC setup needs a concrete observable result';
               result.features[0].documents[0].content+='\nAC setup: run the documented command and verify output.';
@@ -298,7 +298,7 @@ for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','
     assert.equal(fs.existsSync(path.join(dir,'.cm-specs-status')),succeeds);
     if(succeeds){
       assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'),'utf8')).status,'awaiting_review');
-      assert.equal(fs.readFileSync(path.join(dir,'1.guide/tasks.md'),'utf8'),'- [ ] T-001: Update guide');
+      assert.equal(fs.readFileSync(path.join(dir,'1.guide/tasks.md'),'utf8'),'- [ ] T-001: Update guide\n  - 范围: `README.md`');
       if(mode==='saved-promote'){
         const archived=fs.readFileSync(path.join(dir,`.reviews/prd-task-revision-${originalDigest}.md`),'utf8');
         assert.ok(archived.includes('Original task before risk discovery'));assert.ok(archived.includes('Update guide'));
@@ -315,7 +315,7 @@ test('mixed-risk features keep one batch and dispatch design only for high risk'
       if(generation===1){const raw=design();raw.features.push({...design().features[0],name:'copy'});return raw;}
       assert.equal(payload.acceptedDesign.features.length,2);
       return {status:'draft',summary:'Mixed tasks',features:payload.acceptedDesign.features.map(feature=>({name:feature.name,
-        testCasesReason:'no_observable_behavior',documents:[...feature.documents,{path:'tasks.md',content:'- [ ] T-001: Update guide'}]}))};
+        testCasesReason:'no_observable_behavior',documents:[...feature.documents,{path:'tasks.md',content:'- [ ] T-001: Update guide\n  - 范围: `README.md`'}]}))};
     }});
   await host.advance('Analyze');await host.plan('Design',{designOnly:true});
   const value={draftDigest:host.status().designDraft.draftDigest,risks:[
@@ -350,7 +350,7 @@ async function splitDesignFixture(t,{split=true,featureName='guide',document='de
     analyze:async()=>({status:'analyzed',summary:'Fixture',sourcePaths:['docs/input.md'],openQuestions:[]}),
     generate:async payload=>payload.phase==='design'?{...design(),features:[{...design().features[0],name:featureName},...(batch?[{...design().features[0],name:'second'}]:[])]}:
       {status:'draft',summary:'Accepted tasks',features:payload.acceptedDesign.features.map(f=>({name:f.name,
-        testCasesReason:'no_observable_behavior',documents:[...f.documents,{path:'tasks.md',content:'- [ ] T-001: Update guide'}]}))}};
+        testCasesReason:'no_observable_behavior',documents:[...f.documents,{path:'tasks.md',content:'- [ ] T-001: Update guide\n  - 范围: `README.md`'}]}))}};
   let host=createCmPrdAnalysis(options);const feature=`1.${featureName}`;
   const review=async(stage,target=feature)=>{
     const prepare=()=>host.prepareReview(stage,target);

@@ -12,6 +12,7 @@ import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {inspectPrdFindings} from './review-findings.mjs';
 import {checkPrdDraftMechanics} from './self-check.mjs';
+import {prdTaskScopeOptions} from './task-scope-record.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdFailedCorrection} from './failed-correction.mjs';
 import {prdDesignRiskSignals} from './design-risk.mjs';
@@ -113,8 +114,9 @@ export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
     features.push({directory,reviews,cases,...(revision?{selfCheckRevision:{reason:revision.reason,round:revision.round,
       changedFiles:revision.features.find(f=>f.directory===directory).changedFiles}}:{}),...(currentFeatures===undefined?{}:{historical})});
   }
-  const mechanical=checkPrdDraftMechanics({draftDigest:digest(evidenceFiles),
-    features:documents.filter(item=>currentFeatures===undefined||currentFeatures.includes(item.directory))});
+  const checked=documents.filter(item=>currentFeatures===undefined||currentFeatures.includes(item.directory));
+  const mechanical=checkPrdDraftMechanics({draftDigest:digest(evidenceFiles),features:checked},
+    prdTaskScopeOptions(specs,checked.map(item=>item.directory)));
   return json({specs,specFiles,features,documents,mechanical,evidenceFiles,
     ...(predecessor?{predecessor}:{}),
     ...(currentFeatures===undefined?{}:{currentFeatures})},1024*1024);

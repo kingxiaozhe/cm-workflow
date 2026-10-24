@@ -25,6 +25,18 @@ test('save exact Markdown and JSON, explicit identical resume, no approval',t=>{
   assert.equal(fs.existsSync(path.join(specs,'.cm-specs-status')),false);
   assert.equal(result.completionAuthorized,false);
 });
+test('save records whether the saved tasks carry scopes, before the spec files',t=>{
+  const {specs,draft,args}=fixture(t);
+  const record=()=>JSON.parse(fs.readFileSync(path.join(specs,'.reviews/prd-guide-task-scope.json'),'utf8'));
+  assert.equal(savePrdDraft(args).status,'draft_saved');
+  assert.deepEqual(record(),{version:1,enforced:false,exempt:[]});
+  const scoped=fixture(t);scoped.draft.features[0].documents[2].content='- [ ] T-001: Document\n  - 范围: `README.md`';
+  scoped.draft.draftDigest=digest({summary:scoped.draft.summary,features:scoped.draft.features});
+  assert.equal(savePrdDraft(scoped.args).status,'draft_saved');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(scoped.specs,'.reviews/prd-guide-task-scope.json'),'utf8')),
+    {version:1,enforced:true,exempt:[]});
+  assert.equal(draft.features.length,1);
+});
 test('disabled and conflict preflight produce zero new spec writes',t=>{
   const {specs,args}=fixture(t);assert.throws(()=>savePrdDraft({...args,writeEnabled:false}),/not_enabled/);
   assert.deepEqual(fs.readdirSync(specs),[]);fs.mkdirSync(path.join(specs,'1.guide'));

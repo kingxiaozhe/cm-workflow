@@ -36,12 +36,12 @@ test('exact PRD change saves and recovers with large original assets, rejects la
   const version='\n| Date | Version | Change |\n| --- | --- | --- |\n| 2026-10-19 | v1 | original |\n';
   const original=[{path:'requirements.md',content:version+'\n- [ ] [AC-001] Keep asset\n'},
     {path:'design.md',content:version+'\nKeep original font\n'},
-    {path:'tasks.md',content:version+'\n- [x] T-001: Original task\n'}];
+    {path:'tasks.md',content:version+'\n- [x] T-001: Original task\n  - 范围: `README.md`\n'}];
   for(const d of original)fs.writeFileSync(path.join(feature,d.path),d.content);
   const asset=path.join(feature,'font.otf'),bytes=Buffer.alloc(1024*1024+13,0x92);fs.writeFileSync(asset,bytes);
   const before=inspectPrdChangeSnapshot(dir),selected=['1.example'];
   const documents=original.map(d=>({...d,content:d.content.replace('| 2026-10-19 | v1 | original |',
-    '| 2026-10-19 | v1 | original |\n| 2026-10-22 | v2 | change |')+(d.path==='tasks.md'?'\n- [ ] T-004a: [NEW] Review task\n':'\nClarification\n')}));
+    '| 2026-10-19 | v1 | original |\n| 2026-10-22 | v2 | change |')+(d.path==='tasks.md'?'\n- [ ] T-004a: [NEW] Review task\n  - 范围: `README.md`\n':'\nClarification\n')}));
   const proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Clarify review ownership',removed:[],
     features:[{directory:'1.example',documents,testCasesReason:'no_observable_behavior'}]},selected,loadConfig({projectRoot:dir}));
   assert.equal(applyPrdChange({specs:dir,before,proposal,selected}).status,'awaiting_review');
@@ -58,12 +58,12 @@ test('recovering a saved PRD change refuses an asset directory swapped for a lin
   const feature=path.join(dir,'1.example');fs.mkdirSync(path.join(feature,'assets'),{recursive:true});
   const version='\n| Date | Version | Change |\n| --- | --- | --- |\n| 2026-10-19 | v1 | original |\n';
   const original=[{path:'requirements.md',content:version+'\n- [ ] [AC-001] Keep asset\n'},
-    {path:'design.md',content:version+'\nKeep original logo\n'},{path:'tasks.md',content:version+'\n- [x] T-001: Original task\n'}];
+    {path:'design.md',content:version+'\nKeep original logo\n'},{path:'tasks.md',content:version+'\n- [x] T-001: Original task\n  - 范围: `README.md`\n'}];
   for(const d of original)fs.writeFileSync(path.join(feature,d.path),d.content);
   const bytes=Buffer.from('logo bytes\n');fs.writeFileSync(path.join(feature,'assets','logo.png'),bytes);
   const before=inspectPrdChangeSnapshot(dir),selected=['1.example'];
   const documents=original.map(d=>({...d,content:d.content.replace('| 2026-10-19 | v1 | original |',
-    '| 2026-10-19 | v1 | original |\n| 2026-10-22 | v2 | change |')+(d.path==='tasks.md'?'\n- [ ] T-002: [NEW] Next task\n':'\nClarification\n')}));
+    '| 2026-10-19 | v1 | original |\n| 2026-10-22 | v2 | change |')+(d.path==='tasks.md'?'\n- [ ] T-002: [NEW] Next task\n  - 范围: `README.md`\n':'\nClarification\n')}));
   const proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Clarify logo use',removed:[],
     features:[{directory:'1.example',documents,testCasesReason:'no_observable_behavior'}]},selected,loadConfig({projectRoot:dir}));
   assert.equal(applyPrdChange({specs:dir,before,proposal,selected}).status,'awaiting_review');

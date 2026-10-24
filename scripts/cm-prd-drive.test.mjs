@@ -48,7 +48,7 @@ for(const format of ['pdf','html'])test(`${format} live material request is hash
 const draft={status:'draft',summary:'Synthetic documentation draft',features:[{name:'guide',testCasesReason:'no_observable_behavior',
   documents:[{path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Document setup.'},
     {path:'design.md',content:'## 方案摘要\nSynthetic design'},
-    {path:'tasks.md',content:'- [ ] T-001: Update guide'}]}]};
+    {path:'tasks.md',content:'- [ ] T-001: Update guide\n  - 范围: `README.md`'}]}]};
 test('contextChecks with stdout and stderr record a passed command',async t=>{
   const f=fixture(t);
   const checks=await runPrdContextChecks(f.project,[{id:'output',command:[process.execPath,'-e',

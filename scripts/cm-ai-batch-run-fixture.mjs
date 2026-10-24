@@ -28,7 +28,9 @@ export async function batchFixture(mode,options={}){
     const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code'),feature='1.work';
     fs.mkdirSync(path.join(specsDir,feature),{recursive:true});fs.mkdirSync(codeProject);
     for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
-    fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n'+(parallel?'- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n':''));
+    // Each task declares the same file the batch config gives it (file<index>.js).
+    fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: first\n  - 范围: `file0.js`\n- [ ] T-002: second\n  - 范围: `file1.js`\n'
+      +(parallel?'- [ ] T-003: final\n  - 范围: `file2.js`\n\n- T-003 依赖 T-001, T-002\n':''));
     fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
     fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
     const git=(cwd,args)=>{const result=spawnSync('git',['-C',cwd,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);return result.stdout.trim();};
@@ -368,9 +370,9 @@ export async function batchFixture(mode,options={}){
     if(mode==='qa-resume'){
       assert.equal(result.code,'qa_decision_required');assert.deepEqual(calls,['T-001']);
       assert(fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8').includes('[x] T-001'));
+      // A changed plan is refused; a scope that departs from tasks.md is refused before the plan digest is compared.
       const changed=structuredClone(config);changed.tasks[1].scope=['other.js'];
-      await assert.rejects(createCmAiBatch({configuration:changed,executionFor,logHome:path.join(root,'logs')})
-        .handle({operation:'advance',requestId:'changed-plan'}),{code:'batch_plan_mismatch'});
+      assert.throws(()=>createCmAiBatch({configuration:changed,executionFor,logHome:path.join(root,'logs')}),{code:'task_scope_mismatch'});
       qaReady=true;result=await open().handle({operation:'advance',requestId:'advance-2'});
     }
     assert.equal(result.code,mode==='failed-qa'?'qa_failed':'run_done',JSON.stringify(result));
