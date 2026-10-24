@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {createInterface} from 'node:readline';
+import {withConfigLock,LockBusy} from './cm-config-lock.mjs';
 
 export const ANNOUNCE_COMMAND='~/.cm-workflow/cm-announce.sh';
 const DECLINED='announce-hook-declined';
@@ -84,18 +85,24 @@ export async function main({env=process.env,input=process.stdin,output=process.s
     try{fs.mkdirSync(path.dirname(declined),{recursive:true});fs.writeFileSync(declined,'');}catch{/* 记不住也只是下次再问一次 */}
     output.write(`  未开启。${manual}\n`);return 0;
   }
-  // The question may have waited a long time: start again from what is on disk now.
-  let current;
-  try{current=readSettingsText(file);settings=current===null?{}:JSON.parse(current);}
-  catch{output.write(`⚠ 无法解析 ${file}，未改动它。${manual}\n`);return 0;}
-  if(hasAnnounceHook(settings)){output.write('  更新播报已启用。\n');return 0;}
-  try{writeSettings(file,withAnnounceHook(settings),{expected:current});}
-  catch(error){
-    output.write(error instanceof SettingsChanged?`  ⚠ ${file} 刚被其他程序改动，未改写。${manual}\n`
-      :`  ⚠ 写入 ${file} 失败，未改动它。${manual}\n`);
-    return 0;
+  // The question may have waited a long time: start again from what is on disk now,
+  // under the lock CM's other settings writers share (no lock is held while asking).
+  let message;
+  try{
+    message=withConfigLock(env,file,()=>{
+      let current;
+      try{current=readSettingsText(file);settings=current===null?{}:JSON.parse(current);}
+      catch{return `⚠ 无法解析 ${file}，未改动它。${manual}\n`;}
+      if(hasAnnounceHook(settings))return '  更新播报已启用。\n';
+      writeSettings(file,withAnnounceHook(settings),{expected:current});
+      return '  已开启：下次启动 Claude Code 时会告知更新。\n';
+    });
+  }catch(error){
+    message=error instanceof SettingsChanged?`  ⚠ ${file} 刚被其他程序改动，未改写。${manual}\n`
+      :error instanceof LockBusy?`  ⚠ 另一个 CM 程序正在改 ${file}，未改写。${manual}\n`
+      :`  ⚠ 写入 ${file} 失败，未改动它。${manual}\n`;
   }
-  output.write('  已开启：下次启动 Claude Code 时会告知更新。\n');
+  output.write(message);
   return 0;
 }
 

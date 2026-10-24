@@ -14,13 +14,13 @@ import path from 'node:path';
 import vm from 'node:vm';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {SKILLS as AUTHOR_SKILLS,UPSTREAM,skillState,skillRoots as authorRoots} from './cm-matt-skills.mjs';
 
 export const SCRIPT_NAME='cm-skill-hints.mjs';
 export const RULES_NAME='cm-skill-hints.json';
 export const LOCAL_NAME='skill-hints.local.json';
 // Copied together into ~/.cm-workflow/skill-hints so the hook runs without the CM tree.
-const COMPANIONS=['cm-matt-skills.mjs',RULES_NAME];
+// They are written before the script itself, so a failed copy leaves the old script.
+const COMPANIONS=['cm-matt-skills.mjs','cm-config-lock.mjs',RULES_NAME];
 export const MAX_PROMPT=2000;
 export const MAX_HINTS=2;
 export const ADOPT_WINDOW=5;
@@ -45,10 +45,18 @@ export const defaultRulesPath=()=>path.join(here,RULES_NAME);
 // An author skill counts only when it is the pinned author version (same contract as
 // cm-matt-skills: a same-named skill with other content is not it). Checked lazily,
 // only for rules that matched, and only in the current host's skills directory.
-export function isAuthorInstalled(name,host,env,{skills=AUTHOR_SKILLS,license=UPSTREAM.license.sha256}={}){
-  const skill=skills.find(item=>item.name===name);
-  const root=authorRoots(env).find(item=>item.runtime===host)?.root;
-  return Boolean(skill&&root)&&skillState(root,skill,license)==='author';
+// The checker is loaded inside the hook's quiet boundary; if it cannot be loaded,
+// no author skill counts as installed and CM counterparts are hinted instead.
+export async function loadAuthorCheck(specifier='./cm-matt-skills.mjs'){
+  try{
+    const {SKILLS,UPSTREAM,skillState,skillRoots}=await import(new URL(specifier,import.meta.url).href);
+    return {skills:SKILLS,license:UPSTREAM.license.sha256,skillState,skillRoots};
+  }catch{return null;}
+}
+export function isAuthorInstalled(name,host,env,check){
+  const skill=check?.skills.find(item=>item.name===name);
+  const root=check?.skillRoots(env).find(item=>item.runtime===host)?.root;
+  return Boolean(skill&&root)&&check.skillState(root,skill,check.license)==='author';
 }
 export const mention=(skill,host)=>`${host==='codex'?'$':'/'}${skill}`;
 
@@ -110,16 +118,17 @@ export function patternMatches(rules,text,budget=PATTERN_BUDGET_MS){
 }
 
 // An author skill that is not installed falls back to its CM counterpart, or is dropped.
-function resolve(rule,host,env,authorOptions){
-  if(rule.user||!rule.author||isAuthorInstalled(rule.skill,host,env,authorOptions))return {rule:rule.id,skill:rule.skill,reason:rule.reason};
+function resolve(rule,host,env,authorCheck){
+  if(rule.user||!rule.author||isAuthorInstalled(rule.skill,host,env,authorCheck))return {rule:rule.id,skill:rule.skill,reason:rule.reason};
   return rule.fallback?{rule:rule.id,skill:rule.fallback.skill,reason:rule.fallback.reason}:null;
 }
 
-// `/name` or `$name` as a whole token: `/cm-fix-extra` is not `/cm-fix`.
+// `/name` or `$name` as a whole token: not `/cm-fix-extra`, not the tail of a URL or path.
 const escape=text=>text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-export const typed=(prompt,skill,host)=>new RegExp(`${escape(mention(skill,host))}(?![\\w.:-])`,'i').test(prompt);
+export const typed=(prompt,skill,host)=>
+  new RegExp(`(?<![\\w.:/$-])${escape(mention(skill,host))}(?![\\w.:/-])`,'i').test(prompt);
 
-export function pickHints({prompt,rules,host,env,hinted=[],authorOptions}){
+export function pickHints({prompt,rules,host,env,hinted=[],authorCheck=null}){
   const lower=prompt.toLowerCase();
   const text=stripCode(lower);
   const byPattern=patternMatches(rules,text);
@@ -127,7 +136,7 @@ export function pickHints({prompt,rules,host,env,hinted=[],authorOptions}){
   for(const [index,rule] of rules.entries()){
     if(picked.length>=MAX_HINTS)break;
     if(!rule.keywords.some(word=>text.includes(word))&&!byPattern[index])continue;
-    const hint=resolve(rule,host,env,authorOptions);
+    const hint=resolve(rule,host,env,authorCheck);
     if(!hint||hinted.includes(hint.skill)||picked.some(item=>item.skill===hint.skill))continue;
     // The user already typed or named it: nothing to remind.
     if(lower.includes(hint.skill.toLowerCase()))continue;
@@ -185,7 +194,7 @@ export function contextText(hints,host){
     ...hints.map(hint=>`- ${mention(hint.skill,host)}：${hint.reason}`)].join('\n');
 }
 
-export function hook(input,{env=process.env,host='claude',rulesFile=defaultRulesPath(),now=Date.now(),authorOptions}={}){
+export async function hook(input,{env=process.env,host='claude',rulesFile=defaultRulesPath(),now=Date.now(),loadAuthor=loadAuthorCheck}={}){
   if(env.CM_SKILL_HINTS==='off'||!HOSTS.includes(host))return '';
   const prompt=typeof input?.prompt==='string'?input.prompt:'';
   if(!prompt)return '';
@@ -203,7 +212,8 @@ export function hook(input,{env=process.env,host='claude',rulesFile=defaultRules
     if(typed(prompt,item.skill,host))adopted.push(item);
     else if(item.left>1)pending.push({...item,left:item.left-1});
   }
-  const hints=prompt.length>MAX_PROMPT?[]:pickHints({prompt,rules:loaded.rules,host,env,hinted:state.hinted,authorOptions});
+  const authorCheck=loaded.rules.some(rule=>rule.author)?await loadAuthor():null;
+  const hints=prompt.length>MAX_PROMPT?[]:pickHints({prompt,rules:loaded.rules,host,env,hinted:state.hinted,authorCheck});
   // Bookkeeping failures cost the statistics, never the hint itself.
   try{
     for(const item of adopted)appendLog(env,{t:time,event:'adopted',host,rule:item.rule,skill:item.skill});
@@ -228,13 +238,15 @@ export function hook(input,{env=process.env,host='claude',rulesFile=defaultRules
 const shellWord=word=>/^[\w@%+=:,./-]+$/.test(word)?word:`'${word.replace(/'/g,`'\\''`)}'`;
 const managedTail=(env,host)=>`${shellWord(path.join(installDir(env),SCRIPT_NAME))} hook --host ${host}`;
 export const hookCommand=(env,host,node=process.execPath)=>`${shellWord(node)} ${managedTail(env,host)}`;
-// Ours = a command hook that is exactly "<one interpreter word> <managed copy> hook --host <host>".
+// Ours = a command hook that is exactly "<node> <managed copy> hook --host <host>",
+// where <node> is one shell word naming a node executable.
 function isOurs(hook,env,host){
   if(hook?.type!=='command'||typeof hook.command!=='string')return false;
   const tail=' '+managedTail(env,host);
   if(!hook.command.endsWith(tail))return false;
-  const interpreter=hook.command.slice(0,-tail.length);
-  return /^[^\s']+$/.test(interpreter)||/^'[^']+'$/.test(interpreter);
+  const word=hook.command.slice(0,-tail.length);
+  const interpreter=/^[^\s']+$/.test(word)?word:/^'[^']+'$/.test(word)?word.slice(1,-1):null;
+  return Boolean(interpreter)&&/^node(?:\.exe)?$/i.test(path.basename(interpreter));
 }
 export const hasHintHook=(config,env,host)=>(config?.hooks?.UserPromptSubmit??[]).some(group=>
   Array.isArray(group?.hooks)&&group.hooks.some(hook=>isOurs(hook,env,host)));
@@ -249,39 +261,46 @@ export function withHintHook(config,command){
 
 function copyInstall(env){
   const dir=installDir(env);
-  writeAtomic(path.join(dir,SCRIPT_NAME),fs.readFileSync(fileURLToPath(import.meta.url),'utf8'));
   for(const name of COMPANIONS)writeAtomic(path.join(dir,name),fs.readFileSync(path.join(here,name),'utf8'));
+  writeAtomic(path.join(dir,SCRIPT_NAME),fs.readFileSync(fileURLToPath(import.meta.url),'utf8'));
 }
 
 const configFile=(host,env)=>host==='codex'?codexHooksPath(env):claudeSettingsPath(env);
 const LABEL={claude:'Claude',codex:'Codex'};
 class Drift extends Error{}
 
-// The config is re-read right before the rename; if anyone changed it since we read
-// it, nothing is written, so a concurrent edit is never lost to our stale copy.
-export function enable({env=process.env,hosts=HOSTS,node=process.execPath,write=text=>process.stdout.write(text),beforeReplace}={}){
+// Read, merge and replace happen under the lock CM's other config writers share.
+// Programs outside CM do not take it, so the bytes are compared once more right
+// before the rename; if they changed, nothing is written.
+export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,write=text=>process.stdout.write(text),beforeReplace,lockWaitMs}={}){
+  const {withConfigLock,LockBusy}=await import('./cm-config-lock.mjs');
   try{copyInstall(env);}
   catch(error){write(`✗ 复制提醒脚本到 ${installDir(env)} 失败：${error.message}\n`);return 1;}
   let failed=0;
   for(const host of hosts){
     const file=configFile(host,env);
-    const read=readJson(file);
-    // A config we cannot parse is never rewritten: that would destroy user content.
-    if(read.error){write(`✗ ${LABEL[host]}：无法读取 ${file}（${read.error}），未改动。\n`);failed++;continue;}
-    const config=read.value??{};
-    if(hasHintHook(config,env,host)){write(`${LABEL[host]}：提醒钩子已挂，未改动。\n`);continue;}
+    let outcome;
     try{
-      writeAtomic(file,JSON.stringify(withHintHook(config,hookCommand(env,host,node)),null,2)+'\n',{before:()=>{
-        beforeReplace?.(file);
-        const now=readJson(file);
-        if(read.missing?!now.missing:now.text!==read.text)throw new Drift();
-      }});
+      outcome=withConfigLock(env,file,()=>{
+        const read=readJson(file);
+        // A config we cannot parse is never rewritten: that would destroy user content.
+        if(read.error)return `✗ ${LABEL[host]}：无法读取 ${file}（${read.error}），未改动。\n`;
+        const config=read.value??{};
+        if(hasHintHook(config,env,host))return `${LABEL[host]}：提醒钩子已挂，未改动。\n`;
+        writeAtomic(file,JSON.stringify(withHintHook(config,hookCommand(env,host,node)),null,2)+'\n',{before:()=>{
+          beforeReplace?.(file);
+          const now=readJson(file);
+          if(read.missing?!now.missing:now.text!==read.text)throw new Drift();
+        }});
+        return `${LABEL[host]}：已挂提醒钩子（${file}）。\n`;
+      },lockWaitMs===undefined?{}:{waitMs:lockWaitMs});
     }catch(error){
-      write(error instanceof Drift?`✗ ${LABEL[host]}：${file} 刚被其他程序改动，未改写；请重跑 enable。\n`
-        :`✗ ${LABEL[host]}：写入 ${file} 失败：${error.message}\n`);
-      failed++;continue;
+      outcome=error instanceof Drift?`✗ ${LABEL[host]}：${file} 刚被其他程序改动，未改写；请重跑 enable。\n`
+        :error instanceof LockBusy?`✗ ${LABEL[host]}：另一个 CM 程序正在改 ${file}，未改写；请稍后重跑 enable。\n`
+        :`✗ ${LABEL[host]}：写入 ${file} 失败：${error.message}\n`;
     }
-    write(`${LABEL[host]}：已挂提醒钩子（${file}）。\n`);
+    if(outcome.startsWith('✗'))failed++;
+    write(outcome);
   }
   if(hosts.includes('codex'))write('Codex 首次运行这条钩子时会请你确认信任；不确认它就不会运行。\n');
   write(`关闭：在 ${localPath(env)} 写 {"enabled": false}。\n`);
@@ -305,14 +324,14 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
 
 const USAGE='用法: cm-skill-hints.mjs hook --host claude|codex | status | enable [--claude] [--codex]\n';
 
-export function main(argv=process.argv.slice(2),{env=process.env,readInput=()=>fs.readFileSync(0,'utf8'),
+export async function main(argv=process.argv.slice(2),{env=process.env,readInput=()=>fs.readFileSync(0,'utf8'),
   write=text=>process.stdout.write(text),error=text=>process.stderr.write(text)}={}){
   const [command,...rest]=argv;
   if(command==='hook'){
     // Quiet on every failure: a hint is never worth holding up the user's message.
     try{
       const host=rest[0]==='--host'?rest[1]:'claude';
-      const output=hook(JSON.parse(readInput()),{env,host});
+      const output=await hook(JSON.parse(readInput()),{env,host});
       if(output)write(output+'\n');
     }catch{/* 安静跳过 */}
     return 0;
@@ -328,5 +347,6 @@ export function main(argv=process.argv.slice(2),{env=process.env,readInput=()=>f
 }
 
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fs.realpathSync(fileURLToPath(import.meta.url))){
-  process.exitCode=main();
+  // The hook exits 0 whatever happens; other commands report their own code.
+  process.exitCode=await main().catch(()=>process.argv[2]==='hook'?0:1);
 }
