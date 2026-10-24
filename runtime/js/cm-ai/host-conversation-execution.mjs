@@ -21,8 +21,8 @@ import {codexWorker,preflightMatches} from './worker-codex.mjs';
 import {createHostWorkflowCapabilities,createImplicitQaDecision} from './host-workflow-capabilities.mjs';
 import {resolveHostRole} from './host-role-routing.mjs';
 import {checklistGaps} from './checklist-coverage.mjs';
-import {readRequirementItems,splitRequirementReport,REQUIREMENT_ITEM_LIMIT} from './requirement-evidence.mjs';
-import {captureBeforeSnapshot,replayDelivery,replayFactItem,notReplayed} from './host-replay.mjs';
+import {readRequirementItems,splitRequirementReport} from './requirement-evidence.mjs';
+import {captureBeforeSnapshot,replayDelivery,notReplayed} from './host-replay.mjs';
 import {autoVerificationVerdict} from './verification-auto.mjs';
 import {declaredTaskScope} from '../task-scope.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
@@ -214,12 +214,6 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     snapshot:beforeSnapshots.get(request.identity.taskId)??null,scope:request.scope??definition.scope,
     tests:declaredTests(request.identity.taskId),checkCommands:protection.checkCommands,timeoutMs:protection.timeoutMs,
     identity:request.identity,greenChecks:request.checks,signal:control.signal}):null;
-  const withFacts=(items,facts)=>{
-    if(facts===null)return items;
-    if(items.length<REQUIREMENT_ITEM_LIMIT)return [...items,replayFactItem(facts)];
-    try{process.stderr.write(JSON.stringify({diagnostic:'host_replay_fact_omitted',reason:'item_limit'})+'\n');}catch{}
-    return items;
-  };
   // The gate is opt-in: without it the flow is byte-for-byte what it was.
   // The runner contract is exactly {satisfied}. Which requirements failed is
   // what the operator needs to act on, so it goes to this process's stderr the
@@ -257,7 +251,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     }catch{/* diagnostics never change the verdict */}
     // The answered items travel to the runner, which binds them into the host
     // handoff the reviewer reads; a failed gate halts before any handoff exists.
-    return verdict.satisfied?{satisfied:true,items:withFacts(verdict.items,facts)}:{satisfied:false};
+    // The host record travels as its own handoff entry (host-replay.mjs), never inside the items.
+    return verdict.satisfied?{satisfied:true,items:verdict.items,...(facts?{hostRecord:facts}:{})}:{satisfied:false};
   }:null;
   const outerTimeoutMs=provider?protection.timeoutMs:1800000;
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,

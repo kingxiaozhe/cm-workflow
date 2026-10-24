@@ -55,12 +55,13 @@ test('auto gate: a failing-first claim the host replay confirms passes, and the 
     const result=await run(definition,develop([{requirement:'T-001: RED 必须先失败',satisfied:true,evidence:'a.test.js 在旧 a.js 下失败'},
       {requirement:'全部放入后检查通过',satisfied:true,evidence:'unit 检查'}]),protection);
     assert.equal(result.state,'awaiting_review',JSON.stringify(result));
-    const evidence=handoff(definition).evidence.find(entry=>entry.startsWith('cm-requirement-evidence-v1: '));
-    assert.match(evidence,/宿主实跑记录/);
-    assert.match(evidence,/改代码前（基线）：failed/);
-    assert.match(evidence,/只放入测试文件：failed/);
-    assert.match(evidence,/全部放入（任务检查）：passed/);
-    assert.match(evidence,/RED 必须先失败/);
+    const entries=handoff(definition).evidence;
+    assert.match(entries.find(entry=>entry.startsWith('cm-requirement-evidence-v1: ')),/RED 必须先失败/);
+    // The host record is its own entry, not one of the developer's items.
+    const record=JSON.parse(entries.find(entry=>entry.startsWith('cm-host-replay-v1: ')).slice('cm-host-replay-v1: '.length));
+    assert.deepEqual([record.facts.status,record.facts.baseline.outcome,record.facts.red.outcome,record.facts.green.outcome],
+      ['replayed','failed','failed','passed']);
+    assert.deepEqual(record.identity,{...identity,attempt:1});
     assert.equal(fs.readFileSync(path.join(definition.codeProject,'a.js'),'utf8'),'new\n','the replay never writes the real project');
   }));
 

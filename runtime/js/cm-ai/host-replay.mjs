@@ -8,12 +8,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createHostCheck} from './host-check.mjs';
-import {need,json} from './effect-contract.mjs';
+import {need,json,validIdentity} from './effect-contract.mjs';
 
 const FILE_LIMIT=1024*1024,ENTRY_LIMIT=200000,EVIDENCE_LIMIT=1500;
+export const HOST_REPLAY_EVIDENCE_PREFIX='cm-host-replay-v1: ';
 
-// Scope file bytes before development: Buffer, or null for a file that does not
-// exist yet. Anything else (a link, a directory, an oversized file) makes the
+// Scope file state before development: {bytes,mode}, or null for a file that does
+// not exist yet. Anything else (a link, a directory, an oversized file) makes the
 // snapshot unavailable, never a partial one.
 export function captureBeforeSnapshot(codeProject,scope){
   const files=new Map();
@@ -21,7 +22,7 @@ export function captureBeforeSnapshot(codeProject,scope){
     const target=path.join(codeProject,file);let stat;
     try{stat=fs.lstatSync(target);}catch(error){if(error.code==='ENOENT'){files.set(file,null);continue;}return {unavailable:'snapshot_unreadable'};}
     if(!stat.isFile()||stat.size>FILE_LIMIT)return {unavailable:'snapshot_unsupported_file'};
-    files.set(file,fs.readFileSync(target));
+    files.set(file,{bytes:fs.readFileSync(target),mode:stat.mode&0o777});
   }
   return {files};
 }
@@ -29,26 +30,53 @@ export function captureBeforeSnapshot(codeProject,scope){
 const summarize=rows=>{
   const failed=rows.find(row=>row.outcome!=='passed');
   const evidence=rows.map(row=>`${row.id}: ${row.evidence}`).join('; ');
-  return {outcome:failed?failed.outcome:'passed',evidence:Buffer.byteLength(evidence)>EVIDENCE_LIMIT
+  return {outcome:failed?failed.outcome:rows.length?'passed':'unavailable',evidence:Buffer.byteLength(evidence)>EVIDENCE_LIMIT
     ?Buffer.from(evidence).subarray(0,EVIDENCE_LIMIT).toString('utf8').replace(/�$/,'')+'…':evidence};
 };
+const replayError=code=>Object.assign(new Error(code),{code});
 
+// A fresh private copy for each run, so no run inherits another's writes. The
+// directory is owned here until it is returned, so a failed copy is removed too.
 function copyProject(codeProject,specsDir){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-host-replay-')));
-  const target=path.join(root,'project');let entries=0;
-  const skip=new Set([path.join(codeProject,'.git'),specsDir]);
-  // Copy-on-write clones where the file system has them (APFS, btrfs); a plain copy otherwise.
-  fs.cpSync(codeProject,target,{recursive:true,mode:fs.constants.COPYFILE_FICLONE,verbatimSymlinks:true,filter:source=>{
-    if(skip.has(source))return false;
-    need(++entries<=ENTRY_LIMIT,'replay_project_too_large');return true;
-  }});
-  return {root,project:fs.realpathSync(target)};
+  try{
+    const target=path.join(root,'project');let entries=0;
+    const skip=new Set([path.join(codeProject,'.git'),specsDir]);
+    // Copy-on-write clones where the file system has them (APFS, btrfs); a plain copy otherwise.
+    fs.cpSync(codeProject,target,{recursive:true,mode:fs.constants.COPYFILE_FICLONE,verbatimSymlinks:true,filter:source=>{
+      if(skip.has(source))return false;
+      if(++entries>ENTRY_LIMIT)throw replayError('replay_project_too_large');return true;
+    }});
+    return {root,project:fs.realpathSync(target)};
+  }catch(error){removeCopy(root);throw error;}
 }
-function place(project,file,bytes){
+function removeCopy(root){
+  try{fs.rmSync(root,{recursive:true,force:true});}
+  catch{try{process.stderr.write(JSON.stringify({diagnostic:'host_replay_cleanup_failed',path:root})+'\n');}catch{}}
+}
+// Writes only through real directories inside the copy: every ancestor and the
+// target itself are checked without following links, before any byte is written.
+function place(project,file,state){
+  let current=project;
+  for(const part of file.split('/').slice(0,-1)){
+    current=path.join(current,part);let stat;
+    try{stat=fs.lstatSync(current);}catch(error){if(error.code!=='ENOENT')throw error;fs.mkdirSync(current);continue;}
+    if(!stat.isDirectory()||stat.isSymbolicLink())throw replayError('replay_scope_link');
+  }
   const target=path.join(project,file);
-  if(bytes===null){fs.rmSync(target,{force:true});return;}
-  fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,bytes);
+  let existing=null;
+  try{existing=fs.lstatSync(target);}catch(error){if(error.code!=='ENOENT')throw error;}
+  if(existing!==null){if(!existing.isFile())throw replayError('replay_scope_link');fs.unlinkSync(target);}
+  if(state===null)return;
+  const fd=fs.openSync(target,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,state.mode);
+  try{fs.writeFileSync(fd,state.bytes);fs.fchmodSync(fd,state.mode);}finally{fs.closeSync(fd);}
 }
+const currentState=(codeProject,file)=>{
+  const target=path.join(codeProject,file);let stat;
+  try{stat=fs.lstatSync(target);}catch(error){if(error.code==='ENOENT')return null;throw error;}
+  if(!stat.isFile()||stat.size>FILE_LIMIT)throw replayError('replay_scope_link');
+  return {bytes:fs.readFileSync(target),mode:stat.mode&0o777};
+};
 
 // {version,status:'replayed',baseline,red,green} or {version,status:'not_replayed',reason,green}.
 // red is {skipped:'no_test_files'} when tasks.md declares no test files.
@@ -57,44 +85,44 @@ export async function replayDelivery({codeProject,specsDir,snapshot,scope,tests,
   const skipped=reason=>notReplayed(reason,greenChecks);
   if(!snapshot)return skipped('no_before_snapshot');
   if(snapshot.unavailable)return skipped(snapshot.unavailable);
+  // A path added to the scope after the snapshot has no known prior state.
+  if(!scope.every(file=>snapshot.files.has(file)))return skipped('snapshot_scope_changed');
   if(!Array.isArray(checkCommands)||checkCommands.length===0)return skipped('no_host_checks');
   const testFiles=(tests??[]).filter(file=>scope.includes(file));
   const commands=checkCommands.map(({id,command})=>({id,command}));
-  let copy=null;
+  // Each run starts from its own copy of the real project and gets its scope states placed.
+  const run=async states=>{
+    need(!signal?.aborted,'cancelled');
+    const copy=copyProject(codeProject,specsDir);
+    try{
+      for(const file of scope)place(copy.project,file,states(file));
+      // The same sandbox as the task's own checks: the copy is the workspace, specs stay read-only.
+      return summarize(await makeCheck({cwd:copy.project,commands,timeoutMs,specsRoot:specsDir})({identity},{signal}));
+    }finally{removeCopy(copy.root);}
+  };
   try{
-    copy=copyProject(codeProject,specsDir);
-    // The same sandbox as the task's own checks: the copy is the workspace, specs stay read-only.
-    const run=async()=>summarize(await makeCheck({cwd:copy.project,commands,timeoutMs,specsRoot:specsDir})({identity},{signal}));
-    for(const file of scope)place(copy.project,file,snapshot.files.has(file)?snapshot.files.get(file):null);
-    const baseline=await run();
+    const before=file=>snapshot.files.get(file);
+    const baseline=await run(before);
     let red={skipped:'no_test_files'};
     if(testFiles.length){
-      for(const file of testFiles){
-        const target=path.join(codeProject,file);
-        place(copy.project,file,fs.existsSync(target)?fs.readFileSync(target):null);
-      }
-      red=await run();
+      const delivered=new Map(testFiles.map(file=>[file,currentState(codeProject,file)]));
+      red=await run(file=>delivered.has(file)?delivered.get(file):before(file));
     }
     return {version:1,status:'replayed',baseline,red,green};
   }catch(error){
     if(signal?.aborted)throw error;
-    return skipped(error?.code==='replay_project_too_large'?'project_too_large':'replay_failed');
-  }finally{if(copy)fs.rmSync(copy.root,{recursive:true,force:true});}
+    return skipped(error?.code==='replay_project_too_large'?'project_too_large'
+      :error?.code==='replay_scope_link'?'scope_link':'replay_failed');
+  }
 }
 
 // Without a replay: the reason, and the fully delivered run that did happen.
 export const notReplayed=(reason,greenChecks)=>({version:1,status:'not_replayed',reason,green:summarize(json(greenChecks))});
 
-// The facts as one gate item the handoff carries: a host-observed record, never
-// a judgement, so it is "satisfied" as a record. One item keeps the gate's
-// 64-item bound for the developer's own report.
-export function replayFactItem(facts){
-  const line=run=>`${run.outcome}; ${run.evidence}`;
-  const lines=facts.status!=='replayed'?[`未实跑：${facts.reason}`,`全部放入（任务检查）：${line(facts.green)}`]
-    :[`改代码前（基线）：${line(facts.baseline)}`,
-      `只放入测试文件：${facts.red.skipped?'跳过（tasks.md 未写测试文件）':line(facts.red)}`,
-      `全部放入（任务检查）：${line(facts.green)}`];
-  let evidence=lines.join('\n');
-  if(Buffer.byteLength(evidence)>2000)evidence=Buffer.from(evidence).subarray(0,1996).toString('utf8').replace(/\uFFFD$/,'')+'…';
-  return {requirement:'宿主实跑记录（宿主核实的事实，不是开发自报）',satisfied:true,evidence};
+// The facts as their own handoff evidence entry, beside the gate's requirement
+// entry: a host-observed record, never the developer's report, with its own bound.
+export function encodeHostReplayEvidence({identity,facts}){
+  validIdentity(identity);
+  return HOST_REPLAY_EVIDENCE_PREFIX+JSON.stringify({version:1,identity:{repositoryId:identity.repositoryId,
+    runId:identity.runId,taskId:identity.taskId,attempt:identity.attempt},facts:json(facts,16*1024)});
 }

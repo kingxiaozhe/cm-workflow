@@ -4,9 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
-import {captureBeforeSnapshot,replayDelivery,replayFactItem,notReplayed} from '../runtime/js/cm-ai/host-replay.mjs';
+import {captureBeforeSnapshot,replayDelivery,encodeHostReplayEvidence,notReplayed,HOST_REPLAY_EVIDENCE_PREFIX} from '../runtime/js/cm-ai/host-replay.mjs';
 import {autoVerificationVerdict} from '../runtime/js/cm-ai/verification-auto.mjs';
-import {splitRequirementReport,readRequirementItems} from '../runtime/js/cm-ai/requirement-evidence.mjs';
+import {splitRequirementReport} from '../runtime/js/cm-ai/requirement-evidence.mjs';
 
 const identity={repositoryId:'replay',runId:'replay-run',taskId:'T-001',attempt:1};
 // Unit tests run the check directly; production passes the same specs sandbox as the task's own checks.
@@ -44,8 +44,9 @@ test('baseline, test-files-only and full delivery: the test fails first, the rea
   assert.deepEqual(fs.readFileSync(path.join(code,'src/sum.js')),before);
   assert.equal(fs.readdirSync(os.tmpdir()).some(name=>name.startsWith('cm-host-replay-')&&fs.existsSync(path.join(os.tmpdir(),name,'project','src','sum.js'))
     &&fs.readFileSync(path.join(os.tmpdir(),name,'project','src','sum.js'),'utf8').includes('a+b')),false,'the private copy is removed');
-  const item=replayFactItem(facts);
-  assert.deepEqual(readRequirementItems([item]).length,1);assert.match(item.evidence,/只放入测试文件：failed/);
+  const entry=encodeHostReplayEvidence({identity,facts});
+  assert.ok(entry.startsWith(HOST_REPLAY_EVIDENCE_PREFIX));
+  assert.equal(JSON.parse(entry.slice(HOST_REPLAY_EVIDENCE_PREFIX.length)).facts.red.outcome,'failed');
 });
 
 test('without declared test files there is no test-files-only run; without a snapshot or checks nothing is replayed',async t=>{
@@ -55,13 +56,15 @@ test('without declared test files there is no test-files-only run; without a sna
     signal:new AbortController().signal,makeCheck:directCheck};
   const facts=await replayDelivery({...base,snapshot,tests:[]});
   assert.equal(facts.status,'replayed');assert.deepEqual(facts.red,{skipped:'no_test_files'});
-  assert.match(replayFactItem(facts).evidence,/跳过（tasks.md 未写测试文件）/);
+
   assert.equal((await replayDelivery({...base,snapshot:null,tests:[]})).reason,'no_before_snapshot');
   assert.equal((await replayDelivery({...base,snapshot,checkCommands:[],tests:[]})).reason,'no_host_checks');
   fs.symlinkSync(path.join(code,'src/sum.js'),path.join(code,'src/link.js'));
   assert.deepEqual(captureBeforeSnapshot(code,['src/link.js']),{unavailable:'snapshot_unsupported_file'});
   assert.equal((await replayDelivery({...base,snapshot:{unavailable:'snapshot_unsupported_file'},tests:[]})).reason,'snapshot_unsupported_file');
-  assert.match(replayFactItem(notReplayed('multi_root',passed)).evidence,/^未实跑：multi_root/);
+  assert.equal(notReplayed('multi_root',passed).green.outcome,'passed');
+  // A path added to the scope after the snapshot has no known prior state: not replayed, never assumed absent.
+  assert.equal((await replayDelivery({...base,scope:['src/sum.js','src/extra.js'],snapshot,tests:[]})).reason,'snapshot_scope_changed');
 });
 
 test('the developer report is split off the value; malformed reports are kept as invalid, not dropped silently',()=>{
@@ -88,6 +91,12 @@ test('the auto gate passes only a complete report that matches the host runs',()
     [[redItem],notReplayed('no_before_snapshot',passed),/未实跑（no_before_snapshot）/],
     [[{requirement:'记录改代码前基线',satisfied:true,evidence:'x'}],notReplayed('replay_failed',passed),/没有实跑基线：replay_failed/],
     [[plain],{...replayed({outcome:'failed',evidence:'r'}),green:{outcome:'failed',evidence:'g'}},/全部放入后检查 failed/],
+    // Plain-language failing-first claims, and baseline claims against a baseline that never ran or failed.
+    [[{requirement:'逻辑测试',satisfied:true,evidence:'新增测试在旧实现下失败'}],replayed({outcome:'passed',evidence:'r'}),/只放入测试文件时检查 passed/],
+    [[{requirement:'逻辑测试',satisfied:true,evidence:'原实现下失败，修改后通过'}],replayed({outcome:'passed',evidence:'r'}),/只放入测试文件时检查 passed/],
+    [[{requirement:'逻辑测试',satisfied:true,evidence:'the new test fails against the old code'}],replayed({outcome:'unavailable',evidence:'r'}),/只放入测试文件时检查 unavailable/],
+    [[{requirement:'记录基线',satisfied:true,evidence:'基线通过'}],replayed({skipped:'no_test_files'},{baseline:{outcome:'unavailable',evidence:'spawn_failed'}}),/基线没有跑起来：unavailable/],
+    [[{requirement:'记录基线',satisfied:true,evidence:'基线通过 49 项'}],replayed({skipped:'no_test_files'},{baseline:{outcome:'failed',evidence:'b'}}),/基线 failed/],
   ]){
     const verdict=autoVerificationVerdict({report,facts});
     assert.equal(verdict.satisfied,false);assert.match(verdict.unsatisfied.join('\n'),match);
@@ -95,4 +104,39 @@ test('the auto gate passes only a complete report that matches the host runs',()
   // A plain requirement needs no replay; a baseline claim is matched by any replayed baseline.
   assert.equal(autoVerificationVerdict({report:[plain],facts:notReplayed('multi_root',passed)}).satisfied,true);
   assert.equal(autoVerificationVerdict({report:[{requirement:'baseline 用例数',satisfied:true,evidence:'5'}],facts:replayed({skipped:'no_test_files'})}).satisfied,true);
+});
+
+test('each run uses a fresh copy: a check that plants a link cannot make the host write outside the copy',async t=>{
+  const {code,specs}=project(t),scope=['src/sum.js','test/sum.test.js'];
+  const victim=path.join(path.dirname(code),'victim.txt');fs.writeFileSync(victim,'untouched\n');
+  const snapshot=captureBeforeSnapshot(code,scope);deliver(code);
+  // The baseline check replaces the test file in its copy with a link to a file outside it.
+  const planting=[{id:'plant',command:['node','-e',`const fs=require('fs');fs.rmSync('test/sum.test.js',{force:true});fs.symlinkSync(${JSON.stringify(victim)},'test/sum.test.js');`]}];
+  const facts=await replayDelivery({codeProject:code,specsDir:specs,snapshot,scope,tests:['test/sum.test.js'],checkCommands:planting,
+    timeoutMs:30000,identity,greenChecks:passed,signal:new AbortController().signal,makeCheck:directCheck});
+  assert.equal(facts.status,'replayed');assert.equal(fs.readFileSync(victim,'utf8'),'untouched\n');
+  // A link already on a scope path in the project is never written through.
+  const outside=path.join(path.dirname(code),'outside');fs.mkdirSync(outside);fs.writeFileSync(path.join(outside,'sum.js'),'outside\n');
+  fs.rmSync(path.join(code,'src'),{recursive:true});fs.symlinkSync(outside,path.join(code,'src'));
+  const linked=await replayDelivery({codeProject:code,specsDir:specs,snapshot,scope,tests:[],checkCommands:commands,
+    timeoutMs:30000,identity,greenChecks:passed,signal:new AbortController().signal,makeCheck:directCheck});
+  assert.equal(linked.reason,'scope_link');assert.equal(fs.readFileSync(path.join(outside,'sum.js'),'utf8'),'outside\n');
+});
+
+test('the baseline restores file permissions, and a failed copy leaves no private directory behind',async t=>{
+  const {code,specs}=project(t);
+  fs.writeFileSync(path.join(code,'run.sh'),'#!/bin/sh\nexit 0\n',{mode:0o644});
+  const snapshot=captureBeforeSnapshot(code,['run.sh']);fs.chmodSync(path.join(code,'run.sh'),0o755);
+  const executable=[{id:'exec',command:['node','-e',"process.exit(require('fs').statSync('run.sh').mode&0o111?0:1)"]}];
+  const facts=await replayDelivery({codeProject:code,specsDir:specs,snapshot,scope:['run.sh'],tests:[],checkCommands:executable,
+    timeoutMs:30000,identity,greenChecks:passed,signal:new AbortController().signal,makeCheck:directCheck});
+  assert.equal(facts.baseline.outcome,'failed','the copy has the 0644 the file had before development');
+  const tmp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-replay-tmp-')));t.after(()=>fs.rmSync(tmp,{recursive:true,force:true}));
+  const unreadable=path.join(code,'secret.bin');fs.writeFileSync(unreadable,'x');fs.chmodSync(unreadable,0o000);
+  const previous=process.env.TMPDIR;process.env.TMPDIR=tmp;
+  try{
+    const failed=await replayDelivery({codeProject:code,specsDir:specs,snapshot,scope:['run.sh'],tests:[],checkCommands:executable,
+      timeoutMs:30000,identity,greenChecks:passed,signal:new AbortController().signal,makeCheck:directCheck});
+    assert.equal(failed.reason,'replay_failed');assert.deepEqual(fs.readdirSync(tmp),[]);
+  }finally{fs.chmodSync(unreadable,0o600);if(previous===undefined)delete process.env.TMPDIR;else process.env.TMPDIR=previous;}
 });

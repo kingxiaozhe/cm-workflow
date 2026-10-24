@@ -109,7 +109,7 @@ test('the gate emits the reminder without letting it change the verdict', async 
   // The returned verdict must still be the gate's own, unqualified by coverage.
   // Satisfied answers carry their items to the handoff; a failed gate carries nothing.
   // The host replay record is appended as one more item, never folded into the verdict.
-  assert.match(gate[1], /return verdict\.satisfied\?\{satisfied:true,items:withFacts\(verdict\.items,facts\)\}:\{satisfied:false\};/);
+  assert.match(gate[1], /return verdict\.satisfied\?\{satisfied:true,items:verdict\.items,\.\.\.\(facts\?\{hostRecord:facts\}:\{\}\)\}:\{satisfied:false\};/);
   assert.equal(/satisfied:verdict\.satisfied&&/.test(gate[1]), false,
     'coverage was folded into the verdict; it must stay advisory');
   // Any throw inside the reminder must not reach the caller.

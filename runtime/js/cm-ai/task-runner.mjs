@@ -36,6 +36,7 @@ import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRu
 import {splitDocumentationState} from './host-documentation.mjs';
 import {readControlPolicy} from './control-policy.mjs';
 import {encodeRequirementEvidence} from './requirement-evidence.mjs';
+import {encodeHostReplayEvidence} from './host-replay.mjs';
 import {scopeRevisionBinding,revisedScope,applyScopeRevision} from './scope-revision.mjs';
 import {readProcessStartTime,inspectWorkerGroup} from './worker-process-identity.mjs';
 import {recoverRunnerCommitImage} from './task-commit.mjs';
@@ -176,7 +177,7 @@ export function createTaskRunner(options) {
   // only block: passing it grants nothing and never substitutes for that review.
   const verificationGate=options.verificationGate??null;
   // The latest satisfied gate's handoff entry; reset on every gate run.
-  let requirementEvidence=null;
+  let requirementEvidence=null,hostReplayEvidence=null;
   need(verificationGate===null||typeof verificationGate==='function');
   if(taskMode)need(Object.hasOwn(options,'persistence'),'runner_completion');
   const config=json({root:options.root,identity:options.identity,scope:options.scope,requirements:options.requirements,
@@ -1152,7 +1153,7 @@ export function createTaskRunner(options) {
   // built, so a deliverable that does not satisfy the task's own written
   // verification never spends an independent review round.
   async function verificationSatisfied(checks) {
-    requirementEvidence=null;
+    requirementEvidence=null;hostReplayEvidence=null;
     if(verificationGate===null)return true;
     // The description carries hard requirements too ("also confirm X/Y/Z do not
     // regress", "do not modify A"), and a gate that reads only the verification
@@ -1168,9 +1169,12 @@ export function createTaskRunner(options) {
         ...(written(description)?{description}:{}),
         ...(written(verification)?{verification}:{}),checks,
         ...(parsedHistory?.scopeRevisions?{scope:effectiveScope}: {})})));
-    shape(verdict,['satisfied',...(Object.hasOwn(verdict,'items')?['items']:[])]);
+    shape(verdict,['satisfied',...['items','hostRecord'].filter(key=>Object.hasOwn(verdict,key))]);
     need(typeof verdict.satisfied==='boolean','invalid_result');
-    need(verdict.satisfied||!Object.hasOwn(verdict,'items'),'invalid_result');
+    need(verdict.satisfied||!Object.hasOwn(verdict,'items')&&!Object.hasOwn(verdict,'hostRecord'),'invalid_result');
+    // The host's own replay record (host-replay.mjs) is a separate handoff entry.
+    hostReplayEvidence=Object.hasOwn(verdict,'hostRecord')
+      ?encodeHostReplayEvidence({identity:{...config.identity,attempt},facts:verdict.hostRecord}):null;
     // A satisfied gate may return its per-requirement answers; they become one
     // handoff evidence entry bound to this identity and attempt.
     requirementEvidence=Object.hasOwn(verdict,'items')
@@ -1233,7 +1237,7 @@ export function createTaskRunner(options) {
     try{createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
       handoffPath:completion.handoffs[attempt-1],evidence:[...journal.filter(row=>row.payload.type==='completion-rework-requested')
         .map(row=>'cm-completion-rework-v1: '+JSON.stringify({identity:{...config.identity,attempt:2},recordDigest:row.digest})),
-        ...(requirementEvidence===null?[]:[requirementEvidence])]});}
+        ...(requirementEvidence===null?[]:[requirementEvidence]),...(hostReplayEvidence===null?[]:[hostReplayEvidence])]});}
     catch(error){emptyDelivery(error);return false;}
     return true;
   }
