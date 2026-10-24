@@ -343,6 +343,36 @@ supported Bash environment, add the following commands to Claude Code's
 
 Set `CM_UPDATE_REMOTE` when your team intentionally uses a fork.
 
+## Optional companion skills (Matt Pocock)
+
+CM recommends twelve skills from [mattpocock/skills](https://github.com/mattpocock/skills)
+(MIT) for work between CM stages, such as grilling a plan before `cm-prd` or finding
+refactoring opportunities before `cm-refactor`. CM never depends on them and never
+downloads them on its own. After installing, `install.sh` and `install-codex.sh`
+list the ones missing from `~/.claude/skills` and `~/.agents/skills` and print one
+command; later installs shorten this to one line while the same set is missing.
+`/cm-check` reports the same status.
+
+To install them, run the printed command, for example:
+
+```bash
+node ~/.claude/scripts/cm-matt-skills.mjs install
+```
+
+The command fetches only commit `5beb35b` into a private temporary repository,
+reads files straight from git without a checkout, and checks every file and the
+upstream `LICENSE` against the SHA-256 list built into the script. Any mismatch,
+extra or missing file, or non-regular file aborts the whole install before
+anything is written. Each skill is copied with `LICENSE` into both skill
+directories; a skill whose name already exists is skipped and reported, never
+overwritten, and a skills directory that is not a usable directory is reported
+as a failure. Nothing downloaded is executed: git runs without your git
+configuration, hooks or credential helpers, over https or local paths only;
+proxy settings are taken from `https_proxy`-style environment variables.
+`--source <https URL or path>` uses a mirror, which must serve the pinned commit
+by id; the commit and checksums still apply. Start a new session to see newly
+installed skills.
+
 ## Uninstall
 
 For a Codex install registered by the installer, remove the enabled plugin and

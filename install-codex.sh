@@ -501,3 +501,6 @@ echo
 echo "CM Workflow installed for Codex from: $PLUGIN_DEST"
 echo "User guide: $PLUGIN_DEST/docs/user-guide.md"
 echo "Start a new Codex thread, then run \$cm-check, \$cm-prd, or \$cm-test."
+# Optional Matt Pocock companion skills: print what is missing and one command; never download.
+echo
+node "$PLUGIN_DEST/scripts/cm-matt-skills.mjs" hint </dev/null || true
