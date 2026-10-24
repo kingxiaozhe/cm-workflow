@@ -351,6 +351,8 @@ export function install({env=process.env,source=UPSTREAM.repo,upstream=UPSTREAM,
     for(const r of plan)for(const s of r.skipped)if(s.state==='other')write(`  跳过 ${r.label} ${s.name}：已有同名技能但内容不同，未覆盖\n`);
     return failed?1:0;
   }
+  // git runs inside a private temporary directory, so a local path is fixed to the caller's cwd first.
+  if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(source))source=path.resolve(source);
   write(`拉取 ${source} 的固定提交 ${upstream.commit.slice(0,7)} 并逐个文件核对……\n`);
   const workdir=fs.mkdtempSync(path.join(tmpRoot,'cm-matt-skills-'));
   let verified;

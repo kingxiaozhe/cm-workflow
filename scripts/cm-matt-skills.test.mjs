@@ -183,6 +183,17 @@ test('a source without the pinned commit is refused; the CLI cannot swap the man
   }
 });
 
+test('a relative local source is read from the current directory',t=>{
+  const f=fakeUpstream(t),h=home(t);
+  const cwd=process.cwd();
+  t.after(()=>process.chdir(cwd));
+  process.chdir(path.dirname(f.repo));
+  const {code,text}=runInstall(h,f,{source:`./${path.basename(f.repo)}`});
+  assert.equal(code,0,text);
+  assert.match(text,new RegExp(`拉取 ${f.repo.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')} 的固定提交`));
+  assert.ok(fs.existsSync(path.join(h.claude,'alpha/SKILL.md')));
+});
+
 test('downloaded files are copied, never executed',t=>{
   const marker=path.join(tempDir(t,'cm-matt-marker-'),'ran');
   const f=fakeUpstream(t,repo=>{
