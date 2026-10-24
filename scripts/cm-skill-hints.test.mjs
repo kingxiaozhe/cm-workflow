@@ -43,7 +43,7 @@ function fixture(t,{rules,local,authorSkills=[]}={}){
   }
   const send=async(prompt,{host='claude',session='s1',extraEnv={},now=NOW}={})=>{
     const out=await hook({prompt,session_id:session},{env:{...env,...extraEnv},host,rulesFile,now,loadAuthor});
-    return out?JSON.parse(out).hookSpecificOutput.additionalContext:'';
+    return out?JSON.parse(out).systemMessage:'';
   };
   const log=()=>{try{return fs.readFileSync(logFile(env),'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line));}catch{return [];}};
   return {home,env,rulesFile,send,log,authorOptions};
@@ -51,8 +51,8 @@ function fixture(t,{rules,local,authorSkills=[]}={}){
 
 test('a keyword hint names the skill in the host\'s own syntax',async t=>{
   const f=fixture(t,{authorSkills:[['.claude/skills','grill-me'],['.agents/skills','grill-me']]});
-  assert.match(await f.send('帮我设计一个方案'),/- \/grill-me：先问透/);
-  assert.match(await f.send('帮我设计一个方案',{host:'codex',session:'s2'}),/- \$grill-me：先问透/);
+  assert.match(await f.send('帮我设计一个方案'),/可以试 \/grill-me——先问透/);
+  assert.match(await f.send('帮我设计一个方案',{host:'codex',session:'s2'}),/可以试 \$grill-me——先问透/);
 });
 
 test('matching ignores case and supports optional regex patterns',async t=>{
@@ -65,7 +65,7 @@ test('matching ignores case and supports optional regex patterns',async t=>{
 test('a missing author skill falls back to its CM counterpart, or is dropped',async t=>{
   const f=fixture(t);
   const text=await f.send('帮我设计一个方案，会话太长了');
-  assert.match(text,/\/cm-challenge：先挑战/);
+  assert.match(text,/\/cm-challenge——先挑战/);
   assert.doesNotMatch(text,/grill-me|handoff/);
 });
 
@@ -77,8 +77,7 @@ test('an author skill installed only for the other host does not count',async t=
 test('at most two hints per message, user rules first',async t=>{
   const f=fixture(t,{local:{rules:[{skill:'my-skill',keywords:['bug'],reason:'自己的'}]}});
   const text=await f.send('设计一个方案，修这个 bug，再补单测');
-  const lines=text.split('\n').filter(line=>line.startsWith('- '));
-  assert.deepEqual(lines,['- /my-skill：自己的','- /cm-challenge：先挑战']);
+  assert.deepEqual(text.split('\n'),['💡 技能提醒：可以试 /my-skill——自己的','💡 技能提醒：可以试 /cm-challenge——先挑战']);
 });
 
 test('the same skill is hinted once per session, again in a new session',async t=>{
@@ -119,7 +118,7 @@ test('disable switches off a CM rule by id; a broken local file keeps CM rules',
 test('invalid user rules are skipped, not fatal',async t=>{
   const f=fixture(t,{local:{rules:[{skill:'bad name',keywords:['bug']},{skill:'ok',keywords:[]},{skill:'re',patterns:['(']},
     {skill:'good',keywords:['修这个']}]}});
-  assert.match(await f.send('修这个 bug'),/- \/good/);
+  assert.match(await f.send('修这个 bug'),/可以试 \/good——/);
 });
 
 test('the log keeps rule, skill, host and time, never the message',async t=>{
@@ -172,8 +171,9 @@ test('main hook prints the UserPromptSubmit JSON shape with the shipped table',a
   let out='';
   await main(['hook','--host','codex'],{env:f.env,readInput:()=>JSON.stringify({prompt:'帮我修这个 bug',session_id:'x'}),write:text=>{out+=text;}});
   const parsed=JSON.parse(out);
-  assert.equal(parsed.hookSpecificOutput.hookEventName,'UserPromptSubmit');
-  assert.match(parsed.hookSpecificOutput.additionalContext,/\$cm-fix/);
+  // Shown to the user only: nothing is added to the model's context.
+  assert.deepEqual(Object.keys(parsed),['systemMessage']);
+  assert.match(parsed.systemMessage,/^💡 技能提醒：可以试 \$cm-fix——/);
 });
 
 test('the shipped table loads cleanly and every rule resolves to a CM skill or a fallback',async ()=>{
@@ -225,7 +225,7 @@ test('the installed copy runs on its own with its own table',async t=>{
   await enable({env:f.env,write:()=>{}});
   const installed=await import(path.join(installDir(f.env),SCRIPT_NAME));
   const out=await installed.hook({prompt:'修这个 bug',session_id:'z'},{env:f.env,host:'claude',now:NOW});
-  assert.match(JSON.parse(out).hookSpecificOutput.additionalContext,/cm-fix/);
+  assert.match(JSON.parse(out).systemMessage,/cm-fix/);
 });
 
 test('hook command quotes paths with spaces',async t=>{
@@ -283,8 +283,7 @@ test('special files at the local rules, state or log path never block the hook',
 
 test('a user rule with a CM rule id replaces that CM rule',async t=>{
   const f=fixture(t,{local:{rules:[{id:'fix-bug',skill:'my-fix',keywords:['修这个 bug'],reason:'用我的'}]}});
-  const lines=(await f.send('修这个 bug')).split('\n').filter(line=>line.startsWith('- '));
-  assert.deepEqual(lines,['- /my-fix：用我的']);
+  assert.equal(await f.send('修这个 bug'),'💡 技能提醒：可以试 /my-fix——用我的');
 });
 
 test('session state is never pruned: a session resumed much later still does not repeat a hint',async t=>{
@@ -392,7 +391,7 @@ test('a missing author checker falls back to CM skills instead of failing',async
   assert.equal(await loadAuthorCheck('./does-not-exist.mjs'),null);
   const f=fixture(t,{authorSkills:[['.claude/skills','grill-me']]});
   const out=await hook({prompt:'设计一个方案',session_id:'m'},{env:f.env,host:'claude',rulesFile:f.rulesFile,now:NOW,loadAuthor:async()=>null});
-  assert.match(JSON.parse(out).hookSpecificOutput.additionalContext,/cm-challenge/);
+  assert.match(JSON.parse(out).systemMessage,/cm-challenge/);
 });
 
 test('the installed hook still exits 0 with a hint when its checker file is gone',async t=>{
@@ -401,7 +400,7 @@ test('the installed hook still exits 0 with a hint when its checker file is gone
   fs.unlinkSync(path.join(installDir(f.env),'cm-matt-skills.mjs'));
   const out=execFileSync(process.execPath,[path.join(installDir(f.env),SCRIPT_NAME),'hook','--host','claude'],
     {env:{...process.env,...f.env},input:JSON.stringify({prompt:'帮我设计一个方案',session_id:'gone'}),encoding:'utf8'});
-  assert.match(JSON.parse(out).hookSpecificOutput.additionalContext,/cm-challenge/);
+  assert.match(JSON.parse(out).systemMessage,/cm-challenge/);
 });
 
 test('a failed companion copy leaves the previously installed script in place',async t=>{
