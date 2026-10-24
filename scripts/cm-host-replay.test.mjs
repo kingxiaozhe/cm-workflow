@@ -101,6 +101,23 @@ test('the auto gate passes only a complete report that matches the host runs',()
     const verdict=autoVerificationVerdict({report,facts});
     assert.equal(verdict.satisfied,false);assert.match(verdict.unsatisfied.join('\n'),match);
   }
+  // A behaviour that mentions failure is not a run claim; a later clause is not about the baseline.
+  assert.equal(autoVerificationVerdict({report:[{requirement:'保持原有行为：校验失败时显示错误',satisfied:true,evidence:'src/a.js'}],
+    facts:replayed({skipped:'no_test_files'})}).satisfied,true);
+  assert.equal(autoVerificationVerdict({report:[{requirement:'记录基线',satisfied:true,evidence:'基线不通过，修改后通过'}],
+    facts:replayed({skipped:'no_test_files'},{baseline:{outcome:'failed',evidence:'b'}})}).satisfied,true);
+  assert.equal(autoVerificationVerdict({report:[{requirement:'记录基线',satisfied:true,evidence:'基线 tests 49 pass 49 fail 0'}],
+    facts:replayed({skipped:'no_test_files'})}).satisfied,true);
+  // Each guard on its own: one clause per claim (the baseline passed; the new test failed on the old code) ...
+  assert.equal(autoVerificationVerdict({report:[{requirement:'记录基线与先失败',satisfied:true,evidence:'基线通过，新增测试在旧实现下失败'}],
+    facts:replayed({outcome:'failed',evidence:'r'})}).satisfied,true);
+  // ... and a failure word followed by 时 inside one clause is behaviour, not a failing-first run.
+  assert.equal(autoVerificationVerdict({report:[{requirement:'原接口失败时返回错误码',satisfied:true,evidence:'src/api.js'}],
+    facts:replayed({skipped:'no_test_files'})}).satisfied,true);
+  // A stated failing baseline against a passing one is a contradiction too.
+  const failedClaim=autoVerificationVerdict({report:[{requirement:'记录基线失败',satisfied:true,evidence:'基线失败 2 项'}],
+    facts:replayed({skipped:'no_test_files'})});
+  assert.equal(failedClaim.satisfied,false);assert.match(failedClaim.unsatisfied[0],/基线 passed，自报 failed/);
   // A plain requirement needs no replay; a baseline claim is matched by any replayed baseline.
   assert.equal(autoVerificationVerdict({report:[plain],facts:notReplayed('multi_root',passed)}).satisfied,true);
   assert.equal(autoVerificationVerdict({report:[{requirement:'baseline 用例数',satisfied:true,evidence:'5'}],facts:replayed({skipped:'no_test_files'})}).satisfied,true);
@@ -139,4 +156,20 @@ test('the baseline restores file permissions, and a failed copy leaves no privat
       timeoutMs:30000,identity,greenChecks:passed,signal:new AbortController().signal,makeCheck:directCheck});
     assert.equal(failed.reason,'replay_failed');assert.deepEqual(fs.readdirSync(tmp),[]);
   }finally{fs.chmodSync(unreadable,0o600);if(previous===undefined)delete process.env.TMPDIR;else process.env.TMPDIR=previous;}
+});
+
+test('checks that name the project by absolute path, or read through a link into it, read the copy',async t=>{
+  const {code,specs}=project(t),scope=['src/sum.js','test/sum.test.js'];
+  const snapshot=captureBeforeSnapshot(code,scope);deliver(code);
+  const base={codeProject:code,specsDir:specs,snapshot,scope,tests:['test/sum.test.js'],timeoutMs:30000,identity,
+    greenChecks:passed,signal:new AbortController().signal,makeCheck:directCheck};
+  // An absolute test entry: its relative import must load the copy's old sum.js, so the test fails first.
+  const absolute=await replayDelivery({...base,checkCommands:[{id:'abs',command:['node','--test',path.join(code,'test/sum.test.js')]}]});
+  assert.equal(absolute.red.outcome,'failed');
+  // An absolute link into the project (lib -> <project>/src) read by the test.
+  fs.symlinkSync(path.join(code,'src'),path.join(code,'lib'));
+  fs.writeFileSync(path.join(code,'test/sum.test.js'),"import test from 'node:test';import assert from 'node:assert';import {sum} from '../lib/sum.js';test('sum',()=>assert.equal(sum(1,2),3));\n");
+  const linked=await replayDelivery({...base,checkCommands:commands});
+  assert.equal(linked.red.outcome,'failed');
+  assert.equal(fs.readlinkSync(path.join(code,'lib')),path.join(code,'src'),'the real link is untouched');
 });

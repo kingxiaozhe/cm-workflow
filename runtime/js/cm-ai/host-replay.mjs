@@ -35,20 +35,46 @@ const summarize=rows=>{
 };
 const replayError=code=>Object.assign(new Error(code),{code});
 
+// A path inside the project that the copy holds (not .git, not nested specs).
+const copied=(codeProject,specsDir,target)=>{
+  const inside=dir=>target===dir||target.startsWith(dir+path.sep);
+  return inside(codeProject)&&!inside(specsDir)&&!inside(path.join(codeProject,'.git'));
+};
 // A fresh private copy for each run, so no run inherits another's writes. The
 // directory is owned here until it is returned, so a failed copy is removed too.
+// A link whose target resolves into the project is re-pointed into the copy, so
+// a check reading through it reads the copy's state, never the real project's.
 function copyProject(codeProject,specsDir){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-host-replay-')));
   try{
-    const target=path.join(root,'project');let entries=0;
+    const target=path.join(root,'project');let entries=0;const links=[];
     const skip=new Set([path.join(codeProject,'.git'),specsDir]);
     // Copy-on-write clones where the file system has them (APFS, btrfs); a plain copy otherwise.
     fs.cpSync(codeProject,target,{recursive:true,mode:fs.constants.COPYFILE_FICLONE,verbatimSymlinks:true,filter:source=>{
       if(skip.has(source))return false;
-      if(++entries>ENTRY_LIMIT)throw replayError('replay_project_too_large');return true;
+      if(++entries>ENTRY_LIMIT)throw replayError('replay_project_too_large');
+      if(fs.lstatSync(source).isSymbolicLink()){
+        const resolved=path.resolve(path.dirname(source),fs.readlinkSync(source));
+        if(copied(codeProject,specsDir,resolved))links.push({at:path.relative(codeProject,source),to:path.relative(codeProject,resolved)});
+      }
+      return true;
     }});
-    return {root,project:fs.realpathSync(target)};
+    const project=fs.realpathSync(target);
+    for(const link of links){
+      const at=path.join(project,link.at);fs.unlinkSync(at);fs.symlinkSync(path.join(project,link.to),at);
+    }
+    return {root,project};
   }catch(error){removeCopy(root);throw error;}
+}
+// Command arguments naming a path inside the project name the copy's path instead.
+function mapArgument(argument,codeProject,specsDir,project){
+  if(argument===codeProject)return project;
+  const prefix=codeProject+path.sep;let out='',from=0;
+  for(let at=argument.indexOf(prefix);at!==-1;at=argument.indexOf(prefix,from)){
+    const rest=argument.slice(at).split(/[\s=,:;'"]/)[0];
+    out+=argument.slice(from,at)+(copied(codeProject,specsDir,rest)?project+path.sep:prefix);from=at+prefix.length;
+  }
+  return out+argument.slice(from);
 }
 function removeCopy(root){
   try{fs.rmSync(root,{recursive:true,force:true});}
@@ -97,7 +123,8 @@ export async function replayDelivery({codeProject,specsDir,snapshot,scope,tests,
     try{
       for(const file of scope)place(copy.project,file,states(file));
       // The same sandbox as the task's own checks: the copy is the workspace, specs stay read-only.
-      return summarize(await makeCheck({cwd:copy.project,commands,timeoutMs,specsRoot:specsDir})({identity},{signal}));
+      const mapped=commands.map(item=>({...item,command:item.command.map(argument=>mapArgument(argument,codeProject,specsDir,copy.project))}));
+      return summarize(await makeCheck({cwd:copy.project,commands:mapped,timeoutMs,specsRoot:specsDir})({identity},{signal}));
     }finally{removeCopy(copy.root);}
   };
   try{
