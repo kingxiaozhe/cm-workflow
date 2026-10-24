@@ -8,7 +8,7 @@ import {execFileSync} from 'node:child_process';
 import {
   hook,main,enable,statusText,loadRules,stripCode,hookCommand,hasHintHook,
   localPath,logFile,installDir,claudeSettingsPath,codexHooksPath,defaultRulesPath,
-  MAX_PROMPT,ADOPT_WINDOW,LOG_LIMIT,SCRIPT_NAME,RULES_NAME,STATE_IDLE_MS,patternMatches,typed,readJson,loadAuthorCheck,
+  MAX_PROMPT,ADOPT_WINDOW,LOG_LIMIT,SCRIPT_NAME,RULES_NAME,patternMatches,typed,readJson,loadAuthorCheck,
 } from './cm-skill-hints.mjs';
 
 const NOW=Date.parse('2026-10-24T08:00:00Z');
@@ -287,24 +287,16 @@ test('a user rule with a CM rule id replaces that CM rule',async t=>{
   assert.deepEqual(lines,['- /my-fix：用我的']);
 });
 
-test('an active session keeps its state past the idle limit of other sessions',async t=>{
-  const f=fixture(t);
-  await f.send('修这个 bug',{session:'long'});
-  for(let i=0;i<ADOPT_WINDOW+2;i++)await f.send(`第 ${i} 条`,{session:'long',now:NOW+i*STATE_IDLE_MS/4});
-  const later=NOW+(ADOPT_WINDOW+1)*STATE_IDLE_MS/4+1000;
-  await f.send('补单测',{session:'other',now:later});
-  assert.equal(await f.send('修这个 bug',{session:'long',now:later}),'');
-});
-
-test('a session idle past the limit is pruned when another session writes',async t=>{
+test('session state is never pruned: a session resumed much later still does not repeat a hint',async t=>{
   const f=fixture(t);
   await f.send('修这个 bug',{session:'old'});
   const dir=path.join(installDir(f.env),'state');
   const [name]=fs.readdirSync(dir);
-  const stale=new Date(NOW-STATE_IDLE_MS-1000);
-  fs.utimesSync(path.join(dir,name),stale,stale);
+  const ancient=new Date(NOW-365*24*60*60*1000);
+  fs.utimesSync(path.join(dir,name),ancient,ancient);
   await f.send('补单测',{session:'new'});
-  assert.ok(!fs.existsSync(path.join(dir,name)));
+  assert.ok(fs.existsSync(path.join(dir,name)));
+  assert.equal(await f.send('修这个 bug',{session:'old'}),'');
 });
 
 test('a foreign command that merely mentions the script name is not taken as ours',async t=>{

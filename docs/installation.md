@@ -416,8 +416,9 @@ user rule with the same `id` as a CM rule replaces it. `patterns` (regular
 expressions) share a 200 ms budget per message; past it they count as no match. An
 author skill (`grill-me`, `handoff`, `wayfinder`) is only hinted when its pinned
 author version (see above) is installed for that host; otherwise its CM
-counterpart is hinted, if there is one. Per-session state is kept until a session
-has been idle for 30 days.
+counterpart is hinted, if there is one. Per-session state (a few hundred bytes
+each, under `~/.cm-workflow/skill-hints/state/`) is never removed, so a session
+resumed later does not repeat a hint.
 `~/.cm-workflow/logs/skill-hints.jsonl` records rule id, skill, host and time of
 each hint and of each adoption (you typed the skill within the next five
 messages), never message text; it drops its older half past 1 MB. `/cm-check`

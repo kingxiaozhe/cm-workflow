@@ -26,8 +26,6 @@ export const MAX_HINTS=2;
 export const ADOPT_WINDOW=5;
 export const LOG_LIMIT=1024*1024;
 export const PATTERN_BUDGET_MS=200;
-// A session counts as over after 30 days without any message; its state is then removed.
-export const STATE_IDLE_MS=30*24*60*60*1000;
 const MAX_READ=1024*1024;
 const HOSTS=['claude','codex'];
 const SKILL_NAME=/^[\w.:-]+$/;
@@ -150,7 +148,7 @@ const statePath=(env,session)=>path.join(installDir(env),'state',
   `${crypto.createHash('sha256').update(String(session)).digest('hex').slice(0,16)}.json`);
 function readState(file){
   const read=readJson(file,{allowEmpty:true}).value;
-  return {exists:Boolean(read),hinted:strings(read?.hinted),pending:Array.isArray(read?.pending)?read.pending.filter(item=>
+  return {hinted:strings(read?.hinted),pending:Array.isArray(read?.pending)?read.pending.filter(item=>
     item&&typeof item.skill==='string'&&typeof item.rule==='string'&&Number.isInteger(item.left)):[]};
 }
 // Replace by rename of a freshly created file, so a link planted at the path is never written through.
@@ -162,13 +160,6 @@ function writeAtomic(file,text,{before}={}){
     before?.();
     fs.renameSync(temporary,file);
   }finally{try{fs.unlinkSync(temporary);}catch{/* 已改名或未创建 */}}
-}
-function pruneStates(dir,now){
-  for(const name of fs.readdirSync(dir)){
-    if(!/^[0-9a-f]{16}\.json$/.test(name))continue;
-    const file=path.join(dir,name);
-    try{if(now-fs.lstatSync(file).mtimeMs>STATE_IDLE_MS)fs.unlinkSync(file);}catch{/* 下次再清 */}
-  }
 }
 
 // Rule id, skill, host and time only: the message itself is never written.
@@ -202,7 +193,7 @@ export async function hook(input,{env=process.env,host='claude',rulesFile=defaul
   if(!loaded.enabled)return '';
   const session=typeof input.session_id==='string'&&input.session_id?input.session_id:null;
   const file=session?statePath(env,session):null;
-  const state=file?readState(file):{exists:false,hinted:[],pending:[]};
+  const state=file?readState(file):{hinted:[],pending:[]};
   const time=new Date(now).toISOString();
 
   // Adopted = the user typed the hinted skill within the next ADOPT_WINDOW messages.
@@ -219,14 +210,12 @@ export async function hook(input,{env=process.env,host='claude',rulesFile=defaul
     for(const item of adopted)appendLog(env,{t:time,event:'adopted',host,rule:item.rule,skill:item.skill});
     for(const hint of hints)appendLog(env,{t:time,event:'hint',host,rule:hint.rule,skill:hint.skill});
   }catch{/* 统计丢一条 */}
-  // Every message of a session with state rewrites it, which also keeps it from
-  // being pruned while the session is still in use.
-  if(file&&(hints.length||state.exists)){
+  // Session state is never removed (decided 2026-10-24): a session resumed months
+  // later must still not repeat a hint. Each file is a few hundred bytes.
+  if(file&&(hints.length||state.pending.length)){
     try{
       writeAtomic(file,JSON.stringify({hinted:[...state.hinted,...hints.map(hint=>hint.skill)],
         pending:[...pending,...hints.map(hint=>({rule:hint.rule,skill:hint.skill,left:ADOPT_WINDOW}))]}));
-      fs.utimesSync(file,new Date(now),new Date(now));
-      pruneStates(path.dirname(file),now);
     }catch{/* 下条消息可能重复提醒一次 */}
   }
   if(!hints.length)return '';
