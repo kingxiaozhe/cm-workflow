@@ -1152,6 +1152,20 @@ export function createTaskRunner(options) {
   // Runs on the checks just collected, before any handoff or review package is
   // built, so a deliverable that does not satisfy the task's own written
   // verification never spends an independent review round.
+  // The scope as the task baseline recorded it when the run was created: durable,
+  // so a resumed process still knows the state before any development. The host
+  // replay restores it as "before development" (host-replay.mjs). A scope file
+  // the baseline holds without content makes it unavailable, never partial.
+  function baselineSnapshot(){
+    const files=new Map();
+    for(const file of effectiveScope){
+      const record=base.files.find(item=>item.path===file);
+      if(!record){files.set(file,null);continue;}
+      if(record.type!=='file'||typeof record.contentBase64!=='string')return {unavailable:'baseline_without_content'};
+      files.set(file,{bytes:Buffer.from(record.contentBase64,'base64'),mode:record.mode});
+    }
+    return {files};
+  }
   async function verificationSatisfied(checks) {
     requirementEvidence=null;hostReplayEvidence=null;
     if(verificationGate===null)return true;
@@ -1168,7 +1182,7 @@ export function createTaskRunner(options) {
       json({identity:{...config.identity,attempt},
         ...(written(description)?{description}:{}),
         ...(written(verification)?{verification}:{}),checks,
-        ...(parsedHistory?.scopeRevisions?{scope:effectiveScope}: {})})));
+        ...(parsedHistory?.scopeRevisions?{scope:effectiveScope}: {})}),{baselineSnapshot:baselineSnapshot()}));
     shape(verdict,['satisfied',...['items','hostRecord'].filter(key=>Object.hasOwn(verdict,key))]);
     need(typeof verdict.satisfied==='boolean','invalid_result');
     need(verdict.satisfied||!Object.hasOwn(verdict,'items')&&!Object.hasOwn(verdict,'hostRecord'),'invalid_result');

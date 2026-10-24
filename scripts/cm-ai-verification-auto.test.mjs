@@ -79,3 +79,21 @@ test('auto gate: a failing-first claim the host replay contradicts stops before 
       "process.exit(0);\n"),protection);
     assert.equal(result.state,'blocked');assert.equal(result.code,'verification_precheck_failed');
   }));
+
+// Acceptance regression: a gate that stops leaves the delivery in the project. A
+// resumed process must still replay the state the task baseline recorded at
+// creation, not the already-implemented files it finds on disk.
+test('auto gate after a stopped attempt: the replay uses the task baseline, not the delivered files on disk',
+  {skip:!supported},()=>fixture(async({definition,protection})=>{
+    const first=await run(definition,develop(undefined),protection);
+    assert.equal(first.code,'verification_precheck_failed');
+    assert.equal(fs.readFileSync(path.join(definition.codeProject,'a.js'),'utf8'),'new\n','the stopped delivery stays on disk');
+    const execution=createConversationExecution(definition,'host',develop([{requirement:'T-001: RED 必须先失败',satisfied:true,
+      evidence:'a.test.js 在旧 a.js 下失败',run:'red'}]),null,null,null,false,'codex',{protection,controlPolicy:policy});
+    const control=await openControlRun(definition,'resume',execution);
+    let result;try{result=await control.host.handle(request('advance'));}finally{control.close();}
+    // The gate passed and the handoff was published; this fixture has no reviewer, so the run stops at review.
+    assert.notEqual(result.code,'verification_precheck_failed',JSON.stringify(result));
+    const record=JSON.parse(handoff(definition).evidence.find(entry=>entry.startsWith('cm-host-replay-v1: ')).slice('cm-host-replay-v1: '.length));
+    assert.deepEqual([record.facts.baseline.outcome,record.facts.red.outcome],['failed','failed']);
+  }));

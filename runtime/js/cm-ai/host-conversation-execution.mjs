@@ -22,7 +22,7 @@ import {createHostWorkflowCapabilities,createImplicitQaDecision} from './host-wo
 import {resolveHostRole} from './host-role-routing.mjs';
 import {checklistGaps} from './checklist-coverage.mjs';
 import {readRequirementItems,splitRequirementReport} from './requirement-evidence.mjs';
-import {captureBeforeSnapshot,replayDelivery,notReplayed} from './host-replay.mjs';
+import {replayDelivery,notReplayed} from './host-replay.mjs';
 import {autoVerificationVerdict} from './verification-auto.mjs';
 import {declaredTaskScope} from '../task-scope.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
@@ -200,18 +200,18 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     };
   };
   const used=new Set();
-  // Host replay (host-replay.mjs): scope bytes before a task's first development
-  // in this process, and each attempt's per-requirement report, split off the
-  // developer value before it is validated or journaled. Both live in memory
-  // only: a resumed process has neither and the gate records that instead.
-  const beforeSnapshots=new Map(),requirementReports=new Map();
+  // Host replay (host-replay.mjs) restores the task baseline the runner hands the
+  // gate (control.baselineSnapshot). Each attempt's per-requirement report is split
+  // off the developer value before it is validated or journaled; it lives in memory
+  // only, so a resumed process without it reports the report as missing.
+  const requirementReports=new Map();
   const reportKey=identity=>`${identity.taskId}:${identity.attempt}`;
   const replayable=projectExecution!==null&&!definition.codeProjects;
   const declaredTests=taskId=>{try{return declaredTaskScope(definition.specsDir,definition.feature,taskId)?.tests??[];}catch{return [];}};
   // Only a protected single-root run has host checks to replay; any other run
   // keeps its gate request and handoff exactly as before (facts null).
   const hostRuns=(request,control)=>replayable?replayDelivery({codeProject:definition.codeProject,specsDir:definition.specsDir,
-    snapshot:beforeSnapshots.get(request.identity.taskId)??null,scope:request.scope??definition.scope,
+    snapshot:control.baselineSnapshot??null,scope:request.scope??definition.scope,
     tests:declaredTests(request.identity.taskId),checkCommands:protection.checkCommands,timeoutMs:protection.timeoutMs,
     identity:request.identity,greenChecks:request.checks,signal:control.signal}):null;
   // The gate is opt-in: without it the flow is byte-for-byte what it was.
@@ -278,12 +278,12 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         cwd:definition.codeProject,model:provider.model,...(externalModels?{effort:provider.effort}:{}),timeoutMs:protection.timeoutMs,
         ...(coderRuntime==='codex'?{specsRoot:definition.specsDir}:{}),
         spawnProcess:dispatchSpawn('coder',bound.identity,control.signal,typeof control.onWorker==='function'?control.onWorker:null)}):null;
-      if(replayable&&!beforeSnapshots.has(bound.identity.taskId))
-        beforeSnapshots.set(bound.identity.taskId,captureBeforeSnapshot(definition.codeProject,bound.payload.scope));
       const splitReport=response=>{
         if(response?.status!=='succeeded')return response;
         const split=splitRequirementReport(response.value);
         requirementReports.set(reportKey(bound.identity),split.items);
+        if(split.items==='invalid')try{process.stderr.write(JSON.stringify({diagnostic:'requirement_report_invalid',
+          task:bound.identity.taskId,attempt:bound.identity.attempt,problem:split.problem})+'\n');}catch{/* diagnostics never change the result */}
         return {...response,value:split.value};
       };
       const worker=async({prompt})=>{

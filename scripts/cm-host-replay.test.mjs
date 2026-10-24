@@ -73,7 +73,9 @@ test('the developer report is split off the value; malformed reports are kept as
   assert.deepEqual(splitRequirementReport({outcome:'implemented',requirements:null}),{value:{outcome:'implemented'},items:null});
   assert.deepEqual(splitRequirementReport({outcome:'implemented',requirements:[]}),{value:{outcome:'implemented'},items:null});
   assert.deepEqual(splitRequirementReport({outcome:'implemented'}),{value:{outcome:'implemented'},items:null});
-  assert.deepEqual(splitRequirementReport({outcome:'implemented',requirements:[{requirement:'x'}]}),{value:{outcome:'implemented'},items:'invalid'});
+  // An invalid report names the first broken rule, never the reported text.
+  assert.deepEqual(splitRequirementReport({outcome:'implemented',requirements:[{requirement:'x'}]}),
+    {value:{outcome:'implemented'},items:'invalid',problem:'item 1: missing satisfied'});
 });
 
 test('the auto gate checks tagged run claims against the host runs, never free text',()=>{
@@ -105,8 +107,13 @@ test('the auto gate checks tagged run claims against the host runs, never free t
   // A baseline tag without a result needs only a baseline that ran.
   assert.equal(autoVerificationVerdict({report:[{...plain,run:'baseline'}],facts:replayed({skipped:'no_test_files'},{baseline:{outcome:'failed',evidence:'b'}})}).satisfied,true);
   assert.equal(autoVerificationVerdict({report:[plain],facts:notReplayed('multi_root',passed)}).satisfied,true);
-  // Tags are validated: a result only on a baseline tag, known values only; the handoff text drops them.
-  assert.equal(splitRequirementReport({outcome:'implemented',requirements:[{...plain,run:'red',result:'passed'}]}).items,'invalid');
+  // Tags are validated (known values only); a result off a baseline item is dropped, never voids the report
+  // (the first real run tagged its red item with result "failed"); the handoff text drops tags.
+  assert.deepEqual(splitRequirementReport({outcome:'implemented',requirements:[{...plain,run:'red',result:'failed'}]}).items,[{...plain,run:'red'}]);
+  assert.deepEqual(splitRequirementReport({outcome:'implemented',requirements:[{...plain,result:'passed'}]}).items,[plain]);
+  assert.equal(splitRequirementReport({outcome:'implemented',requirements:[{...plain,run:'baseline',result:'green'}]}).items,'invalid');
+  assert.equal(splitRequirementReport({outcome:'implemented',requirements:[{...plain,run:'baseline',result:'green'}]}).problem,
+    'item 1: result is not passed, failed or null');
   assert.equal(splitRequirementReport({outcome:'implemented',requirements:[{...plain,run:'green'}]}).items,'invalid');
   assert.deepEqual(splitRequirementReport({outcome:'implemented',requirements:[{...plain,run:null,result:null}]}).items,[plain]);
 });

@@ -32,7 +32,7 @@ task's description and verification (specification), evidence naming where it is
 Use null when the task states none. The host runs the task's checks itself before development (baseline) and with only the
 task's test files delivered (red), and checks tagged items against those runs: set run "red" on an item stating that a new
 test fails before the implementation; set run "baseline" on an item stating the result before development, with result
-"passed" or "failed" when the item states it; otherwise run and result are null. Never claim a run you have not reasoned about.
+"passed" or "failed" when the item states it; result is read only on a baseline item; otherwise run and result are null. Never claim a run you have not reasoned about.
 When supersededReview exists, it is read-only context: the last review of an earlier, superseded run of this task, not a verdict on this run. Avoid repeating its problems, but implement only the supplied task and scope.`;
 
 // The host owns instructions and workflow evidence. Reject contradictory
