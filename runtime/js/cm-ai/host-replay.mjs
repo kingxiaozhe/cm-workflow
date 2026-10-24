@@ -40,10 +40,13 @@ const copied=(codeProject,specsDir,target)=>{
   const inside=dir=>target===dir||target.startsWith(dir+path.sep);
   return inside(codeProject)&&!inside(specsDir)&&!inside(path.join(codeProject,'.git'));
 };
+const realOrNull=target=>{try{return fs.realpathSync(target);}catch{return null;}};
 // A fresh private copy for each run, so no run inherits another's writes. The
 // directory is owned here until it is returned, so a failed copy is removed too.
-// A link whose target resolves into the project is re-pointed into the copy, so
-// a check reading through it reads the copy's state, never the real project's.
+// Links are copied verbatim and never rewritten. A link whose final target (the
+// whole chain, resolved) lies in the copied part of the project must resolve to
+// the same place in the copy; otherwise a check could read the real project, and
+// the run is not replayed (replay_internal_link).
 function copyProject(codeProject,specsDir){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-host-replay-')));
   try{
@@ -53,28 +56,17 @@ function copyProject(codeProject,specsDir){
     fs.cpSync(codeProject,target,{recursive:true,mode:fs.constants.COPYFILE_FICLONE,verbatimSymlinks:true,filter:source=>{
       if(skip.has(source))return false;
       if(++entries>ENTRY_LIMIT)throw replayError('replay_project_too_large');
-      if(fs.lstatSync(source).isSymbolicLink()){
-        const resolved=path.resolve(path.dirname(source),fs.readlinkSync(source));
-        if(copied(codeProject,specsDir,resolved))links.push({at:path.relative(codeProject,source),to:path.relative(codeProject,resolved)});
-      }
+      if(fs.lstatSync(source).isSymbolicLink())links.push(path.relative(codeProject,source));
       return true;
     }});
     const project=fs.realpathSync(target);
     for(const link of links){
-      const at=path.join(project,link.at);fs.unlinkSync(at);fs.symlinkSync(path.join(project,link.to),at);
+      const real=realOrNull(path.join(codeProject,link));
+      if(real===null||!copied(codeProject,specsDir,real))continue;
+      if(realOrNull(path.join(project,link))!==path.join(project,path.relative(codeProject,real)))throw replayError('replay_internal_link');
     }
     return {root,project};
   }catch(error){removeCopy(root);throw error;}
-}
-// Command arguments naming a path inside the project name the copy's path instead.
-function mapArgument(argument,codeProject,specsDir,project){
-  if(argument===codeProject)return project;
-  const prefix=codeProject+path.sep;let out='',from=0;
-  for(let at=argument.indexOf(prefix);at!==-1;at=argument.indexOf(prefix,from)){
-    const rest=argument.slice(at).split(/[\s=,:;'"]/)[0];
-    out+=argument.slice(from,at)+(copied(codeProject,specsDir,rest)?project+path.sep:prefix);from=at+prefix.length;
-  }
-  return out+argument.slice(from);
 }
 function removeCopy(root){
   try{fs.rmSync(root,{recursive:true,force:true});}
@@ -116,6 +108,8 @@ export async function replayDelivery({codeProject,specsDir,snapshot,scope,tests,
   if(!Array.isArray(checkCommands)||checkCommands.length===0)return skipped('no_host_checks');
   const testFiles=(tests??[]).filter(file=>scope.includes(file));
   const commands=checkCommands.map(({id,command})=>({id,command}));
+  // A command that names the project by absolute path would run the real project, not the copy.
+  if(commands.some(item=>item.command.some(argument=>argument.includes(codeProject))))return skipped('absolute_project_path');
   // Each run starts from its own copy of the real project and gets its scope states placed.
   const run=async states=>{
     need(!signal?.aborted,'cancelled');
@@ -123,8 +117,7 @@ export async function replayDelivery({codeProject,specsDir,snapshot,scope,tests,
     try{
       for(const file of scope)place(copy.project,file,states(file));
       // The same sandbox as the task's own checks: the copy is the workspace, specs stay read-only.
-      const mapped=commands.map(item=>({...item,command:item.command.map(argument=>mapArgument(argument,codeProject,specsDir,copy.project))}));
-      return summarize(await makeCheck({cwd:copy.project,commands:mapped,timeoutMs,specsRoot:specsDir})({identity},{signal}));
+      return summarize(await makeCheck({cwd:copy.project,commands,timeoutMs,specsRoot:specsDir})({identity},{signal}));
     }finally{removeCopy(copy.root);}
   };
   try{
@@ -139,7 +132,7 @@ export async function replayDelivery({codeProject,specsDir,snapshot,scope,tests,
   }catch(error){
     if(signal?.aborted)throw error;
     return skipped(error?.code==='replay_project_too_large'?'project_too_large'
-      :error?.code==='replay_scope_link'?'scope_link':'replay_failed');
+      :error?.code==='replay_scope_link'?'scope_link':error?.code==='replay_internal_link'?'internal_link':'replay_failed');
   }
 }
 

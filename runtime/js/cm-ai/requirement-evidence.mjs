@@ -15,15 +15,22 @@ const freeze=value=>Object.freeze(value);
 const boundedText=(value,code)=>need(typeof value==='string'&&value.trim().length>0
   &&Buffer.byteLength(value,'utf8')<=REQUIREMENT_TEXT_LIMIT&&!/[\x00-\x08\x0b-\x1f]/.test(value),code);
 
-// Validates the precheck answer items: [{requirement,satisfied,evidence}].
+// Validates the precheck answer items: [{requirement,satisfied,evidence}], each
+// optionally tagged with the host run it states (run "red": a test failed before
+// the implementation; run "baseline" with result "passed"|"failed": the run before
+// development). A null tag means none; the tag never reaches the handoff text.
+const RUNS=new Set(['red','baseline']),RESULTS=new Set(['passed','failed']);
 export function readRequirementItems(raw,code='verification_precheck_invalid'){
   need(Array.isArray(raw)&&raw.length>0&&raw.length<=REQUIREMENT_ITEM_LIMIT,code);
   const items=raw.map(item=>{
     need(item!==null&&typeof item==='object'&&!Array.isArray(item),code);
-    try{shape(item,['requirement','satisfied','evidence']);}catch{need(false,code);}
+    try{shape(item,['requirement','satisfied','evidence',...['run','result'].filter(key=>Object.hasOwn(item,key))]);}catch{need(false,code);}
     need(typeof item.satisfied==='boolean',code);
     boundedText(item.requirement,code);boundedText(item.evidence,code);
-    return freeze({requirement:item.requirement,satisfied:item.satisfied,evidence:item.evidence});
+    const run=item.run??null,result=item.result??null;
+    need(run===null||RUNS.has(run),code);need(result===null||run==='baseline'&&RESULTS.has(result),code);
+    return freeze({requirement:item.requirement,satisfied:item.satisfied,evidence:item.evidence,
+      ...(run===null?{}:{run}),...(result===null?{}:{result})});
   });
   need(Buffer.byteLength(JSON.stringify(items),'utf8')<=REQUIREMENT_EVIDENCE_LIMIT,code);
   return freeze(items);

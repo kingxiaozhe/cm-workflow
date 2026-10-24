@@ -142,6 +142,28 @@
               },
               "evidence": {
                 "type": "string"
+              },
+              "run": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "red",
+                  "baseline",
+                  null
+                ]
+              },
+              "result": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "passed",
+                  "failed",
+                  null
+                ]
               }
             }
           }

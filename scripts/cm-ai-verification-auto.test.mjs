@@ -52,7 +52,7 @@ const handoff=definition=>JSON.parse(fs.readFileSync(path.join(definition.specsD
 
 test('auto gate: a failing-first claim the host replay confirms passes, and the handoff carries the host record',
   {skip:!supported},()=>fixture(async({definition,protection})=>{
-    const result=await run(definition,develop([{requirement:'T-001: RED 必须先失败',satisfied:true,evidence:'a.test.js 在旧 a.js 下失败'},
+    const result=await run(definition,develop([{requirement:'T-001: RED 必须先失败',satisfied:true,evidence:'a.test.js 在旧 a.js 下失败',run:'red'},
       {requirement:'全部放入后检查通过',satisfied:true,evidence:'unit 检查'}]),protection);
     assert.equal(result.state,'awaiting_review',JSON.stringify(result));
     const entries=handoff(definition).evidence;
@@ -75,7 +75,7 @@ test('auto gate: no report from the developer stops before review, with nothing 
 test('auto gate: a failing-first claim the host replay contradicts stops before review',
   {skip:!supported},()=>fixture(async({definition,protection})=>{
     // This test passes with the old a.js too, so the test-files-only run passes.
-    const result=await run(definition,develop([{requirement:'T-001: RED 必须先失败',satisfied:true,evidence:'a.test.js'}],
+    const result=await run(definition,develop([{requirement:'T-001: RED 必须先失败',satisfied:true,evidence:'a.test.js',run:'red'}],
       "process.exit(0);\n"),protection);
     assert.equal(result.state,'blocked');assert.equal(result.code,'verification_precheck_failed');
   }));

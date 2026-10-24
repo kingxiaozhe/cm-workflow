@@ -76,9 +76,9 @@ test('the developer report is split off the value; malformed reports are kept as
   assert.deepEqual(splitRequirementReport({outcome:'implemented',requirements:[{requirement:'x'}]}),{value:{outcome:'implemented'},items:'invalid'});
 });
 
-test('the auto gate passes only a complete report that matches the host runs',()=>{
+test('the auto gate checks tagged run claims against the host runs, never free text',()=>{
   const replayed=(red,extra={})=>({version:1,status:'replayed',baseline:{outcome:'passed',evidence:'b'},red,green:{outcome:'passed',evidence:'g'},...extra});
-  const redItem={requirement:'T-002: RED 必须因占位体抛错失败',satisfied:true,evidence:'test/sum.test.js'};
+  const redItem={requirement:'T-002: RED 必须因占位体抛错失败',satisfied:true,evidence:'test/sum.test.js',run:'red'};
   const plain={requirement:'只改 src/sum.js',satisfied:true,evidence:'diff'};
   assert.deepEqual(autoVerificationVerdict({report:[redItem,plain],facts:replayed({outcome:'failed',evidence:'r'})}),
     {satisfied:true,items:[redItem,plain]});
@@ -87,40 +87,28 @@ test('the auto gate passes only a complete report that matches the host runs',()
     ['invalid',replayed({outcome:'failed',evidence:'r'}),/格式不合法/],
     [[{...plain,satisfied:false}],replayed({outcome:'failed',evidence:'r'}),/只改 src\/sum\.js/],
     [[redItem],replayed({outcome:'passed',evidence:'r'}),/只放入测试文件时检查 passed/],
+    [[redItem],replayed({outcome:'unavailable',evidence:'r'}),/只放入测试文件时检查 unavailable/],
     [[redItem],replayed({skipped:'no_test_files'}),/未写测试文件/],
     [[redItem],notReplayed('no_before_snapshot',passed),/未实跑（no_before_snapshot）/],
-    [[{requirement:'记录改代码前基线',satisfied:true,evidence:'x'}],notReplayed('replay_failed',passed),/没有实跑基线：replay_failed/],
+    [[{...plain,run:'baseline'}],notReplayed('replay_failed',passed),/没有实跑基线：replay_failed/],
+    [[{...plain,run:'baseline'}],replayed({skipped:'no_test_files'},{baseline:{outcome:'unavailable',evidence:'spawn_failed'}}),/基线没有跑起来：unavailable/],
+    [[{...plain,run:'baseline',result:'passed'}],replayed({skipped:'no_test_files'},{baseline:{outcome:'failed',evidence:'b'}}),/标记基线 passed，宿主实跑基线 failed/],
+    [[{...plain,run:'baseline',result:'failed'}],replayed({skipped:'no_test_files'}),/标记基线 failed，宿主实跑基线 passed/],
     [[plain],{...replayed({outcome:'failed',evidence:'r'}),green:{outcome:'failed',evidence:'g'}},/全部放入后检查 failed/],
-    // Plain-language failing-first claims, and baseline claims against a baseline that never ran or failed.
-    [[{requirement:'逻辑测试',satisfied:true,evidence:'新增测试在旧实现下失败'}],replayed({outcome:'passed',evidence:'r'}),/只放入测试文件时检查 passed/],
-    [[{requirement:'逻辑测试',satisfied:true,evidence:'原实现下失败，修改后通过'}],replayed({outcome:'passed',evidence:'r'}),/只放入测试文件时检查 passed/],
-    [[{requirement:'逻辑测试',satisfied:true,evidence:'the new test fails against the old code'}],replayed({outcome:'unavailable',evidence:'r'}),/只放入测试文件时检查 unavailable/],
-    [[{requirement:'记录基线',satisfied:true,evidence:'基线通过'}],replayed({skipped:'no_test_files'},{baseline:{outcome:'unavailable',evidence:'spawn_failed'}}),/基线没有跑起来：unavailable/],
-    [[{requirement:'记录基线',satisfied:true,evidence:'基线通过 49 项'}],replayed({skipped:'no_test_files'},{baseline:{outcome:'failed',evidence:'b'}}),/基线 failed/],
   ]){
     const verdict=autoVerificationVerdict({report,facts});
     assert.equal(verdict.satisfied,false);assert.match(verdict.unsatisfied.join('\n'),match);
   }
-  // A behaviour that mentions failure is not a run claim; a later clause is not about the baseline.
-  assert.equal(autoVerificationVerdict({report:[{requirement:'保持原有行为：校验失败时显示错误',satisfied:true,evidence:'src/a.js'}],
-    facts:replayed({skipped:'no_test_files'})}).satisfied,true);
-  assert.equal(autoVerificationVerdict({report:[{requirement:'记录基线',satisfied:true,evidence:'基线不通过，修改后通过'}],
-    facts:replayed({skipped:'no_test_files'},{baseline:{outcome:'failed',evidence:'b'}})}).satisfied,true);
-  assert.equal(autoVerificationVerdict({report:[{requirement:'记录基线',satisfied:true,evidence:'基线 tests 49 pass 49 fail 0'}],
-    facts:replayed({skipped:'no_test_files'})}).satisfied,true);
-  // Each guard on its own: one clause per claim (the baseline passed; the new test failed on the old code) ...
-  assert.equal(autoVerificationVerdict({report:[{requirement:'记录基线与先失败',satisfied:true,evidence:'基线通过，新增测试在旧实现下失败'}],
-    facts:replayed({outcome:'failed',evidence:'r'})}).satisfied,true);
-  // ... and a failure word followed by 时 inside one clause is behaviour, not a failing-first run.
-  assert.equal(autoVerificationVerdict({report:[{requirement:'原接口失败时返回错误码',satisfied:true,evidence:'src/api.js'}],
-    facts:replayed({skipped:'no_test_files'})}).satisfied,true);
-  // A stated failing baseline against a passing one is a contradiction too.
-  const failedClaim=autoVerificationVerdict({report:[{requirement:'记录基线失败',satisfied:true,evidence:'基线失败 2 项'}],
-    facts:replayed({skipped:'no_test_files'})});
-  assert.equal(failedClaim.satisfied,false);assert.match(failedClaim.unsatisfied[0],/基线 passed，自报 failed/);
-  // A plain requirement needs no replay; a baseline claim is matched by any replayed baseline.
+  // Untagged text is never parsed: neither a behaviour that mentions failure nor a prose run claim.
+  for(const evidence of ['校验失败时显示错误','新增测试先失败后通过','基线：失败 2 项'])
+    assert.equal(autoVerificationVerdict({report:[{...plain,evidence}],facts:replayed({outcome:'passed',evidence:'r'})}).satisfied,true);
+  // A baseline tag without a result needs only a baseline that ran.
+  assert.equal(autoVerificationVerdict({report:[{...plain,run:'baseline'}],facts:replayed({skipped:'no_test_files'},{baseline:{outcome:'failed',evidence:'b'}})}).satisfied,true);
   assert.equal(autoVerificationVerdict({report:[plain],facts:notReplayed('multi_root',passed)}).satisfied,true);
-  assert.equal(autoVerificationVerdict({report:[{requirement:'baseline 用例数',satisfied:true,evidence:'5'}],facts:replayed({skipped:'no_test_files'})}).satisfied,true);
+  // Tags are validated: a result only on a baseline tag, known values only; the handoff text drops them.
+  assert.equal(splitRequirementReport({outcome:'implemented',requirements:[{...plain,run:'red',result:'passed'}]}).items,'invalid');
+  assert.equal(splitRequirementReport({outcome:'implemented',requirements:[{...plain,run:'green'}]}).items,'invalid');
+  assert.deepEqual(splitRequirementReport({outcome:'implemented',requirements:[{...plain,run:null,result:null}]}).items,[plain]);
 });
 
 test('each run uses a fresh copy: a check that plants a link cannot make the host write outside the copy',async t=>{
@@ -158,18 +146,24 @@ test('the baseline restores file permissions, and a failed copy leaves no privat
   }finally{fs.chmodSync(unreadable,0o600);if(previous===undefined)delete process.env.TMPDIR;else process.env.TMPDIR=previous;}
 });
 
-test('checks that name the project by absolute path, or read through a link into it, read the copy',async t=>{
+test('a check that could read the real project is not replayed; a link that stays inside the copy is',async t=>{
   const {code,specs}=project(t),scope=['src/sum.js','test/sum.test.js'];
   const snapshot=captureBeforeSnapshot(code,scope);deliver(code);
   const base={codeProject:code,specsDir:specs,snapshot,scope,tests:['test/sum.test.js'],timeoutMs:30000,identity,
     greenChecks:passed,signal:new AbortController().signal,makeCheck:directCheck};
-  // An absolute test entry: its relative import must load the copy's old sum.js, so the test fails first.
-  const absolute=await replayDelivery({...base,checkCommands:[{id:'abs',command:['node','--test',path.join(code,'test/sum.test.js')]}]});
-  assert.equal(absolute.red.outcome,'failed');
-  // An absolute link into the project (lib -> <project>/src) read by the test.
-  fs.symlinkSync(path.join(code,'src'),path.join(code,'lib'));
+  // A command naming the project by absolute path would run the real project.
+  assert.equal((await replayDelivery({...base,checkCommands:[{id:'abs',command:['node','--test',path.join(code,'test/sum.test.js')]}]})).reason,
+    'absolute_project_path');
+  // A relative link inside the project (node_modules/.bin style) resolves inside the copy: replayed.
+  fs.symlinkSync('src',path.join(code,'lib'));
   fs.writeFileSync(path.join(code,'test/sum.test.js'),"import test from 'node:test';import assert from 'node:assert';import {sum} from '../lib/sum.js';test('sum',()=>assert.equal(sum(1,2),3));\n");
-  const linked=await replayDelivery({...base,checkCommands:commands});
-  assert.equal(linked.red.outcome,'failed');
-  assert.equal(fs.readlinkSync(path.join(code,'lib')),path.join(code,'src'),'the real link is untouched');
+  const relative=await replayDelivery({...base,checkCommands:commands});
+  assert.equal(relative.status,'replayed');assert.equal(relative.red.outcome,'failed');
+  // An absolute link into the project, or a chain that leaves and re-enters it, would read the real project.
+  fs.rmSync(path.join(code,'lib'));fs.symlinkSync(path.join(code,'src'),path.join(code,'lib'));
+  assert.equal((await replayDelivery({...base,checkCommands:commands})).reason,'internal_link');
+  const alias=path.join(path.dirname(code),'alias');fs.symlinkSync(path.join(code,'src'),alias);
+  fs.rmSync(path.join(code,'lib'));fs.symlinkSync(path.relative(code,alias),path.join(code,'lib'));
+  assert.equal((await replayDelivery({...base,checkCommands:commands})).reason,'internal_link');
+  assert.equal(fs.readlinkSync(path.join(code,'lib')),path.relative(code,alias),'the real link is untouched');
 });
