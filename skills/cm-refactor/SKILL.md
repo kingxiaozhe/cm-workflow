@@ -39,6 +39,12 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-refactor-entry.mjs" \
 Learning 均为 `pending`，执行/写入权限为 false；入口不读取项目正文、不跑判官、不调用
 provider/browser/外部专家、不写日志/档案/RULEBOOK，也不替代后续轻量道或批量道。
 
+用户想重构却说不出哪块代码时，运行
+`node "{CM_WORKFLOW_ROOT}/scripts/cm-matt-skills.mjs" status`：当前运行时一行未列出
+`improve-codebase-architecture`（即已装作者版）→ 建议先用它（Claude `/`、Codex `$` 前缀）找重构机会，
+挑定一处再带描述调用本入口；列为缺失、内容不同或命令失败 → 照旧追问目标，附输出里那一行可选安装命令。
+本流程不依赖、不代装作者技能。
+
 ### JS 流程执行
 
 只读分流返回 `ready / g0_feasibility` 后，按 [当前会话 JS 宿主](references/js-host.md)
