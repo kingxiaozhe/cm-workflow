@@ -23,8 +23,10 @@ export function validateClaudeProposal(raw){
   shape(result,['status','value','edits']);
   const value=result.value,nullable=v=>v===null||typeof v==='string';
   need(value&&typeof value==='object','invalid_result');
-  shape(value,['outcome',...['application','retrospective','reason'].filter(key=>Object.hasOwn(value,key))]);
+  shape(value,['outcome',...['application','retrospective','reason','requirements'].filter(key=>Object.hasOwn(value,key))]);
   need(['implemented','blocked'].includes(value.outcome),'invalid_result');
+  // The per-requirement report is validated where the host splits it off (requirement-evidence.mjs).
+  if(Object.hasOwn(value,'requirements'))need(value.requirements===null||Array.isArray(value.requirements)&&value.requirements.length<=64,'invalid_result');
   if(Object.hasOwn(value,'reason'))need(nullable(value.reason),'invalid_result');
   if(Object.hasOwn(value,'application')){
     shape(value.application,['status','note']);

@@ -13,6 +13,7 @@
 {"version":2,"development":"conversation","bootstrap":"disabled","qa":"disabled","qaFix":"disabled","verification":"precheck"}
 ```
 
+`verification:"auto"` 是无人值守版：同一闸门由宿主对照开发结果里的逐条 `requirements` 与宿主私有副本里的实跑（改前基线、只放入测试文件、全部放入）自动作答，不需要 `liveEvidence`；缺证据或与实跑矛盾就停在 `verification_precheck_failed` 等人。详见控制文档「闸门由宿主自动作答」。
 `verification:"precheck"` 开启交付前验证闸门：审查前宿主发 `verification_precheck`，当前会话逐条回答任务描述与验证要求的满足情况和实际证据（基线计数、RED 失败用例名、位置清单等），证据写进交接文件给独立审查看。PLAN 须配 `liveEvidence`（kinds 含 `verification_precheck`，见 `../../../docs/live-evidence-drivers.md`），否则驾驶员启动前退出 2。
 模型、命令和路径仍来自原配置。加载原配置不自动启用能力；policy 也不能替代所需配置。
 单任务启动顺序为 `serve --config RUN.json --mode create|resume --host-context ID --control-config POLICY.json`，

@@ -52,3 +52,14 @@ export function readRequirementEvidence(entry){
   readRequirementItems(items,'invalid_input');
   return value;
 }
+
+// The developer's own per-requirement report travels beside, never inside, the
+// journaled developer value, whose contract stays unchanged. {value, items}:
+// items is the validated list, null when absent or empty, or 'invalid'.
+export function splitRequirementReport(value){
+  if(!value||typeof value!=='object'||Array.isArray(value)||!Object.hasOwn(value,'requirements'))return {value,items:null};
+  const {requirements,...rest}=value;
+  if(requirements===null||Array.isArray(requirements)&&requirements.length===0)return {value:rest,items:null};
+  try{return {value:rest,items:readRequirementItems(requirements,'invalid_result')};}
+  catch{return {value:rest,items:'invalid'};}
+}

@@ -5,6 +5,7 @@ import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} f
 
 import {readSpecificationMaterial} from './specification-material.mjs';
 import {readCarriedReview} from './reviewed-evidence-supersession-record.mjs';
+import {splitRequirementReport} from './requirement-evidence.mjs';
 
 const LIMIT=10*1024*1024;
 const INSTRUCTIONS=`Implement the single task described by the JSON data below in the host-selected workspace.
@@ -26,6 +27,10 @@ retrospective reason and each candidate trigger and action are one line of at mo
 Without learningInput, return only outcome and reason. A blocked result may include reason explaining why implementation is impossible (string, at most 1000 UTF-8 bytes, no NUL); application and retrospective are optional when blocked.
 The top-level reason explains blocked outcomes; otherwise it must be null. Use null when no explanation is available.
 Use outcome blocked when implementation is not possible. Do not claim implementation if no implementation was made.
+Always also return requirements: one item {requirement, satisfied, evidence} for each requirement written in the task's
+description and verification (specification), evidence naming where it is met (file, test name, expected command result).
+Use null when the task states none. The host runs the task's checks itself before development, with only the test files
+delivered and fully delivered, and compares those runs with this report; never claim a run you have not reasoned about.
 When supersededReview exists, it is read-only context: the last review of an earlier, superseded run of this task, not a verdict on this run. Avoid repeating its problems, but implement only the supplied task and scope.`;
 
 // The host owns instructions and workflow evidence. Reject contradictory
@@ -99,8 +104,9 @@ export function validateDeveloperValue(value,request) {
     retrospective:createCmAiTaskLearningRetrospective({...binding,...value.retrospective})};
 }
 
-export function createDeveloperRun({worker,requestedModel,provider,protectedCurrentSession=false}) {
+export function createDeveloperRun({worker,requestedModel,provider,protectedCurrentSession=false,onRequirements=null}) {
   need(['codex','claude'].includes(provider),'invalid_provider');
+  need(onRequirements===null||typeof onRequirements==='function','invalid_input');
   need(typeof worker==='function');text(requestedModel);
   need(typeof protectedCurrentSession==='boolean'&&(!protectedCurrentSession||requestedModel==='current-session'));
   return async (raw,control)=>{
@@ -133,7 +139,10 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
     if(response.status==='succeeded'){
       try{
         if(Object.hasOwn(response,'providerThread')){id(response.providerThread);providerThreadId=response.providerThread;}
-        const result=validateDeveloperValue(response.value,r);
+        // The report goes to the host's gate; the journaled value keeps its contract.
+        const split=splitRequirementReport(response.value);
+        try{onRequirements?.(r.identity,split.items);}catch{/* a consumer never changes the terminal */}
+        const result=validateDeveloperValue(split.value,r);
         // Preserve the null failure result; the explanation is diagnostic only.
         return result.outcome==='blocked'?envelope('failed',null,result.reason):envelope('succeeded',result);
       }catch(error){return failed('invalid_result',error.code??'invalid_input');}

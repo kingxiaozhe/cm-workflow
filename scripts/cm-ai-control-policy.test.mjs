@@ -34,7 +34,8 @@ test('verification is an optional policy choice that keeps older policies byte-i
   assert.equal(digest(readControlPolicy(policy)),digest(policy));
   assert.deepEqual(readControlPolicy({...policy,verification:'precheck'}),{...policy,verification:'precheck'});
   assert.deepEqual(readControlPolicy({...policy,verification:'disabled'}),{...policy,verification:'disabled'});
-  for(const verification of ['on',true,null,'','PRECHECK'])
+  assert.deepEqual(readControlPolicy({...policy,verification:'auto'}),{...policy,verification:'auto'});
+  for(const verification of ['on',true,null,'','PRECHECK','AUTO'])
     assert.throws(()=>readControlPolicy({...policy,verification}),{code:'invalid_input'});
   // The choice is part of the saved run: a launch cannot add or drop it.
   assert.throws(()=>assertControlEntry(snapshot(),{...policy,verification:'precheck'}),{code:'fingerprint_mismatch'});

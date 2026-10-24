@@ -101,14 +101,15 @@ test('scope files are read, and unreadable entries contribute nothing rather tha
 test('the gate emits the reminder without letting it change the verdict', async () => {
   const source = fs.readFileSync(new URL('../runtime/js/cm-ai/host-conversation-execution.mjs',
     import.meta.url), 'utf8');
-  const gate = /const verificationGate=options\.verificationPrecheck===true\|\|controlPolicy\?\.verification==='precheck'\?([\s\S]*?)\n  \}:null;/.exec(source);
+  const gate = /const verificationGate=gateMode\?([\s\S]*?)\n  \}:null;/.exec(source);
   assert.notEqual(gate, null, 'verificationGate not found');
   assert.match(gate[1], /checklistGaps\(/);
   assert.match(gate[1], /diagnostic:'checklist_coverage'/);
   assert.match(gate[1], /advisory:true/);
   // The returned verdict must still be the gate's own, unqualified by coverage.
   // Satisfied answers carry their items to the handoff; a failed gate carries nothing.
-  assert.match(gate[1], /return verdict\.satisfied\?\{satisfied:true,items:verdict\.items\}:\{satisfied:false\};/);
+  // The host replay record is appended as one more item, never folded into the verdict.
+  assert.match(gate[1], /return verdict\.satisfied\?\{satisfied:true,items:withFacts\(verdict\.items,facts\)\}:\{satisfied:false\};/);
   assert.equal(/satisfied:verdict\.satisfied&&/.test(gate[1]), false,
     'coverage was folded into the verdict; it must stay advisory');
   // Any throw inside the reminder must not reach the caller.

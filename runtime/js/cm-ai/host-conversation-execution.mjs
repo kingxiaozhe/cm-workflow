@@ -21,7 +21,10 @@ import {codexWorker,preflightMatches} from './worker-codex.mjs';
 import {createHostWorkflowCapabilities,createImplicitQaDecision} from './host-workflow-capabilities.mjs';
 import {resolveHostRole} from './host-role-routing.mjs';
 import {checklistGaps} from './checklist-coverage.mjs';
-import {readRequirementItems} from './requirement-evidence.mjs';
+import {readRequirementItems,splitRequirementReport,REQUIREMENT_ITEM_LIMIT} from './requirement-evidence.mjs';
+import {captureBeforeSnapshot,replayDelivery,replayFactItem,notReplayed} from './host-replay.mjs';
+import {autoVerificationVerdict} from './verification-auto.mjs';
+import {declaredTaskScope} from '../task-scope.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {createProjectExecution} from './host-project-execution.mjs';
 import {codeProjectPaths,codeProjectInstructionPaths,resolveCodeProjects} from './code-projects.mjs';
@@ -197,19 +200,46 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     };
   };
   const used=new Set();
+  // Host replay (host-replay.mjs): scope bytes before a task's first development
+  // in this process, and each attempt's per-requirement report, split off the
+  // developer value before it is validated or journaled. Both live in memory
+  // only: a resumed process has neither and the gate records that instead.
+  const beforeSnapshots=new Map(),requirementReports=new Map();
+  const reportKey=identity=>`${identity.taskId}:${identity.attempt}`;
+  const replayable=projectExecution!==null&&!definition.codeProjects;
+  const declaredTests=taskId=>{try{return declaredTaskScope(definition.specsDir,definition.feature,taskId)?.tests??[];}catch{return [];}};
+  // Only a protected single-root run has host checks to replay; any other run
+  // keeps its gate request and handoff exactly as before (facts null).
+  const hostRuns=(request,control)=>replayable?replayDelivery({codeProject:definition.codeProject,specsDir:definition.specsDir,
+    snapshot:beforeSnapshots.get(request.identity.taskId)??null,scope:request.scope??definition.scope,
+    tests:declaredTests(request.identity.taskId),checkCommands:protection.checkCommands,timeoutMs:protection.timeoutMs,
+    identity:request.identity,greenChecks:request.checks,signal:control.signal}):null;
+  const withFacts=(items,facts)=>{
+    if(facts===null)return items;
+    if(items.length<REQUIREMENT_ITEM_LIMIT)return [...items,replayFactItem(facts)];
+    try{process.stderr.write(JSON.stringify({diagnostic:'host_replay_fact_omitted',reason:'item_limit'})+'\n');}catch{}
+    return items;
+  };
   // The gate is opt-in: without it the flow is byte-for-byte what it was.
   // The runner contract is exactly {satisfied}. Which requirements failed is
   // what the operator needs to act on, so it goes to this process's stderr the
   // same way other host diagnostics do, not into the runner state.
   // A v2 policy may enable the gate durably (it is part of the run fingerprint);
   // the legacy launch flag keeps working for runs created without it.
-  const verificationGate=options.verificationPrecheck===true||controlPolicy?.verification==='precheck'?async(request,control)=>{
-    const verdict=readVerificationPrecheck(await bridge.call('verification_precheck',
+  // auto: the host answers from the developer's report and its own runs
+  // (verification-auto.mjs); precheck: the session answers, seeing the host runs.
+  const gateMode=controlPolicy?.verification==='auto'?'auto'
+    :options.verificationPrecheck===true||controlPolicy?.verification==='precheck'?'precheck':null;
+  const verificationGate=gateMode?async(request,control)=>{
+    const facts=await hostRuns(request,control);
+    const verdict=gateMode==='auto'?autoVerificationVerdict({report:requirementReports.get(reportKey(request.identity))??null,
+      facts:facts??notReplayed(definition.codeProjects?'multi_root':'no_host_checks',request.checks)})
+      :readVerificationPrecheck(await bridge.call('verification_precheck',
       {...request,codeProject:definition.codeProject,feature:definition.feature,
-        scope:request.scope??definition.scope},control.signal));
+        scope:request.scope??definition.scope,...(facts?{hostRuns:facts}:{})},control.signal));
     if(!verdict.satisfied)try{
       process.stderr.write(JSON.stringify({diagnostic:'verification_precheck_failed',
-        task:request.identity.taskId,attempt:request.identity.attempt,
+        task:request.identity.taskId,attempt:request.identity.attempt,mode:gateMode,
         unsatisfied:verdict.unsatisfied})+'\n');
     }catch{/* diagnostics never change the verdict */}
     // Advisory only. An enumerated list in the task text whose entries are not
@@ -219,14 +249,15 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     try{
       const gaps=checklistGaps([request.description,request.verification]
         .filter(text=>typeof text==='string').join('\n'),
-        [verdict.evidence,deliveredText(definition.codeProject,request.scope??definition.scope)].join('\n'));
+        [verdict.evidence??(verdict.items??[]).map(item=>item.evidence).join('\n'),
+          deliveredText(definition.codeProject,request.scope??definition.scope)].join('\n'));
       if(gaps.length>0)process.stderr.write(JSON.stringify({diagnostic:'checklist_coverage',
         task:request.identity.taskId,attempt:request.identity.attempt,advisory:true,
         gaps:gaps.map(gap=>({total:gap.total,missing:gap.missing}))})+'\n');
     }catch{/* diagnostics never change the verdict */}
     // The answered items travel to the runner, which binds them into the host
     // handoff the reviewer reads; a failed gate halts before any handoff exists.
-    return verdict.satisfied?{satisfied:true,items:verdict.items}:{satisfied:false};
+    return verdict.satisfied?{satisfied:true,items:withFacts(verdict.items,facts)}:{satisfied:false};
   }:null;
   const outerTimeoutMs=provider?protection.timeoutMs:1800000;
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,
@@ -252,10 +283,18 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         cwd:definition.codeProject,model:provider.model,...(externalModels?{effort:provider.effort}:{}),timeoutMs:protection.timeoutMs,
         ...(coderRuntime==='codex'?{specsRoot:definition.specsDir}:{}),
         spawnProcess:dispatchSpawn('coder',bound.identity,control.signal,typeof control.onWorker==='function'?control.onWorker:null)}):null;
+      if(replayable&&!beforeSnapshots.has(bound.identity.taskId))
+        beforeSnapshots.set(bound.identity.taskId,captureBeforeSnapshot(definition.codeProject,bound.payload.scope));
+      const splitReport=response=>{
+        if(response?.status!=='succeeded')return response;
+        const split=splitRequirementReport(response.value);
+        requirementReports.set(reportKey(bound.identity),split.items);
+        return {...response,value:split.value};
+      };
       const worker=async({prompt})=>{
         if(provider&&coderRuntime==='codex'){
           if(documentationPaths.length)prompt='Synchronize approved documentation inside this invocation: '+JSON.stringify(documentationPaths)+'\n'+prompt;
-          const response=await processWorker({prompt},control);
+          const response=splitReport(await processWorker({prompt},control));
           developerLog?.complete(developerUsage??{usage_state:'unavailable'},response.status==='succeeded'?'success':response.status==='cancelled'?'cancelled':'error');
           return response;
         }
@@ -265,10 +304,10 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
           if(!parallelMember&&documentationPaths.length&&isFinalCmAiTask({specsDir:definition.specsDir,codeProject:definition.codeProject,
             feature:definition.feature,taskId:bound.identity.taskId,featureSelection:definition.featureSelection?.feature}))prompt+=' Include necessary documentation synchronization in the same edits: '+JSON.stringify(documentationPaths);
         }
-        const response=provider?await processWorker({prompt:prompt+'\n'+JSON.stringify({editMode:'protected-text-v1',expected})},control):json(await bridge.call('develop',{request:bound,prompt,codeProject:definition.codeProject,route,
+        const response=splitReport(provider?await processWorker({prompt:prompt+'\n'+JSON.stringify({editMode:'protected-text-v1',expected})},control):json(await bridge.call('develop',{request:bound,prompt,codeProject:definition.codeProject,route,
           ...(definition.codeProjects?{codeProjects:resolveCodeProjects(definition.codeProject,definition.codeProjects),
             projectInstructions:definition.codeProjects.map(root=>({codeProject:root,files:readProjectInstructionContext(root)}))}:{}),
-          ...(protection?{editMode:'protected-text-v1',expected}: {})},control.signal));
+          ...(protection?{editMode:'protected-text-v1',expected}: {})},control.signal)));
         if(provider)developerLog?.complete(developerUsage??{usage_state:'unavailable'},response.status==='succeeded'?'success':response.status==='cancelled'?'cancelled':'error');
         if(response.status==='succeeded'){
           const edits=[];
