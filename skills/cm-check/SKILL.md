@@ -80,6 +80,7 @@ Claude Code 将 `--runtime` 改为 `claude`。这一项说明本次检查跑在�
 并逐行打印 coder/reviewer 的 `route_state`，`declared-adapter` 标「已声明未派发」。这是诊断，不是授权。
 机械输出中的 `recommended skills` 行报告 12 个可选 Matt Pocock 技能在 Claude/Codex 技能目录的安装情况
 （作者版、缺失、同名但内容不同）。报告时转述这几行和其中的安装命令；它们不影响 PASSED/FAILED，不代用户安装。
+`skill hints` 行报告技能提醒钩子在 Claude/Codex 是否已挂、开关状态、CM 自带与用户自加规则条数；转述即可，不影响 PASSED/FAILED，不代用户开启。
 `route_state` 相对当前运行时才有意义：按 `--runtime` > `CM_RUNTIME` 取值，两者都没有时
 记 `未判定`，不得把未指定运行时读成「审查通道没派出去」。
 
