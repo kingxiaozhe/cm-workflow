@@ -443,8 +443,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const pending=group.filter(key=>membership.has(key)&&!initial.ready.has(key)&&!initial.done.has(key));
     const results=await Promise.allSettled(pending.map(key=>driveMember(key,request)));
     if(cancelled)return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};
-    for(const row of progress().ready.values()){
-      if(!group.includes(row.from_key)||progress().done.has(row.from_key))continue;
+    // Merge in task order, not completion order, so the resulting history is the
+    // same whichever member finished first.
+    for(const key of [...plans.keys()].filter(key=>group.includes(key))){
+      const row=progress().ready.get(key);
+      if(!row||progress().done.has(key))continue;
       const result=await mergeMember(row);if(result)return result;
     }
     let waiting=null,rejected=null,recoverable=null,unresolved=null;const rescheduled=[];

@@ -731,7 +731,8 @@ function load(){
     &&ADVANCE.has(operation))asks.push('verification_precheck');
   if(operation==='complete'&&!protectedMode)asks.push('check');
   // v2 没有 workflow 配置时宿主也会隐式补上 QA 判定（implicit-qa-decision.mjs）。
-  if((operation==='advance'||operation==='qa')&&(control||workflow?.qa)){asks.push('qa_assess');
+  // 策略 qa:"disabled" 时宿主自己确认，不再问（host-workflow-capabilities.mjs）。
+  if((operation==='advance'||operation==='qa')&&(control||workflow?.qa)&&control?.policy.qa!=='disabled'){asks.push('qa_assess');
   }
   if((operation==='advance'||operation==='qa')&&workflow?.qa&&(!control||control.policy.qa==='run')){
     try{asks.push(...predictedQaAsks(definition,workflow.qa));}

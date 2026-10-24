@@ -31,6 +31,7 @@ test('reschedule needs a raw checkpointed blocked state, never a projection over
 
 test('dirty batch entry lists files and creates no member worktrees',()=>batchFixture('parallel-dirty'));
 test('parallel members that edit files already on HEAD run, merge both edits and finish',()=>batchFixture('parallel-existing'));
+test('parallel members merge in task order even when the later task finishes first',()=>batchFixture('parallel-existing',{slowFirst:true}));
 
 test('parallel groups reject transitive prerequisites, not just direct edges',()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-transitive-')));

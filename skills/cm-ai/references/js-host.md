@@ -196,12 +196,17 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    当前Codex/Claude及批次同仓用 js-host-modes.md 的文本提案模式；未选择保护的同仓仍阻断。不搬动specs或删除保护检查；工具会话不是OS沙箱。
 3. 从已批准任务确定 scope、requirements 和顺序；不跳过未解决的 bootstrap 确认或依赖。
    单代码根用 `cm-ai-admission.mjs --print-run-definition` 生成运行定义，不要手写。`tasks.md` 已为该任务写了 `- 范围:` 时以它为准，不传 `--scope`（传了且不一致报 `task_scope_mismatch`）；没写范围的任务 `--scope` 必填（相对代码根、逗号分隔），缺了报 `scope_required`。
-   单任务用 `cm-ai-host.mjs`；多任务用 `cm-ai-batch-host.mjs` 的原 batch/workflows 配置。
+   **默认先跑生成器**：`cm-ai-batch-plan.mjs --specs-dir … --code-project … --repository-id … --batch-id {新批次ID}`
+   读已批准 `tasks.md`，为准入选中的功能输出 `{mode:"batch",config}`、`{mode:"serial",reason}` 或 `{mode:"complete"}`。
+   `batch` 时把 `config` 原样写成批次配置文件交给 `cm-ai-batch-host.mjs`（能并行的任务已分好组，不再手写 `parallel`）；
+   `serial`（有任务没写范围、脚手架功能等）时照旧逐个任务用 `cm-ai-admission.mjs --print-run-definition` 加 `cm-ai-host.mjs`。
+   项目 `.cm-workflow.json` / `.cm-workflow.yml` 的 `parallel: {enabled, max}` 控制开关和每组人数（不写=开启、每组最多 2；
+   `enabled: false` 时只排串行批次，不分组）。单代码根适用；多代码根仍按下文手写。
    任务列表只包含该运行计划内的任务；恢复必须使用原身份、配置和真实当前会话身份，
    单任务同会话恢复用 `--mode resume --host-context {当前真实会话ID}` 加创建时的同一组启动输入（`--review-config`、`--runtime`、`--workflow-config` 等）；换会话恢复再加 `--original-host-context {创建运行的会话ID}`；
    两个 ID 相同等同未传新参数，create 传它报 `original_host_context_unavailable`。不能冒用旧 host-context。
-3.1 多任务批次可提议并行组，写进 batch 配置的可选 `parallel`（任务 key 的数组的数组）。
-   只提议同时满足以下全部条件的任务，任一不满足就不进组；一个组都成立不了就**不写该字段**，正常串行：
+3.1 并行组由生成器按下列规则算出（多代码根等仍手写时照同一规则），写进 batch 配置的可选 `parallel`（任务 key 的数组的数组）。
+   只组同时满足以下全部条件的任务，任一不满足就不进组；一个组都成立不了就**不写该字段**，正常串行：
    - **scope 来自 tasks.md**：新批次只把 `tasks.md` 写了 `- 范围:` 的任务放进组，batch 配置里的 scope
      照抄它（不一致报 `task_scope_mismatch`）；没写范围或写 `串行` 的任务报 `parallel_scope_undeclared`，
      标了 `- 设备: 需要` 的报 `parallel_device_task`。范围应写全：任务可能改动的每个文件，包括已有文件
@@ -213,7 +218,8 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
      runner 也按传递闭包校验并以 `parallel_dependency_conflict` 拒绝，此处自行判定是为了
      提出合法的组而不是被拒后返工。
    - **同一 feature**，且排除该 feature 最后一个未 DROPPED 的任务（它承担合并后的统一 QA）。
-   - **每组 2–4 个**，不足 2 个不成组。
+   - **每组 2–4 个**，不足 2 个不成组；生成器按项目 `parallel.max`（默认 2）封顶。
+   - **成员的前置任务都排在组内第一个成员之前**：整组在第一个成员处同时开工。
    能并行才并行，不为组而组；判定不确定时按串行处理。成员在各自 Git 工作树开发、串行合并回
    主分支，成员 QA 自动延后到末任务；当前会话模式下开发请求仍逐个应答，重叠的是审查与流程开销，
    不是写代码本身，不得据此承诺成倍提速。

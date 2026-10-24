@@ -70,6 +70,12 @@ export async function batchFixture(mode,options={}){
               assert.equal(fs.readFileSync(path.join(codeProject,config.tasks.find(task=>task.taskId===id).scope[0]),'utf8'),'implemented\n');
             }
           }
+          // slowFirst: T-001 starts only after T-002 is ready, so completion order is the reverse of task order.
+          if(options.slowFirst&&parallelMember&&definition.identity.taskId==='T-001'){
+            const logfile=path.join(specsDir,'运行日志.jsonl');
+            for(let wait=0;wait<400&&!(fs.existsSync(logfile)&&fs.readFileSync(logfile,'utf8').includes('"phase":"batch_member_ready"'));wait++)
+              await new Promise(resolve=>setTimeout(resolve,50));
+          }
           // A second attempt must change the rejected bytes (develop_unchanged_after_review).
           calls.push(definition.identity.taskId);fs.writeFileSync(path.join(definition.codeProject,definition.scope[0]),
             data.identity.attempt===1?'implemented\n':'implemented again\n');
@@ -397,16 +403,22 @@ export async function batchFixture(mode,options={}){
       assert.equal(classifyDriveResult('cm-ai-batch',{result:blocked}),'stuck');
       return;
     }
-    assert.deepEqual(calls,parallel?(mode==='parallel-retry'?['T-001','T-002','T-001','T-003']:['T-001','T-002','T-003']):mode==='failed-qa'?['T-001']:['T-001','T-002']);
+    assert.deepEqual(calls,parallel?(mode==='parallel-retry'?['T-001','T-002','T-001','T-003']
+      :options.slowFirst?['T-002','T-001','T-003']:['T-001','T-002','T-003']):mode==='failed-qa'?['T-001']:['T-001','T-002']);
     if(parallel){
       const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
       const ready=rows.filter(row=>row.phase==='batch_member_ready'),handoffs=rows.filter(row=>row.phase==='batch_handoff');
-      assert.equal(ready.length,2);assert.equal(handoffs.length,2);assert.deepEqual(handoffs.map(row=>row.from_key),ready.map(row=>row.from_key));
+      assert.equal(ready.length,2);assert.equal(handoffs.length,2);assert.deepEqual(handoffs.map(row=>row.from_key),[`${feature}/T-001`,`${feature}/T-002`],'merged in task order');
       assert(handoffs.every(row=>/^[a-f0-9]{40}$/.test(row.merge_commit)&&row.post_merge_check==='skipped'));
       assert.equal(rows.filter(row=>row.event==='qa'&&row.reason==='parallel_member_deferred'&&row.status==='skipped').length,2);
       assert.deepEqual(qaCalls,['T-003']);
       assert(fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8').includes('[x] T-003'));
       assert.equal(git(codeProject,['branch','--show-current']),'main');
+      if(options.slowFirst){
+        const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+        const order=phase=>rows.filter(row=>row.phase===phase).map(row=>row.from_key);
+        assert.deepEqual(order('batch_member_ready'),[`${feature}/T-002`,`${feature}/T-001`],'T-002 finished first');
+      }
       if(mode==='parallel-existing')for(const file of ['file0.js','file1.js']){
         assert.equal(fs.readFileSync(path.join(codeProject,file),'utf8'),'implemented\n');
         assert.equal(git(codeProject,['show',`HEAD~3:${file}`]),'existing');

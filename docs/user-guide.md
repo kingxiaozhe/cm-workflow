@@ -184,8 +184,10 @@ $cm-prd ~/projects/my-app-specs
 `approved / changes_requested / blocked`。只有当前轮为 `approved` 时，N5 才能标记
 完成；第 1 轮要求修改会回到实现，第 2 轮仍阻塞则停止等待人工处理。
 
-默认仍是串行。只读探索可以并行；两个任务要同时修改代码时，必须位于同一仓库的
-不同 Git Worktree 和不同分支，否则工作流自动降级串行。
+单代码根的项目，`$cm-ai` 默认按已批准的 `tasks.md` 自动分组：写了 `- 范围:`、文件不重叠、互不依赖、
+不需要设备的任务，各自在独立的 Git Worktree 和分支里同时开发，做完按任务顺序合回；其余任务串行。
+有任务没写范围时，整个功能都串行。项目配置里写 `parallel: {enabled: false}` 可关闭，`max` 调每组人数（默认 2，最多 4）。
+只读探索可以并行；不满足上述条件时工作流自动串行。
 
 ```text
 $cm-ai ~/projects/my-app-specs ~/code/my-app
