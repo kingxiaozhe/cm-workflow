@@ -123,9 +123,10 @@ function resolve(rule,host,env,authorCheck){
 
 // `/name` or `$name` as a whole token: not `/cm-fix-extra`, not the tail of a URL or
 // path. It must start the message or follow whitespace or an opening/separating
-// punctuation mark; a letter of any script before it (as in `文档/cm-fix`) does not count.
+// punctuation mark or a backtick; a letter of any script before it (as in `文档/cm-fix`)
+// does not count.
 const escape=text=>text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-const BEFORE='(?<=^|[\\s(\\[{<"\'“‘（【「『《，。、；：！？,;!?])';
+const BEFORE='(?<=^|[\\s`(\\[{<"\'“‘（【「『《，。、；：！？,;!?])';
 export const typed=(prompt,skill,host)=>
   new RegExp(`${BEFORE}${escape(mention(skill,host))}(?![\\w.:/-])`,'i').test(prompt);
 
