@@ -912,6 +912,7 @@ export function createTaskRunner(options) {
       call.terminal=response.status;call.effectiveModel=response.effectiveModel;call.resultDigest=digest(response.result);
       if(role==='developer'&&response.status==='failed'&&response.result!==null)call.failureResult=response.result;
       if(role==='developer'&&Object.hasOwn(response,'blockedReason'))call.blockedReason=response.blockedReason;
+      if(role==='developer'&&Object.hasOwn(response,'failureCode'))call.failureCode=response.failureCode;
       if(Object.hasOwn(response,'providerThreadId'))call.providerThreadId=response.providerThreadId;
       return {request,response,call};
     } catch(error){call.terminal=state==='cancelled'?'cancelled':'unknown';throw error;}

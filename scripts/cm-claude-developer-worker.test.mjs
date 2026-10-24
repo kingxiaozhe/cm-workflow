@@ -76,6 +76,23 @@ test('developer accepts dev_intent on either side of init with a sanitized notic
     assert.deepEqual(result,baseline);
   }
 });
+// Regression: CLI 2.1.289 emits ui_invalidate before init. The review stream
+// already accepts it (docs/fixes/20261013-claude-preinit-ui-invalidate.md); the
+// developer stream rejected it as missing_init and killed its own process group.
+test('developer accepts ui_invalidate on either side of init with a sanitized notice',async t=>{
+  const root=fixture(t),control={signal:new AbortController().signal};
+  const baseline=await fakeWorker(root)({prompt:prompt()},control);
+  const uiInvalidate={type:'system',subtype:'ui_invalidate',session_id:'synthetic-claude-developer',payload:{private:'x'}};
+  for(const noticeAt of [0,1,2]){
+    const notices=[],result=await fakeWorker(root,{noticeAt,noticeEvents:[uiInvalidate],onNotice:n=>notices.push(n)})
+      ({prompt:prompt()},control);
+    assert.deepEqual(result,baseline);
+    assert.deepEqual(notices,[{kind:'claude_system_notice',subtype:'ui_invalidate'}]);
+  }
+  // It never initializes a turn: alone it still fails as missing init, and it binds the session.
+  assert.deepEqual(await fakeWorker(root,{noticeAt:0,noticeEvents:[{...uiInvalidate,session_id:'other'}]})({prompt:prompt()},control),
+    {status:'unknown',code:'session_mismatch'});
+});
 test('developer dev_intent binds init session and shares a 32-notice budget',async t=>{
   const root=fixture(t),control={signal:new AbortController().signal};
   for(const [noticeEvents,noticeAt,code] of [

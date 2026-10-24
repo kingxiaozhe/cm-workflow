@@ -108,10 +108,13 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
     need(r.requestedModel===requestedModel,'invalid_input');
     need(control?.signal&&typeof control.signal.aborted==='boolean','invalid_input');
     let providerThreadId;
-    const envelope=(status,result=null,blockedReason=undefined)=>terminalFor({version:1,invocationId:r.invocationId,
+    const envelope=(status,result=null,blockedReason=undefined,failureCode=undefined)=>terminalFor({version:1,invocationId:r.invocationId,
       contextId:r.contextId,provider,effectiveModel:'unknown',status,
       accepted:!['unavailable','auth_required','permission_denied'].includes(status),result,
       ...(blockedReason===undefined?{}:{blockedReason}),
+      // Kept only when it is a plain code for a failed/unknown call without a result.
+      ...(failureCode!==undefined&&['failed','unknown'].includes(status)&&result===null&&blockedReason===undefined
+        &&typeof failureCode==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(failureCode)?{failureCode}:{}),
       ...(providerThreadId===undefined?{}:{providerThreadId})},r);
     const failed=(code,reason)=>envelope('failed',{code,reason,
       ...(protectedCurrentSession&&code==='invalid_result'?{retryable:true}:{})});
@@ -119,7 +122,7 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
     need(!control.signal.aborted,'cancelled');
     let response;
     try{response=await worker({prompt:buildDeveloperPrompt(r,provider)},control);}
-    catch{return envelope('unknown');}
+    catch(error){return envelope('unknown',null,undefined,error?.code);}
     if(control.signal.aborted||!response||typeof response!=='object'||Array.isArray(response))return envelope('unknown');
     try{response=json(response);}
     catch(error){
@@ -139,6 +142,6 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
       return failed(response.code,response.reason??response.code);
     // A missing/ambiguous terminal may have performed writes. Never retry here.
     return envelope(['failed','unavailable','auth_required','permission_denied'].includes(response.status)
-      ?response.status:'unknown');
+      ?response.status:'unknown',null,undefined,response.code);
   };
 }
