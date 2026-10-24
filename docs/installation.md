@@ -365,9 +365,13 @@ upstream `LICENSE` against the SHA-256 list built into the script. Any mismatch,
 extra or missing file, or non-regular file aborts the whole install before
 anything is written. Each skill is copied with `LICENSE` into both skill
 directories; a skill whose name already exists is skipped and reported, never
-overwritten. Nothing downloaded is executed. `--source <git URL or path>` uses a
-mirror; the pinned commit and checksums still apply. Start a new session to see
-newly installed skills.
+overwritten, and a skills directory that is not a usable directory is reported
+as a failure. Nothing downloaded is executed: git runs without your git
+configuration, hooks or credential helpers, over https or local paths only;
+proxy settings are taken from `https_proxy`-style environment variables.
+`--source <https URL or path>` uses a mirror, which must serve the pinned commit
+by id; the commit and checksums still apply. Start a new session to see newly
+installed skills.
 
 ## Uninstall
 

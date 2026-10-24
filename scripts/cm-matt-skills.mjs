@@ -75,6 +75,7 @@ export const SKILLS=Object.freeze([
 ]);
 
 const HINT_STATE='matt-skills-hint';
+const NOTE={other:'（已有同名技能但内容不同，安装时会跳过）',unreadable:'（无法读取，安装时会报错）'};
 const sha256=buffer=>crypto.createHash('sha256').update(buffer).digest('hex');
 const homeOf=env=>env.HOME||os.homedir();
 
@@ -83,22 +84,68 @@ export const skillRoots=(env=process.env)=>[
   {runtime:'codex',label:'Codex',root:path.join(homeOf(env),'.agents','skills')},
 ];
 
-// "author" only when every pinned file matches; a same-named directory with other
-// content is "other" (another skill or another version), never counted as installed.
-export function skillState(root,skill){
+// Files under a directory as relative paths; null when anything is not a plain
+// file or directory (a link inside a skill is never the pinned author content).
+// Finder's .DS_Store is ignored so browsing a skill folder does not demote it.
+function listFiles(dir,prefix=''){
+  const out=[];
+  for(const entry of fs.readdirSync(dir,{withFileTypes:true})){
+    if(entry.name==='.DS_Store')continue;
+    const relative=prefix?`${prefix}/${entry.name}`:entry.name;
+    if(entry.isDirectory()){
+      const nested=listFiles(path.join(dir,entry.name),relative);
+      if(!nested)return null;
+      out.push(...nested);
+    }else if(entry.isFile())out.push(relative);
+    else return null;
+  }
+  return out;
+}
+
+// "author": exactly the pinned files plus the upstream LICENSE, byte for byte.
+// "other": a same-named skill with any other content, never counted as installed.
+// "missing": nothing at that name. "unreadable": the state cannot be determined
+// (root is not a directory, no permission), which callers report as a failure.
+// The skill directory itself may be a link (e.g. a release symlink); its contents may not.
+export function skillState(root,skill,license=UPSTREAM.license.sha256){
   const dir=path.join(root,skill.name);
-  try{fs.lstatSync(dir);}catch(error){if(error.code==='ENOENT')return 'missing';return 'other';}
-  for(const [relative,expected] of Object.entries(skill.files)){
-    let content;
-    try{content=fs.readFileSync(path.join(dir,relative));}catch{return 'other';}
-    if(sha256(content)!==expected)return 'other';
+  try{fs.lstatSync(dir);}catch(error){return error.code==='ENOENT'?'missing':'unreadable';}
+  const expected={...skill.files,LICENSE:license};
+  try{
+    if(!fs.statSync(dir).isDirectory())return 'other';
+    const actual=listFiles(dir);
+    if(!actual||actual.sort().join('\n')!==Object.keys(expected).sort().join('\n'))return 'other';
+    for(const [relative,sum] of Object.entries(expected)){
+      if(sha256(fs.readFileSync(path.join(dir,relative)))!==sum)return 'other';
+    }
+  }catch(error){
+    return ['EACCES','EPERM','EIO'].includes(error.code)?'unreadable':'other';
   }
   return 'author';
 }
 
-export function status({env=process.env,skills=SKILLS}={}){
-  return skillRoots(env).map(({runtime,label,root})=>({runtime,label,root,
-    skills:skills.map(skill=>({name:skill.name,use:skill.use,state:skillState(root,skill)}))}));
+// Why a skills root cannot be used, or null. A missing root is fine (install creates it).
+export function rootProblem(root){
+  try{
+    if(!fs.statSync(root).isDirectory())return '不是目录';
+    fs.accessSync(root,fs.constants.R_OK|fs.constants.X_OK);
+    return null;
+  }catch(error){
+    if(error.code==='ENOENT'){
+      try{fs.lstatSync(root);return '是失效的链接';}catch{/* 真的不存在 */}
+      return null;
+    }
+    return `无法访问（${error.code}）`;
+  }
+}
+
+export function status({env=process.env,skills=SKILLS,upstream=UPSTREAM}={}){
+  return skillRoots(env).map(({runtime,label,root})=>{
+    const problem=rootProblem(root);
+    return {runtime,label,root,problem,
+      skills:skills.map(skill=>({name:skill.name,use:skill.use,
+        state:problem?'unreadable':skillState(root,skill,upstream.license.sha256)}))};
+  });
 }
 
 const tilde=(file,env)=>{
@@ -116,15 +163,38 @@ function hintStatePath(env){
   return path.join(path.resolve(env.CM_WORKFLOW_HOME||path.join(homeOf(env),'.cm-workflow')),HINT_STATE);
 }
 
+// The hint state is a disposable cache. It is read only when it is a plain,
+// singly linked file, and replaced by renaming a freshly created file over the
+// entry, so a link planted at that path is replaced, never written through.
+function readHintState(file){
+  try{
+    const st=fs.lstatSync(file);
+    if(!st.isFile()||st.nlink!==1)return null;
+    return fs.readFileSync(file,'utf8');
+  }catch{return null;}
+}
+function writeHintState(file,text){
+  const temporary=`${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try{
+    fs.mkdirSync(path.dirname(file),{recursive:true});
+    fs.writeFileSync(temporary,text,{flag:'wx',mode:0o600});
+    fs.renameSync(temporary,file);
+  }catch{/* 记不住只是下次再列全 */}
+  finally{try{fs.unlinkSync(temporary);}catch{/* 已改名或未创建 */}}
+}
+
 // Installer hint: the full list the first time a given set is missing, one line after.
-export function hint({env=process.env,skills=SKILLS,command=installCommand(env)}={}){
-  const report=status({env,skills});
+export function hint({env=process.env,skills=SKILLS,upstream=UPSTREAM,command=installCommand(env)}={}){
+  const report=status({env,skills,upstream});
   const missing=report.flatMap(r=>r.skills.filter(s=>s.state!=='author').map(s=>`${r.runtime}:${s.name}:${s.state}`));
-  if(!missing.length)return `✓ 推荐搭配的 ${skills.length} 个 Matt Pocock 技能已齐（Claude 与 Codex）。\n`;
   const fingerprint=missing.join('\n');
   const stateFile=hintStatePath(env);
-  let seen='';
-  try{seen=fs.readFileSync(stateFile,'utf8');}catch{/* 首次提示 */}
+  const seen=readHintState(stateFile);
+  if(!missing.length){
+    // Recorded so a gap that reappears later is listed in full again.
+    if(seen!=='')writeHintState(stateFile,'');
+    return `✓ 推荐搭配的 ${skills.length} 个 Matt Pocock 技能已齐（Claude 与 Codex）。\n`;
+  }
   const names=[...new Set(report.flatMap(r=>r.skills.filter(s=>s.state!=='author').map(s=>s.name)))];
   let text;
   if(seen===fingerprint){
@@ -140,20 +210,22 @@ export function hint({env=process.env,skills=SKILLS,command=installCommand(env)}
       :report.filter(r=>absentOf(r).length).map(r=>({title:`${r.label}（${tilde(r.root,env)}）`,absent:absentOf(r)}));
     for(const g of groups){
       lines.push(`  ${g.title}缺 ${g.absent.length} 个：`);
-      for(const s of g.absent)lines.push(`    ${s.name.padEnd(width)}  ${s.use}${s.state==='other'?'（已有同名技能但内容不同，安装时会跳过）':''}`);
+      for(const s of g.absent)lines.push(`    ${s.name.padEnd(width)}  ${s.use}${NOTE[s.state]||''}`);
     }
+    for(const r of report)if(r.problem)lines.push(`  ⚠ ${r.label} 技能目录 ${tilde(r.root,env)} ${r.problem}，安装前请先处理。`);
     lines.push(`  安装（只拉固定提交 ${UPSTREAM.commit.slice(0,7)}，逐个文件核对，不覆盖已有技能）：`);
     lines.push(`    ${command}`);
     text=lines.join('\n')+'\n';
   }
-  try{fs.mkdirSync(path.dirname(stateFile),{recursive:true});fs.writeFileSync(stateFile,fingerprint);}catch{/* 记不住只是下次再列全 */}
+  writeHintState(stateFile,fingerprint);
   return text;
 }
 
-const STATE_TEXT={missing:'missing',other:'same name, different content (not the pinned author version)'};
-export function statusText({env=process.env,skills=SKILLS,command=installCommand(env)}={}){
+const STATE_TEXT={missing:'missing',other:'same name, different content (not the pinned author version)',unreadable:'cannot be read'};
+export function statusText({env=process.env,skills=SKILLS,upstream=UPSTREAM,command=installCommand(env)}={}){
   const lines=[];
-  for(const r of status({env,skills})){
+  for(const r of status({env,skills,upstream})){
+    if(r.problem)lines.push(`recommended skills [${r.runtime}] WARN skills directory ${tilde(r.root,env)}: ${r.problem}`);
     const count=r.skills.filter(s=>s.state==='author').length;
     lines.push(`recommended skills [${r.runtime}] ${count}/${r.skills.length} author versions in ${tilde(r.root,env)}`);
     for(const s of r.skills)if(s.state!=='author')lines.push(`recommended skills [${r.runtime}] ${s.name}: ${STATE_TEXT[s.state]}`);
@@ -164,29 +236,45 @@ export function statusText({env=process.env,skills=SKILLS,command=installCommand
 
 class VerifyError extends Error{}
 
-function git(args,options={}){
-  return execFileSync('git',args,{stdio:['ignore','pipe','pipe'],maxBuffer:64*1024*1024,
-    env:{...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1'},...options});
+// Git sees none of the user's configuration or GIT_* control variables: no system
+// or global config, no config injected through the environment, no hooks, no
+// credential helper or askpass, and only https/file transports. Proxy and CA
+// variables pass through so networks that need a proxy still work.
+const PASS_ENV=['PATH','LANG','LC_ALL','SYSTEMROOT','TMPDIR','http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY',
+  'all_proxy','ALL_PROXY','no_proxy','NO_PROXY','SSL_CERT_FILE','SSL_CERT_DIR'];
+export function gitEnv(base=process.env,home){
+  const env={};
+  for(const key of PASS_ENV)if(base[key]!==undefined)env[key]=base[key];
+  return {...env,HOME:home,XDG_CONFIG_HOME:home,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:os.devNull,
+    GIT_TERMINAL_PROMPT:'0',GIT_ASKPASS:'',SSH_ASKPASS:'',GCM_INTERACTIVE:'never'};
+}
+const GIT_SAFETY=['-c','core.hooksPath='+os.devNull,'-c','credential.helper=','-c','core.fsmonitor=false',
+  '-c','protocol.allow=never','-c','protocol.https.allow=always','-c','protocol.file.allow=always'];
+function git(args,home){
+  return execFileSync('git',[...GIT_SAFETY,...args],{stdio:['ignore','pipe','pipe'],maxBuffer:64*1024*1024,
+    cwd:home,env:gitEnv(process.env,home)});
 }
 
 // Fetches the pinned commit into a private bare repository and returns every
 // pinned file's bytes. Throws VerifyError before anything is written elsewhere.
 export function fetchVerified({source,upstream,skills,workdir}){
   const repo=path.join(workdir,'repo.git');
-  git(['init','-q','--bare',repo]);
-  try{git(['-C',repo,'fetch','-q','--no-tags','--depth','1',source,upstream.commit]);}
-  catch{
-    try{git(['-C',repo,'fetch','-q','--no-tags',source,'+refs/heads/*:refs/remotes/source/*']);}
-    catch(error){throw new VerifyError(`无法从 ${source} 拉取：${String(error.stderr||error.message).trim().split('\n').pop()}`);}
+  const run=args=>git(args,workdir);
+  run(['init','-q','--bare','--template=',repo]);
+  // Only the pinned commit, one level deep; a source that cannot serve it by id is refused.
+  try{run(['-C',repo,'fetch','-q','--no-tags','--no-recurse-submodules','--depth','1',source,upstream.commit]);}
+  catch(error){
+    const reason=String(error.stderr||error.message).trim().split('\n').pop();
+    throw new VerifyError(`无法从 ${source} 拉取固定提交 ${upstream.commit}：${reason}`);
   }
   let commit;
-  try{commit=git(['-C',repo,'rev-parse','--verify','-q',`${upstream.commit}^{commit}`]).toString().trim();}
+  try{commit=run(['-C',repo,'rev-parse','--verify','-q',`${upstream.commit}^{commit}`]).toString().trim();}
   catch{throw new VerifyError(`来源里找不到固定提交 ${upstream.commit}`);}
   if(commit!==upstream.commit)throw new VerifyError(`提交号不一致：期望 ${upstream.commit}，得到 ${commit}`);
 
   const blob=(file,expected)=>{
     let content;
-    try{content=git(['-C',repo,'cat-file','blob',`${commit}:${file}`]);}
+    try{content=run(['-C',repo,'cat-file','blob',`${commit}:${file}`]);}
     catch{throw new VerifyError(`缺少文件 ${file}`);}
     if(sha256(content)!==expected)throw new VerifyError(`${file} 的 SHA-256 与内置清单不一致`);
     return content;
@@ -195,11 +283,12 @@ export function fetchVerified({source,upstream,skills,workdir}){
   const result=new Map();
   for(const skill of skills){
     let listing;
-    try{listing=git(['-C',repo,'ls-tree','-r','-z','--full-tree',commit,'--',`${skill.dir}/`]).toString();}
+    try{listing=run(['-C',repo,'ls-tree','-r','-z','--full-tree',commit,'--',`${skill.dir}/`]).toString();}
     catch{throw new VerifyError(`无法列出 ${skill.dir}`);}
     const entries=listing.split('\0').filter(Boolean).map(line=>{
-      const [meta,file]=line.split('\t');
-      const [mode,type]=meta.split(' ');
+      const tab=line.indexOf('\t');
+      const [mode,type]=line.slice(0,tab).split(' ');
+      const file=line.slice(tab+1);
       return {mode,type,relative:file.slice(skill.dir.length+1)};
     });
     for(const e of entries){
@@ -220,40 +309,47 @@ export function fetchVerified({source,upstream,skills,workdir}){
   return result;
 }
 
-// Writes into a sibling staging directory first, then renames into place, so a
-// skill directory either appears complete or not at all. The final existence check
-// covers a directory created after planning (e.g. another install running).
+// Claims the name with an exclusive mkdir, which fails when anything (directory,
+// file, link) already sits there, so an existing skill can never be replaced, even
+// one created a moment ago by another process. Files are staged next to it and
+// moved in; on any failure only the directory this call created is removed.
 export function placeSkill(root,name,files){
   const target=path.join(root,name);
-  const stage=path.join(root,`.cm-matt-skills.${process.pid}.${name}`);
-  fs.rmSync(stage,{recursive:true,force:true});
+  const stage=fs.mkdtempSync(path.join(root,`.cm-matt-skills.${name}.`));
+  let claimed=false;
   try{
     for(const [relative,content] of files){
       const file=path.join(stage,relative);
       fs.mkdirSync(path.dirname(file),{recursive:true});
-      fs.writeFileSync(file,content,{mode:0o644});
+      fs.writeFileSync(file,content,{flag:'wx',mode:0o644});
     }
-    try{fs.lstatSync(target);return 'exists';}catch(error){if(error.code!=='ENOENT')return 'exists';}
-    fs.renameSync(stage,target);
+    try{fs.mkdirSync(target);}catch(error){if(error.code==='EEXIST')return 'exists';throw error;}
+    claimed=true;
+    for(const entry of fs.readdirSync(stage))fs.renameSync(path.join(stage,entry),path.join(target,entry));
+    claimed=false;
     return 'installed';
-  }catch(error){
-    if(['ENOTEMPTY','EEXIST','ENOTDIR'].includes(error.code))return 'exists';
-    throw error;
   }finally{
+    if(claimed)fs.rmSync(target,{recursive:true,force:true});
     fs.rmSync(stage,{recursive:true,force:true});
   }
 }
 
 export function install({env=process.env,source=UPSTREAM.repo,upstream=UPSTREAM,skills=SKILLS,tmpRoot=os.tmpdir(),write=text=>process.stdout.write(text)}={}){
-  try{execFileSync('git',['--version'],{stdio:'ignore'});}
+  try{git(['--version'],tmpRoot);}
   catch{write('✗ 未找到 git，无法安装；未写入任何文件。\n');return 1;}
-  const roots=skillRoots(env);
-  const plan=roots.map(r=>({...r,todo:skills.filter(s=>skillState(r.root,s)==='missing'),
-    skipped:skills.map(s=>({name:s.name,state:skillState(r.root,s)})).filter(s=>s.state!=='missing')}));
+  const plan=status({env,skills,upstream}).map(r=>({...r,
+    todo:r.problem?[]:skills.filter(s=>r.skills.find(x=>x.name===s.name).state==='missing'),
+    skipped:r.skills.filter(s=>s.state==='author'||s.state==='other'),
+    unreadable:r.problem?[]:r.skills.filter(s=>s.state==='unreadable')}));
+  let failed=0;
+  for(const r of plan){
+    if(r.problem){write(`✗ ${r.label} 技能目录 ${tilde(r.root,env)} ${r.problem}，这一侧不安装。\n`);failed++;}
+    for(const s of r.unreadable){write(`✗ ${r.label} ${s.name} 无法读取，未判断也未安装。\n`);failed++;}
+  }
   if(plan.every(r=>!r.todo.length)){
-    write(`✓ 无需安装：两个目录都已有这 ${skills.length} 个同名技能。\n`);
+    if(!failed)write(`✓ 无需安装：两个目录都已有这 ${skills.length} 个同名技能。\n`);
     for(const r of plan)for(const s of r.skipped)if(s.state==='other')write(`  跳过 ${r.label} ${s.name}：已有同名技能但内容不同，未覆盖\n`);
-    return 0;
+    return failed?1:0;
   }
   write(`拉取 ${source} 的固定提交 ${upstream.commit.slice(0,7)} 并逐个文件核对……\n`);
   const workdir=fs.mkdtempSync(path.join(tmpRoot,'cm-matt-skills-'));
@@ -268,8 +364,8 @@ export function install({env=process.env,source=UPSTREAM.repo,upstream=UPSTREAM,
   fs.rmSync(workdir,{recursive:true,force:true});
   write(`✓ ${skills.length} 个技能共 ${skills.reduce((n,s)=>n+Object.keys(s.files).length,0)} 个文件和 LICENSE 均与内置清单一致。\n`);
 
-  let failed=0;
   for(const r of plan){
+    if(r.problem)continue;
     const installed=[];
     const skipped=r.skipped.map(s=>`${s.name}（${s.state==='author'?'已是作者版':'已有同名技能但内容不同'}）`);
     if(r.todo.length){
@@ -285,7 +381,7 @@ export function install({env=process.env,source=UPSTREAM.repo,upstream=UPSTREAM,
     write(`${r.label}（${tilde(r.root,env)}）：新装 ${installed.length} 个${installed.length?`：${installed.join('、')}`:''}\n`);
     if(skipped.length)write(`  跳过 ${skipped.length} 个，未覆盖：${skipped.join('、')}\n`);
   }
-  if(failed){write(`⚠ 有 ${failed} 处写入失败，见上；已装好的技能保留。\n`);return 1;}
+  if(failed){write(`⚠ 有 ${failed} 处失败，见上；已装好的技能保留。\n`);return 1;}
   write('装完的技能要开新会话才能看到。\n');
   return 0;
 }

@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {UPSTREAM,SKILLS,skillRoots,skillState,status,statusText,hint,install,installCommand,main,placeSkill} from './cm-matt-skills.mjs';
+import {UPSTREAM,SKILLS,skillRoots,skillState,status,statusText,hint,install,installCommand,main,placeSkill,gitEnv} from './cm-matt-skills.mjs';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 const read=file=>fs.readFileSync(path.join(root,file),'utf8');
@@ -109,7 +109,7 @@ test('install copies every verified skill with LICENSE into both directories',t=
     assert.equal(fs.readFileSync(path.join(dir,'beta/LICENSE'),'utf8'),FAKE_FILES.LICENSE);
     assert.deepEqual(fs.readdirSync(dir).sort(),['alpha','beta'],'no staging directory is left behind');
   }
-  assert.ok(status({env:h.env,skills:f.skills}).every(r=>r.skills.every(s=>s.state==='author')));
+  assert.ok(status({env:h.env,skills:f.skills,upstream:f.upstream}).every(r=>r.skills.every(s=>s.state==='author')));
   assert.deepEqual(fs.readdirSync(h.tmpRoot),[],'the private fetch repository is removed');
   assert.match(text,/Claude.*新装 2 个/);
   assert.match(text,/Codex.*新装 2 个/);
@@ -175,7 +175,7 @@ test('a source without the pinned commit is refused; the CLI cannot swap the man
   let text='';
   const code=main(['install','--source',f.repo],{env:h.env,write:s=>{text+=s;}});
   assert.equal(code,1,text);
-  assert.match(text,new RegExp(`找不到固定提交 ${UPSTREAM.commit}`));
+  assert.match(text,new RegExp(`无法从 .* 拉取固定提交 ${UPSTREAM.commit}`));
   assert.equal(snapshot(h.claude),null);
   assert.equal(snapshot(h.codex),null);
   for(const argv of [['install','--manifest','/srv/m.json'],['install','--source'],['status','--json'],['download'],[]]){
@@ -204,10 +204,13 @@ test('status counts only pinned author content; a same-named skill is "other"',t
   fs.writeFileSync(path.join(h.codex,'alpha/SKILL.md'),'edited\n');
   fs.rmSync(path.join(h.codex,'beta'),{recursive:true});
   const [claude,codex]=skillRoots(h.env);
-  assert.equal(skillState(claude.root,f.skills[0]),'author');
-  assert.equal(skillState(codex.root,f.skills[0]),'other');
-  assert.equal(skillState(codex.root,f.skills[1]),'missing');
-  const text=statusText({env:h.env,skills:f.skills,command:'node /srv/cm/scripts/cm-matt-skills.mjs install'});
+  const license=f.upstream.license.sha256;
+  assert.equal(skillState(claude.root,f.skills[0],license),'author');
+  assert.equal(skillState(codex.root,f.skills[0],license),'other');
+  assert.equal(skillState(codex.root,f.skills[1],license),'missing');
+  fs.writeFileSync(path.join(claude.root,'beta/.DS_Store'),'finder');
+  assert.equal(skillState(claude.root,f.skills[1],license),'author','Finder metadata does not demote a skill');
+  const text=statusText({env:h.env,skills:f.skills,upstream:f.upstream,command:'node /srv/cm/scripts/cm-matt-skills.mjs install'});
   assert.match(text,/recommended skills \[claude\] 2\/2 author versions/);
   assert.match(text,/recommended skills \[codex\] 0\/2 author versions/);
   assert.match(text,/\[codex\] alpha: same name, different content/);
@@ -218,23 +221,123 @@ test('status counts only pinned author content; a same-named skill is "other"',t
 test('installer hint: full list once, one line while the same set is missing, full again when it changes',t=>{
   const f=fakeUpstream(t),h=home(t);
   const command='node /srv/cm/scripts/cm-matt-skills.mjs install';
-  const first=hint({env:h.env,skills:f.skills,command});
+  const first=hint({env:h.env,skills:f.skills,upstream:f.upstream,command});
   assert.match(first,/Claude（~\/\.claude\/skills）和Codex（~\/\.agents\/skills）都缺 2 个/);
   assert.match(first,/alpha +alpha use/);
   assert.match(first,/不会自动安装/);
   assert.ok(first.includes(command));
-  const second=hint({env:h.env,skills:f.skills,command});
+  const second=hint({env:h.env,skills:f.skills,upstream:f.upstream,command});
   assert.equal(second.trim().split('\n').length,1);
   assert.match(second,/还缺 2 个.*node \/srv\/cm/);
   fs.mkdirSync(path.join(h.codex,'alpha'),{recursive:true});
   fs.writeFileSync(path.join(h.codex,'alpha/SKILL.md'),'other\n');
-  const third=hint({env:h.env,skills:f.skills,command});
+  const third=hint({env:h.env,skills:f.skills,upstream:f.upstream,command});
   assert.match(third,/Claude（~\/\.claude\/skills）缺 2 个/);
   assert.match(third,/Codex（~\/\.agents\/skills）缺 2 个/);
   assert.match(third,/alpha +alpha use（已有同名技能但内容不同，安装时会跳过）/);
   fs.rmSync(path.join(h.codex,'alpha'),{recursive:true});
   runInstall(h,f);
-  assert.match(hint({env:h.env,skills:f.skills,command}),/^✓ 推荐搭配的 2 个 Matt Pocock 技能已齐/);
+  assert.match(hint({env:h.env,skills:f.skills,upstream:f.upstream,command}),/^✓ 推荐搭配的 2 个 Matt Pocock 技能已齐/);
+});
+
+test('a gap that closes and then reopens identically is listed in full again',t=>{
+  const f=fakeUpstream(t),h=home(t);
+  const ask=()=>hint({env:h.env,skills:f.skills,upstream:f.upstream,command:'x'}).trim().split('\n').length;
+  const removeAlpha=()=>{for(const dir of [h.claude,h.codex])fs.rmSync(path.join(dir,'alpha'),{recursive:true});};
+  runInstall(h,f);
+  removeAlpha();
+  assert.ok(ask()>1);
+  assert.equal(ask(),1);
+  runInstall(h,f);
+  assert.equal(ask(),1,'all present');
+  removeAlpha();
+  assert.ok(ask()>1,'the same gap after being closed is new again');
+});
+
+test('the hint state never writes through a link planted at its path',t=>{
+  const f=fakeUpstream(t),h=home(t);
+  const stateFile=path.join(h.env.CM_WORKFLOW_HOME,'matt-skills-hint');
+  fs.mkdirSync(h.env.CM_WORKFLOW_HOME,{recursive:true});
+  const victim=path.join(h.dir,'victim.txt');
+  fs.writeFileSync(victim,'precious\n');
+  fs.symlinkSync(victim,stateFile);
+  hint({env:h.env,skills:f.skills,upstream:f.upstream,command:'x'});
+  assert.equal(fs.readFileSync(victim,'utf8'),'precious\n');
+  assert.equal(fs.lstatSync(stateFile).isSymbolicLink(),false,'the link entry itself is replaced');
+  // A hard link holding the very fingerprint the hint would trust: still not trusted.
+  const shared=path.join(h.dir,'shared.txt');
+  fs.writeFileSync(shared,fs.readFileSync(stateFile,'utf8'));
+  const sharedBefore=fs.readFileSync(shared,'utf8');
+  fs.rmSync(stateFile);
+  fs.linkSync(shared,stateFile);
+  const text=hint({env:h.env,skills:f.skills,upstream:f.upstream,command:'x'});
+  assert.ok(text.trim().split('\n').length>1,'a hard-linked state file is not trusted');
+  assert.equal(fs.readFileSync(shared,'utf8'),sharedBefore,'the shared inode is not rewritten');
+  assert.deepEqual(fs.readdirSync(h.env.CM_WORKFLOW_HOME).filter(n=>n.endsWith('.tmp')),[]);
+});
+
+test('author state needs the exact file set and the upstream LICENSE',t=>{
+  const f=fakeUpstream(t),h=home(t);
+  runInstall(h,f);
+  const license=f.upstream.license.sha256;
+  const [claude,codex]=skillRoots(h.env);
+  fs.writeFileSync(path.join(claude.root,'alpha/LICENSE'),'changed\n');
+  assert.equal(skillState(claude.root,f.skills[0],license),'other');
+  fs.rmSync(path.join(claude.root,'beta/LICENSE'));
+  assert.equal(skillState(claude.root,f.skills[1],license),'other');
+  fs.writeFileSync(path.join(codex.root,'alpha/extra.md'),'x\n');
+  assert.equal(skillState(codex.root,f.skills[0],license),'other');
+  fs.symlinkSync('/srv/notes',path.join(codex.root,'beta/link.md'));
+  assert.equal(skillState(codex.root,f.skills[1],license),'other');
+});
+
+test('an unusable skills root is a reported failure, never "already installed"',t=>{
+  const f=fakeUpstream(t),h=home(t);
+  fs.mkdirSync(path.dirname(h.claude),{recursive:true});
+  fs.writeFileSync(h.claude,'not a directory\n');
+  const {code,text}=runInstall(h,f);
+  assert.equal(code,1,text);
+  assert.match(text,/Claude 技能目录 .* 不是目录，这一侧不安装/);
+  assert.ok(fs.existsSync(path.join(h.codex,'alpha/SKILL.md')),'the other side still installs');
+  assert.equal(fs.readFileSync(h.claude,'utf8'),'not a directory\n');
+  const report=status({env:h.env,skills:f.skills,upstream:f.upstream});
+  assert.equal(report[0].problem,'不是目录');
+  assert.ok(report[0].skills.every(s=>s.state==='unreadable'));
+  assert.match(statusText({env:h.env,skills:f.skills,upstream:f.upstream,command:'x'}),/\[claude\] WARN skills directory .*: 不是目录/);
+  fs.rmSync(path.join(h.codex,'alpha'),{recursive:true});
+  fs.rmSync(path.join(h.codex,'beta'),{recursive:true});
+  fs.rmSync(h.claude);
+  fs.symlinkSync('/srv/missing-target',h.claude);
+  const again=runInstall(h,f);
+  assert.equal(again.code,1);
+  assert.match(again.text,/是失效的链接/);
+});
+
+test('git runs without the user configuration or GIT_* control variables',t=>{
+  const leaked={GIT_DIR:'/srv/not-a-repo',GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:'core.hooksPath',
+    GIT_CONFIG_VALUE_0:'/srv/hooks',GIT_CONFIG_PARAMETERS:"'core.hookspath'='/srv/hooks'",GIT_SSH_COMMAND:'/srv/ssh',
+    GIT_ASKPASS:'/srv/askpass',https_proxy:'http://proxy.invalid:1'};
+  const env=gitEnv({...leaked,PATH:'/usr/bin'},'/srv/fetch-home');
+  for(const key of ['GIT_DIR','GIT_CONFIG_COUNT','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0','GIT_CONFIG_PARAMETERS','GIT_SSH_COMMAND'])
+    assert.equal(env[key],undefined,key);
+  assert.equal(env.GIT_ASKPASS,'');
+  assert.equal(env.GIT_CONFIG_GLOBAL,os.devNull);
+  assert.equal(env.GIT_CONFIG_NOSYSTEM,'1');
+  assert.equal(env.HOME,'/srv/fetch-home');
+  assert.equal(env.https_proxy,'http://proxy.invalid:1','proxies pass through');
+  // End to end: leaked variables that would break or hook a git call change nothing.
+  const f=fakeUpstream(t),h=home(t);
+  const marker=path.join(h.dir,'hook-ran');
+  const hooks=path.join(h.dir,'hooks');
+  fs.mkdirSync(hooks);
+  for(const name of ['reference-transaction','post-checkout','post-merge'])
+    fs.writeFileSync(path.join(hooks,name),`#!/bin/sh\ntouch '${marker}'\n`,{mode:0o755});
+  const saved={...process.env};
+  t.after(()=>{for(const key of Object.keys(process.env))if(!(key in saved))delete process.env[key];Object.assign(process.env,saved);});
+  Object.assign(process.env,{GIT_DIR:'/srv/not-a-repo',GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:'core.hooksPath',GIT_CONFIG_VALUE_0:hooks});
+  const {code,text}=runInstall(h,f);
+  assert.equal(code,0,text);
+  assert.equal(fs.existsSync(marker),false);
 });
 
 test('the printed command is shell-safe',()=>{
