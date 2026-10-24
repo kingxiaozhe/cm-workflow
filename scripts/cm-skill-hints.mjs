@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Skill hints: a UserPromptSubmit hook for Claude Code and Codex that matches the
-// user's message against a keyword table and asks the model to mention at most two
-// fitting skills in one line. It only hints; it never runs a skill.
+// user's message against a keyword table and shows the user at most two fitting
+// skills. It only hints; it never runs a skill.
+//
+// The hint goes to the user directly (`systemMessage`), not to the model: real
+// sessions showed a model told "mention it only if it fits" left even clear cases
+// out (2026-10-24). Shown directly, it is always seen and costs no context.
 //
 // Decided 2026-10-23 (方案-技能提醒): keywords not AI, so nothing leaves the machine
 // and no tokens are spent; the CM table ships here, the user's own table lives in
@@ -182,12 +186,8 @@ export function appendLog(env,record){
   fs.appendFileSync(file,JSON.stringify(record)+'\n',{mode:0o600});
 }
 
-export function contextText(hints,host){
-  return ['[CM 技能提醒] 用户这条消息可能适合下面的技能。',
-    `只有确实贴切时，才在回复末尾加一行：可以试 \`${mention('技能名',host)}\`：理由。不贴切就不提。`,
-    '只提醒，不要替用户调用这些技能，也不要解释这条提醒的来历。',
-    ...hints.map(hint=>`- ${mention(hint.skill,host)}：${hint.reason}`)].join('\n');
-}
+export const messageText=(hints,host)=>
+  hints.map(hint=>`💡 技能提醒：可以试 ${mention(hint.skill,host)}——${hint.reason}`).join('\n');
 
 export async function hook(input,{env=process.env,host='claude',rulesFile=defaultRulesPath(),now=Date.now(),loadAuthor=loadAuthorCheck}={}){
   if(env.CM_SKILL_HINTS==='off'||!HOSTS.includes(host))return '';
@@ -223,7 +223,7 @@ export async function hook(input,{env=process.env,host='claude',rulesFile=defaul
     }catch{/* 下条消息可能重复提醒一次 */}
   }
   if(!hints.length)return '';
-  return JSON.stringify({hookSpecificOutput:{hookEventName:'UserPromptSubmit',additionalContext:contextText(hints,host)}});
+  return JSON.stringify({systemMessage:messageText(hints,host)});
 }
 
 // ---- wiring: copy a stable script + table into ~/.cm-workflow/skill-hints and add the hook ----

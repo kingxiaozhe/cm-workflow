@@ -376,8 +376,10 @@ installed skills.
 ## Optional skill hints (trial)
 
 A `UserPromptSubmit` hook that reads each message you type, matches it against a
-keyword table and, when a skill fits, asks the model to mention it in one line at
-the end of its reply. It only hints; it never runs a skill. Matching is local
+keyword table and, when a skill fits, shows you a one-line hint such as
+`💡 技能提醒：可以试 /grill-me——…`. The hint is shown to you directly
+(`systemMessage`) and is not added to the model's context. It only hints; it
+never runs a skill. Matching is local
 keyword and optional regex matching: nothing is sent anywhere and no tokens are
 spent on it. Messages over 2000 characters and text inside ``` fences are
 skipped, at most two skills are hinted per message, and each skill at most once
