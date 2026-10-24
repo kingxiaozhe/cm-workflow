@@ -422,3 +422,18 @@ test('a URL or path ending in the skill name is not an adoption',async t=>{
   assert.ok(typed('好，/cm-fix','cm-fix','claude'));
   assert.ok(typed('用（/cm-fix）','cm-fix','claude'));
 });
+
+test('a skill name after a CJK path segment is not an adoption',async t=>{
+  assert.ok(!typed('文档/cm-fix','cm-fix','claude'));
+  assert.ok(!typed('看 https://example.invalid/文档/cm-fix','cm-fix','claude'));
+  assert.ok(!typed('目录$cm-fix','cm-fix','codex'));
+  assert.ok(typed('/cm-fix','cm-fix','claude'));
+  assert.ok(typed('好的 /cm-fix 开始','cm-fix','claude'));
+  assert.ok(typed('就用「$cm-fix」','cm-fix','codex'));
+  assert.ok(typed('用 `/cm-fix` 开始','cm-fix','claude'));
+  assert.ok(typed('就用 `$cm-fix`','cm-fix','codex'));
+  const f=fixture(t);
+  await f.send('修这个 bug');
+  await f.send('参考 文档/cm-fix 那页');
+  assert.deepEqual(f.log().map(entry=>entry.event),['hint']);
+});

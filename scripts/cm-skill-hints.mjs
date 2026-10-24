@@ -121,10 +121,14 @@ function resolve(rule,host,env,authorCheck){
   return rule.fallback?{rule:rule.id,skill:rule.fallback.skill,reason:rule.fallback.reason}:null;
 }
 
-// `/name` or `$name` as a whole token: not `/cm-fix-extra`, not the tail of a URL or path.
+// `/name` or `$name` as a whole token: not `/cm-fix-extra`, not the tail of a URL or
+// path. It must start the message or follow whitespace or an opening/separating
+// punctuation mark or a backtick; a letter of any script before it (as in `文档/cm-fix`)
+// does not count.
 const escape=text=>text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+const BEFORE='(?<=^|[\\s`(\\[{<"\'“‘（【「『《，。、；：！？,;!?])';
 export const typed=(prompt,skill,host)=>
-  new RegExp(`(?<![\\w.:/$-])${escape(mention(skill,host))}(?![\\w.:/-])`,'i').test(prompt);
+  new RegExp(`${BEFORE}${escape(mention(skill,host))}(?![\\w.:/-])`,'i').test(prompt);
 
 export function pickHints({prompt,rules,host,env,hinted=[],authorCheck=null}){
   const lower=prompt.toLowerCase();
