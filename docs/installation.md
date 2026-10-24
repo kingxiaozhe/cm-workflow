@@ -373,6 +373,50 @@ proxy settings are taken from `https_proxy`-style environment variables.
 by id; the commit and checksums still apply. Start a new session to see newly
 installed skills.
 
+## Optional skill hints (trial)
+
+A `UserPromptSubmit` hook that reads each message you type, matches it against a
+keyword table and, when a skill fits, asks the model to mention it in one line at
+the end of its reply. It only hints; it never runs a skill. Matching is local
+keyword and optional regex matching: nothing is sent anywhere and no tokens are
+spent on it. Messages over 2000 characters and text inside ``` fences are
+skipped, at most two skills are hinted per message, and each skill at most once
+per session. Sessions that CM itself launches set `CM_SKILL_HINTS=off`.
+
+The installer does not enable it yet. To try it:
+
+```bash
+node ~/.claude/scripts/cm-skill-hints.mjs enable
+```
+
+This copies the script and CM's table to `~/.cm-workflow/skill-hints/` and adds
+one `UserPromptSubmit` hook to `~/.claude/settings.json` and `~/.codex/hooks.json`
+(`--claude` or `--codex` for one side), keeping every other setting and hook. A
+file it cannot parse is left untouched. Codex asks you to trust the new hook the
+first time it runs; CM does not trust it for you. Run `enable` again after
+updating CM to refresh the copied table.
+
+Your own rules live in `~/.cm-workflow/skill-hints.local.json`, which CM never
+overwrites. They take precedence over CM's table:
+
+```json
+{
+  "enabled": true,
+  "disable": ["fix-bug"],
+  "rules": [
+    {"id": "my-review", "skill": "codex-review", "keywords": ["二审", "交叉审查"], "reason": "让 Codex 独立审一遍"}
+  ]
+}
+```
+
+`"enabled": false` turns hints off; `disable` lists CM rule ids to switch off. An
+author skill (`grill-me`, `handoff`, `wayfinder`) is only hinted when it is
+installed for that host; otherwise its CM counterpart is hinted, if there is one.
+`~/.cm-workflow/logs/skill-hints.jsonl` records rule id, skill, host and time of
+each hint and of each adoption (you typed the skill within the next five
+messages), never message text; it drops its older half past 1 MB. `/cm-check`
+reports whether the hook is wired, the switch and the rule counts.
+
 ## Uninstall
 
 For a Codex install registered by the installer, remove the enabled plugin and

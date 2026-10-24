@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "grill-plan",
+      "skill": "grill-me",
+      "author": true,
+      "keywords": ["设计一个方案", "帮我设计方案", "出个方案", "帮我想个方案", "这个方案行不行", "方案靠谱吗", "grill me", "stress-test my plan"],
+      "reason": "先把方案逐题问透，再动手，少来回返工",
+      "fallback": {"skill": "cm-challenge", "reason": "先对方案做几轮追问和挑战，再动手"}
+    },
+    {
+      "id": "long-session",
+      "skill": "handoff",
+      "author": true,
+      "keywords": ["会话太长", "上下文太长", "上下文快满", "换个会话", "开个新会话", "新开一个会话", "context is getting long", "start a new session"],
+      "reason": "先写交接摘要，再换新会话接着做"
+    },
+    {
+      "id": "multi-session-work",
+      "skill": "wayfinder",
+      "author": true,
+      "keywords": ["好几个会话", "多个会话", "分几个会话", "一个会话做不完", "大改造", "spans several sessions"],
+      "reason": "把大活拆成决策票，一张张推进"
+    },
+    {
+      "id": "raw-idea",
+      "skill": "cm-idea",
+      "keywords": ["我有个点子", "我有个想法", "有个产品想法", "想做一个产品", "梳理一下产品", "i have an idea"],
+      "reason": "先逐题聊清目标，整理成需求文档"
+    },
+    {
+      "id": "write-spec",
+      "skill": "cm-prd",
+      "keywords": ["拆成规格", "写需求文档", "整理需求", "需求变更", "拆任务", "写 prd", "写prd", "write a prd"],
+      "reason": "把需求整理成可开发的规格和验收标准"
+    },
+    {
+      "id": "start-build",
+      "skill": "cm-ai",
+      "keywords": ["规格已确认", "按规格开发", "按 specs 开发", "开始实现这个规格"],
+      "reason": "按已审批的规格开发，带独立审查和测试"
+    },
+    {
+      "id": "fix-bug",
+      "skill": "cm-fix",
+      "keywords": ["修这个 bug", "修这个bug", "修个 bug", "修个bug", "能复现的 bug", "复现步骤", "fix this bug"],
+      "reason": "先写能复现的测试，再做最小修复和回归"
+    },
+    {
+      "id": "test-existing",
+      "skill": "cm-test",
+      "keywords": ["测一下已有功能", "补单测", "补齐单测", "覆盖率", "走查一下页面", "回归测试", "test coverage"],
+      "reason": "按改动范围分析回归重点，补测试或走查"
+    },
+    {
+      "id": "refactor-only",
+      "skill": "cm-refactor",
+      "keywords": ["只整理结构", "不改变行为", "不改行为", "重构一下", "refactor without changing behavior"],
+      "reason": "分批重构，用行为判官保证行为不变"
+    },
+    {
+      "id": "security-scan",
+      "skill": "cm-security",
+      "keywords": ["安全扫描", "漏洞检查", "密钥泄露", "泄露密钥", "依赖漏洞", "security scan"],
+      "reason": "扫一遍改动里的漏洞和泄露，只报告不自动改"
+    },
+    {
+      "id": "install-check",
+      "skill": "cm-check",
+      "keywords": ["找不到 cm 命令", "cm 装好了吗", "cm 装对了吗", "检查工作流安装", "cm 自检"],
+      "reason": "核对 CM 安装和版本"
+    },
+    {
+      "id": "adopt-project",
+      "skill": "cm-init",
+      "keywords": ["接管这个项目", "第一次接手这个仓库", "生成项目规则", "分析仓库生成规则"],
+      "reason": "分析已有代码，生成项目规则"
+    },
+    {
+      "id": "notify-channel",
+      "skill": "cm-notify",
+      "keywords": ["卡住提醒", "推送到手机", "换成 bark", "换成 pushplus", "提醒推到哪"],
+      "reason": "查看或切换 CM 卡住提醒的推送渠道"
+    }
+  ]
+}
