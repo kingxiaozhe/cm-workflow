@@ -25,6 +25,17 @@ and “MIT License © 花叔 Huashu”. The local `NOTICE.md` records the import
 files and portability changes. The repository-level MIT license supplies the
 full license text; this notice preserves the upstream attribution.
 
+## Matt Pocock skills (optional, not bundled)
+
+- Source: https://github.com/mattpocock/skills
+- Fixed commit: `5beb35b040e3de97e54fa9e386d7e42d15c295c2`
+- Copyright: © 2026 Matt Pocock
+- License declared by upstream: MIT (`LICENSE` at the repository root)
+- Not bundled: `scripts/cm-matt-skills.mjs` contains only skill names, paths and
+  SHA-256 checksums. When the user runs its `install` command, it fetches the
+  pinned files from upstream and copies the upstream `LICENSE` into each
+  installed skill directory.
+
 ## Kenney pixel assets
 
 The following source sheets and the generated `atlas-preview.png` are derived
