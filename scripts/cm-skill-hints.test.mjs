@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import {execFileSync} from 'node:child_process';
 import {
   hook,main,enable,statusText,loadRules,stripCode,hookCommand,hasHintHook,
   localPath,logFile,installDir,claudeSettingsPath,codexHooksPath,defaultRulesPath,
-  MAX_PROMPT,ADOPT_WINDOW,LOG_LIMIT,SCRIPT_NAME,RULES_NAME,
+  MAX_PROMPT,ADOPT_WINDOW,LOG_LIMIT,SCRIPT_NAME,RULES_NAME,STATE_IDLE_MS,patternMatches,typed,readJson,
 } from './cm-skill-hints.mjs';
 
 const NOW=Date.parse('2026-10-24T08:00:00Z');
@@ -28,17 +30,21 @@ function fixture(t,{rules,local,authorSkills=[]}={}){
     fs.mkdirSync(env.CM_WORKFLOW_HOME,{recursive:true});
     fs.writeFileSync(localPath(env),typeof local==='string'?local:JSON.stringify(local));
   }
-  for(const [root,name] of authorSkills){
+  // Pinned "author versions" for the test: exact SKILL.md + LICENSE bytes, checked by hash.
+  const sha=text=>crypto.createHash('sha256').update(text).digest('hex');
+  const authorOptions={license:sha('MIT'),skills:['grill-me','handoff'].map(name=>({name,files:{'SKILL.md':sha(`author ${name}`)}}))};
+  for(const [root,name,content=`author ${name}`] of authorSkills){
     const dir=path.join(home,root,name);
     fs.mkdirSync(dir,{recursive:true});
-    fs.writeFileSync(path.join(dir,'SKILL.md'),'---\nname: x\n---\n');
+    fs.writeFileSync(path.join(dir,'SKILL.md'),content);
+    fs.writeFileSync(path.join(dir,'LICENSE'),'MIT');
   }
-  const send=(prompt,{host='claude',session='s1',extraEnv={}}={})=>{
-    const out=hook({prompt,session_id:session},{env:{...env,...extraEnv},host,rulesFile,now:NOW});
+  const send=(prompt,{host='claude',session='s1',extraEnv={},now=NOW}={})=>{
+    const out=hook({prompt,session_id:session},{env:{...env,...extraEnv},host,rulesFile,now,authorOptions});
     return out?JSON.parse(out).hookSpecificOutput.additionalContext:'';
   };
   const log=()=>{try{return fs.readFileSync(logFile(env),'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line));}catch{return [];}};
-  return {home,env,rulesFile,send,log};
+  return {home,env,rulesFile,send,log,authorOptions};
 }
 
 test('a keyword hint names the skill in the host\'s own syntax',t=>{
@@ -195,7 +201,7 @@ test('enable copies a stable script and merges one hook into each host config',t
   assert.equal(claude.hooks.UserPromptSubmit.length,2);
   assert.equal(claude.hooks.UserPromptSubmit[1].hooks[0].command,hookCommand(f.env,'claude','/usr/bin/node'));
   const codex=JSON.parse(fs.readFileSync(codexHooksPath(f.env),'utf8'));
-  assert.ok(hasHintHook(codex));
+  assert.ok(hasHintHook(codex,f.env,"codex"));
   assert.match(codex.hooks.UserPromptSubmit[0].hooks[0].command,/--host codex$/);
   assert.match(out,/信任/);
   enable({env:f.env,node:'/usr/bin/node',write:()=>{}});
@@ -241,4 +247,109 @@ test('CM-launched Claude and Codex sessions carry the off switch',async()=>{
   const {cleanEnvironment}=await import('../runtime/js/cm-ai/codex-config.mjs');
   assert.equal(claudeEnvironment().CM_SKILL_HINTS,'off');
   assert.equal(cleanEnvironment().CM_SKILL_HINTS,'off');
+});
+
+// ---- regressions from Codex review round 1 ----
+
+test('a same-named skill that is not the pinned author version does not count as installed',t=>{
+  const f=fixture(t,{authorSkills:[['.claude/skills','grill-me','someone else\'s grill-me']]});
+  const text=f.send('设计一个方案');
+  assert.match(text,/cm-challenge/);
+  assert.doesNotMatch(text,/grill-me/);
+});
+
+test('a catastrophic user regex is cut off by the time budget; keywords still match',t=>{
+  const f=fixture(t,{local:{rules:[{skill:'slow',patterns:['^(a+)+$']}]}});
+  const started=Date.now();
+  const text=f.send('a'.repeat(40)+'! 修这个 bug');
+  assert.ok(Date.now()-started<2000,`took ${Date.now()-started}ms`);
+  assert.match(text,/cm-fix/);
+  assert.doesNotMatch(text,/slow/);
+  assert.deepEqual(patternMatches([{patterns:[/^(a+)+$/]}],'a'.repeat(40)+'!',50),[false]);
+});
+
+test('special files at the local rules, state or log path never block the hook',t=>{
+  const f=fixture(t);
+  fs.mkdirSync(f.env.CM_WORKFLOW_HOME,{recursive:true});
+  fs.mkdirSync(path.dirname(logFile(f.env)),{recursive:true});
+  execFileSync('mkfifo',[localPath(f.env)]);
+  execFileSync('mkfifo',[logFile(f.env)]);
+  assert.equal(readJson(localPath(f.env)).error,'not-file');
+  assert.match(f.send('修这个 bug'),/cm-fix/);
+  assert.equal(loadRules({env:f.env,rulesFile:f.rulesFile}).localError,'not-file');
+});
+
+test('a user rule with a CM rule id replaces that CM rule',t=>{
+  const f=fixture(t,{local:{rules:[{id:'fix-bug',skill:'my-fix',keywords:['修这个 bug'],reason:'用我的'}]}});
+  const lines=f.send('修这个 bug').split('\n').filter(line=>line.startsWith('- '));
+  assert.deepEqual(lines,['- /my-fix：用我的']);
+});
+
+test('an active session keeps its state past the idle limit of other sessions',t=>{
+  const f=fixture(t);
+  f.send('修这个 bug',{session:'long'});
+  for(let i=0;i<ADOPT_WINDOW+2;i++)f.send(`第 ${i} 条`,{session:'long',now:NOW+i*STATE_IDLE_MS/4});
+  const later=NOW+(ADOPT_WINDOW+1)*STATE_IDLE_MS/4+1000;
+  f.send('补单测',{session:'other',now:later});
+  assert.equal(f.send('修这个 bug',{session:'long',now:later}),'');
+});
+
+test('a session idle past the limit is pruned when another session writes',t=>{
+  const f=fixture(t);
+  f.send('修这个 bug',{session:'old'});
+  const dir=path.join(installDir(f.env),'state');
+  const [name]=fs.readdirSync(dir);
+  const stale=new Date(NOW-STATE_IDLE_MS-1000);
+  fs.utimesSync(path.join(dir,name),stale,stale);
+  f.send('补单测',{session:'new'});
+  assert.ok(!fs.existsSync(path.join(dir,name)));
+});
+
+test('a foreign command that merely mentions the script name is not taken as ours',t=>{
+  const f=fixture(t);
+  fs.mkdirSync(path.dirname(claudeSettingsPath(f.env)),{recursive:true});
+  const tail=hookCommand(f.env,'claude','x').slice(2);
+  fs.writeFileSync(claudeSettingsPath(f.env),JSON.stringify({hooks:{UserPromptSubmit:[{hooks:[
+    {type:'command',command:`echo ${SCRIPT_NAME}`},{type:'command',command:`echo x ${tail}`}]}]}}));
+  assert.match(statusText({env:f.env,rulesFile:f.rulesFile}),/Claude 未挂/);
+  enable({env:f.env,hosts:['claude'],node:'/usr/bin/node',write:()=>{}});
+  assert.ok(hasHintHook(JSON.parse(fs.readFileSync(claudeSettingsPath(f.env),'utf8')),f.env,'claude'));
+  assert.match(statusText({env:f.env,rulesFile:f.rulesFile}),/Claude 已挂/);
+  const codexCmd=hookCommand(f.env,'codex','/usr/bin/node');
+  assert.ok(!hasHintHook({hooks:{UserPromptSubmit:[{hooks:[{type:'command',command:codexCmd}]}]}},f.env,'claude'));
+});
+
+test('an existing empty or blank host config is reported and left byte-identical',t=>{
+  for(const content of ['','  \n']){
+    const f=fixture(t);
+    fs.mkdirSync(path.dirname(claudeSettingsPath(f.env)),{recursive:true});
+    fs.writeFileSync(claudeSettingsPath(f.env),content);
+    let out='';
+    assert.equal(enable({env:f.env,hosts:['claude'],write:text=>{out+=text;}}),1);
+    assert.equal(fs.readFileSync(claudeSettingsPath(f.env),'utf8'),content);
+    assert.match(out,/empty/);
+  }
+});
+
+test('a config changed by someone else during enable is not overwritten',t=>{
+  const f=fixture(t);
+  fs.mkdirSync(path.dirname(claudeSettingsPath(f.env)),{recursive:true});
+  fs.writeFileSync(claudeSettingsPath(f.env),'{"a":1}');
+  let out='';
+  const code=enable({env:f.env,hosts:['claude'],write:text=>{out+=text;},
+    beforeReplace:file=>fs.writeFileSync(file,'{"a":1,"theirs":true}')});
+  assert.equal(code,1);
+  assert.equal(fs.readFileSync(claudeSettingsPath(f.env),'utf8'),'{"a":1,"theirs":true}');
+  assert.match(out,/刚被其他程序改动/);
+});
+
+test('adoption needs the whole skill token, not a longer name sharing its prefix',t=>{
+  assert.ok(typed('/cm-fix 开始','cm-fix','claude'));
+  assert.ok(typed('先 $cm-fix','cm-fix','codex'));
+  assert.ok(!typed('/cm-fix-extra','cm-fix','claude'));
+  assert.ok(!typed('/cm-fix.v2','cm-fix','claude'));
+  const f=fixture(t);
+  f.send('修这个 bug');
+  f.send('/cm-fix-extra 开始');
+  assert.deepEqual(f.log().map(entry=>entry.event),['hint']);
 });

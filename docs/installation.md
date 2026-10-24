@@ -389,12 +389,14 @@ The installer does not enable it yet. To try it:
 node ~/.claude/scripts/cm-skill-hints.mjs enable
 ```
 
-This copies the script and CM's table to `~/.cm-workflow/skill-hints/` and adds
+This copies the script, CM's table and the author-skill checker
+(`cm-matt-skills.mjs`) to `~/.cm-workflow/skill-hints/` and adds
 one `UserPromptSubmit` hook to `~/.claude/settings.json` and `~/.codex/hooks.json`
 (`--claude` or `--codex` for one side), keeping every other setting and hook. A
 file it cannot parse is left untouched. Codex asks you to trust the new hook the
-first time it runs; CM does not trust it for you. Run `enable` again after
-updating CM to refresh the copied table.
+first time it runs; CM does not trust it for you. If the file changes while
+`enable` is writing it, nothing is written and you are asked to run it again. Run
+`enable` again after updating CM to refresh the copied table.
 
 Your own rules live in `~/.cm-workflow/skill-hints.local.json`, which CM never
 overwrites. They take precedence over CM's table:
@@ -409,9 +411,13 @@ overwrites. They take precedence over CM's table:
 }
 ```
 
-`"enabled": false` turns hints off; `disable` lists CM rule ids to switch off. An
-author skill (`grill-me`, `handoff`, `wayfinder`) is only hinted when it is
-installed for that host; otherwise its CM counterpart is hinted, if there is one.
+`"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
+user rule with the same `id` as a CM rule replaces it. `patterns` (regular
+expressions) share a 200 ms budget per message; past it they count as no match. An
+author skill (`grill-me`, `handoff`, `wayfinder`) is only hinted when its pinned
+author version (see above) is installed for that host; otherwise its CM
+counterpart is hinted, if there is one. Per-session state is kept until a session
+has been idle for 30 days.
 `~/.cm-workflow/logs/skill-hints.jsonl` records rule id, skill, host and time of
 each hint and of each adoption (you typed the skill within the next five
 messages), never message text; it drops its older half past 1 MB. `/cm-check`

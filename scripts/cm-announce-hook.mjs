@@ -19,11 +19,16 @@ export const settingsPath=(env=process.env)=>
 export const declinedPath=(env=process.env)=>
   path.join(path.resolve(env.CM_WORKFLOW_HOME||path.join(env.HOME||os.homedir(),'.cm-workflow')),DECLINED);
 
+// The raw text (null when the file does not exist) lets a later write check that
+// nobody changed the file in between.
+export function readSettingsText(file){
+  try{return fs.readFileSync(file,'utf8');}catch(error){if(error.code==='ENOENT')return null;throw error;}
+}
 export function readSettings(file){
-  let text;
-  try{text=fs.readFileSync(file,'utf8');}catch(error){if(error.code==='ENOENT')return {};throw error;}
-  if(!text.trim())return {};
+  const text=readSettingsText(file);
+  if(text===null)return {};
   // A settings file we cannot parse is never rewritten: that would destroy user content.
+  // An existing empty file is not valid JSON either.
   return JSON.parse(text);
 }
 
@@ -41,11 +46,17 @@ export function withAnnounceHook(settings){
   return next;
 }
 
-export function writeSettings(file,settings){
+export class SettingsChanged extends Error{}
+// With `expected`, the file is re-read right before the rename and nothing is
+// written if it no longer holds that text, so a concurrent edit is never lost.
+export function writeSettings(file,settings,{expected}={}){
   fs.mkdirSync(path.dirname(file),{recursive:true});
   const temporary=`${file}.cm-announce.${process.pid}.tmp`;
   fs.writeFileSync(temporary,JSON.stringify(settings,null,2)+'\n',{mode:0o600});
-  try{fs.renameSync(temporary,file);}finally{if(fs.existsSync(temporary))fs.unlinkSync(temporary);}
+  try{
+    if(expected!==undefined&&readSettingsText(file)!==expected)throw new SettingsChanged();
+    fs.renameSync(temporary,file);
+  }finally{if(fs.existsSync(temporary))fs.unlinkSync(temporary);}
 }
 
 export async function main({env=process.env,input=process.stdin,output=process.stdout,
@@ -73,8 +84,17 @@ export async function main({env=process.env,input=process.stdin,output=process.s
     try{fs.mkdirSync(path.dirname(declined),{recursive:true});fs.writeFileSync(declined,'');}catch{/* 记不住也只是下次再问一次 */}
     output.write(`  未开启。${manual}\n`);return 0;
   }
-  try{writeSettings(file,withAnnounceHook(settings));}
-  catch{output.write(`  ⚠ 写入 ${file} 失败，未改动它。${manual}\n`);return 0;}
+  // The question may have waited a long time: start again from what is on disk now.
+  let current;
+  try{current=readSettingsText(file);settings=current===null?{}:JSON.parse(current);}
+  catch{output.write(`⚠ 无法解析 ${file}，未改动它。${manual}\n`);return 0;}
+  if(hasAnnounceHook(settings)){output.write('  更新播报已启用。\n');return 0;}
+  try{writeSettings(file,withAnnounceHook(settings),{expected:current});}
+  catch(error){
+    output.write(error instanceof SettingsChanged?`  ⚠ ${file} 刚被其他程序改动，未改写。${manual}\n`
+      :`  ⚠ 写入 ${file} 失败，未改动它。${manual}\n`);
+    return 0;
+  }
   output.write('  已开启：下次启动 Claude Code 时会告知更新。\n');
   return 0;
 }
