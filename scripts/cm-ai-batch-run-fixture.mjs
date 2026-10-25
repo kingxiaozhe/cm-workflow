@@ -364,6 +364,13 @@ export async function batchFixture(mode,options={}){
       const segment=batchSegment(config.batchId);
       const heads=git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']).split('\n').filter(Boolean);
       assert.deepEqual(heads.sort(),[`cm/${segment}/work/T-001`,`cm/${segment}/work/T-002`]);
+      // The stop names the conflicted member's branch and worktree and the way on, then and on every later advance.
+      for(const stop of [result,await open().handle({operation:'advance',requestId:'after-conflict'})]){
+        assert.equal(stop.code,'merge_conflict');assert.deepEqual(stop.files,result.files);
+        assert.equal(stop.guidance.recoveryOperation,null);assert.equal(stop.guidance.authorizationGranted,false);
+        assert.match(stop.guidance.nextStep,new RegExp(`git merge --no-ff cm/${segment}/work/T-00[12]`));
+        assert.match(stop.guidance.nextStep,/cm-ai-batch-plan\.mjs/);assert.match(stop.guidance.summary,/主目录未改动/);
+      }
       for(const name of heads)git(codeProject,['check-ref-format','--branch',name]);
       for(const task of ['T-001','T-002'])assert.throws(()=>git(codeProject,['rev-parse','--verify',`refs/heads/cm/work/${task}`]));
       return;

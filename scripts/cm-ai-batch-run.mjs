@@ -399,7 +399,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         batchGit(config.codeProject,['merge','--abort'],'batch_merge_abort_failed');
         need(batchGit(config.codeProject,['rev-parse','HEAD'])===intent.expected_old,'batch_merge_history_changed');
         record('batch_merge_conflict',{from_key:key,code:'merge_conflict',files,expected_old:intent.expected_old});
-        return {outcome:'blocked',code:'merge_conflict',batchId:config.batchId,files};
+        return {outcome:'blocked',code:'merge_conflict',batchId:config.batchId,files,guidance:mergeConflictGuidance(key,files)};
       }
     }else{
       // A crash may happen after Git commits but before the handoff log append.
@@ -488,6 +488,18 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   const stopGuidance=(summary,nextStep,prerequisites)=>Object.freeze({summary,nextStep,recoveryOperation:null,
     prerequisites:Object.freeze(prerequisites),authorizationGranted:false});
+  // A member whose reviewed, completed delivery does not merge (members never share a
+  // scope file, so this is a file outside every scope). The batch stays stopped; the
+  // operator merges by hand and plans the rest as a new batch. Redoing the task
+  // serially would mean reopening a completed, reviewed task, which is not automatic.
+  const mergeConflictGuidance=(key,files)=>{
+    const {worktree,branch}=location(key),listed=Array.isArray(files)&&files.length?files.join('、'):'（Git 未列出）';
+    return stopGuidance(`并行成员 ${key} 的已审交付与已合并的结果在 ${listed} 上冲突；合并已撤销，主目录未改动，批次停止。`,
+      `在主目录手动合并分支 ${branch}（git merge --no-ff ${branch}），解决冲突后跑项目检查再提交；`
+        +`然后删除成员工作树 ${worktree} 与该分支；剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次继续。`,
+      ['该任务已审查通过并在 tasks.md 记为完成，合入的是它的已审代码','合并后的组合没有经过审查，提交前必须跑项目检查',
+        '原批次不会再推进，不要再对它 advance']);
+  };
   // reconcile_review exists only for external-model or execution-policy runs.
   const batchKind=strict=>strict?'外部模型或执行策略批次':'批次';
   // Name only exits whose entry conditions accept this member. Recoverable pendingActions
@@ -617,7 +629,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
           :await run.host.handle({version:1,operation:'reconcile_review',requestId:request.requestId,identity:definition.identity,invocationId:request.invocationId});}
         finally{run.close();}
       }
-      if(initial.stopped)return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId};
+      if(initial.stopped){
+        const conflict=initial.code==='merge_conflict'?initial.rows.findLast(row=>row.phase==='batch_merge_conflict'):null;
+        return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId,
+          ...(conflict?{files:conflict.files,guidance:mergeConflictGuidance(conflict.from_key,conflict.files)}:{})};
+      }
       if(Object.hasOwn(BATCH_MEMBER_ACTIONS,request.operation))return await memberAction(request,initial);
       if(request.operation==='advance'&&!initial.rows.length){
         const dirty=batchGit(config.codeProject,['status','--porcelain']);
