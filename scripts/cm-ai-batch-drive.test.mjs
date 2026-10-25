@@ -24,8 +24,9 @@ function fixture(t,count=1){
   const specsDir=path.join(root,'specs5'),codeProject=path.join(root,'app'),bin=path.join(root,'bin');
   fs.mkdirSync(path.join(specsDir,'1.work'),{recursive:true});fs.mkdirSync(codeProject);fs.mkdirSync(bin);
   for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,'1.work',name),'# Fixture\n');
+  // Each task declares the same file the batch config gives it.
   fs.writeFileSync(path.join(specsDir,'1.work','tasks.md'),Array.from({length:count},(_,n)=>
-    `- [ ] T-00${n+1}: implement target ${n+1}\n`).join(''));
+    `- [ ] T-00${n+1}: implement target ${n+1}\n  - 范围: \`${n===0?'target.mjs':`target${n+1}.mjs`}\`\n`).join(''));
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(specsDir)}));
   fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
   for(const args of [['init','-b','main'],['config','user.name','Fixture'],['config','user.email','fixture@example.invalid'],['add','-A'],['commit','-m','baseline']]){
@@ -246,6 +247,9 @@ test('batch driver refuses an oversized answer of a later task before launching 
 function laterTask(f,scope,files){
   const config=path.join(f.root,'batch.json'),bundle=JSON.parse(fs.readFileSync(config,'utf8'));
   bundle.batch.tasks[1].scope=scope;fs.writeFileSync(config,JSON.stringify(bundle));
+  // tasks.md is the authority for T-002's files: keep it equal to the batch config.
+  const tasks=path.join(bundle.batch.specsDir,'1.work','tasks.md');
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('  - 范围: `target2.mjs`',`  - 范围: ${scope.map(file=>`\`${file}\``).join(', ')}`));
   const later=path.join(f.root,'answers','1.work','T-002');fs.mkdirSync(later,{recursive:true});
   for(const name of ['qa-assess.json','documentation-inspect.json'])
     fs.copyFileSync(path.join(f.answers,name),path.join(later,name));

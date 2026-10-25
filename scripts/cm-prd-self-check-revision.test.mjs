@@ -41,7 +41,7 @@ async function fixture(t,{fail=true,lowRisk=false,mechanical=false,allLowRisk=fa
         {path:'design.md',content:'## 方案摘要\nGuide architecture'}]}))};
       return transform({status:'draft',summary:'Tasks',features:payload.acceptedDesign.features.map(f=>({name:f.name,
         testCasesReason:'no_observable_behavior',documents:[...structuredClone(f.documents),{path:'tasks.md',content:mechanical&&payload.revision===null?
-          '- [x] T-001: Invalid completed task':'- [ ] T-001: Update guide'}]}))},payload);
+          '- [x] T-001: Invalid completed task':'- [ ] T-001: Update guide\n  - 范围: `README.md`'}]}))},payload);
     }};
   const review=async(stage,feature='1.guide',finding=false)=>{
     const prepare=()=>host.prepareReview(stage,feature);

@@ -22,7 +22,7 @@ function fixture(t,{pendingCorrection=false}={}){
     const findings=pendingCorrection&&feature==='1.guide'?[{id:'R1',severity:'P2',path:`${feature}/tasks.md`,
       message:'Clarify task split',evidence:'Synthetic finding'}]:[];
     const documents=[{path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Read guide'},
-      {path:'design.md',content:'## 方案摘要\nDocumentation'}, {path:'tasks.md',content:'- [ ] T-001: Guide'}];
+      {path:'design.md',content:'## 方案摘要\nDocumentation'}, {path:'tasks.md',content:'- [ ] T-001: Guide\n  - 范围: `README.md`'}];
     const prepared=preparePrdReview({specs,stage:'split',feature,draft:{draftDigest:'a'.repeat(64),features:[{name:feature.split('.')[1],directory:feature,documents}]}});
     claimPrdReview({...prepared.paths,package_sha256:prepared.packageDigest});
     publishPrdReview({specs,reviewPackage:prepared.reviewPackage,packageDigest:prepared.packageDigest,authorContextId:'author',
@@ -88,10 +88,10 @@ test('change digest survives later summary publication, recovery, approval, and 
   const original=[
     {path:'requirements.md',content:'## 需求版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08 | v1 | original |\n## 功能需求\n1. [F-003] Notes\n- [ ] [AC-003] Read notes\n'},
     {path:'design.md',content:'## 设计版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08 | v1 | original |\n## 方案摘要\nNotes\n'},
-    {path:'tasks.md',content:'## 任务版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08 | v1 | original |\n- [ ] T-003: Notes\n'}];
+    {path:'tasks.md',content:'## 任务版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08 | v1 | original |\n- [ ] T-003: Notes\n  - 范围: `README.md`\n'}];
   for(const doc of original)fs.writeFileSync(path.join(specs,directory,doc.path),doc.content);
   const revise=(docs,version)=>docs.map(doc=>({path:doc.path,content:doc.content+
-    `\n| 2026-09-08 | v${version} | change |\n`+(doc.path==='tasks.md'?`- [ ] T-00${version+2}: [NEW] Extend notes\n`:'More notes\n')}));
+    `\n| 2026-09-08 | v${version} | change |\n`+(doc.path==='tasks.md'?`- [ ] T-00${version+2}: [NEW] Extend notes\n  - 范围: \`README.md\`\n`:'More notes\n')}));
   const config=loadConfig({projectRoot:specs});
   const before=inspectPrdChangeSnapshot(specs),proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Extend notes',removed:[],
     features:[{directory,documents:revise(original,2),testCasesReason:'no_observable_behavior'}]},selected,config);

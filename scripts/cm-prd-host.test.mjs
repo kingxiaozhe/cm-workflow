@@ -73,7 +73,7 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
           send({type:'host_result',sessionId,callId:message.callId,requestDigest:message.requestDigest,
             result:{status:'draft',summary:'Synthetic documentation draft',features:[{name:'guide',testCasesReason:'no_observable_behavior',
               documents:['requirements.md','design.md','tasks.md'].map(file=>({path:file,
-                content:file==='requirements.md'?'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Document setup.':file==='tasks.md'?'- [ ] T-001: Update guide':'## 方案摘要\nUnreviewed synthetic design'}))}]}});continue;
+                content:file==='requirements.md'?'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Document setup.':file==='tasks.md'?'- [ ] T-001: Update guide\n  - 范围: `README.md`':'## 方案摘要\nUnreviewed synthetic design'}))}]}});continue;
         }
         if(message.kind==='prd_materials'){
           assert.equal(mode,'materials');const source=message.payload.sources[0];
@@ -189,7 +189,7 @@ for(const known of [true,false])test(`summary without draft uses only current du
   for(const name of ['docs','mirror','1.history','2.current'])fs.mkdirSync(path.join(dir,name));
   fs.writeFileSync(path.join(dir,'docs/input.md'),'Synthetic request');
   for(const feature of ['1.history','2.current'])for(const [file,content] of Object.entries({
-    'requirements.md':'- [ ] [AC-001] Read guide','tasks.md':'- [ ] T-001: Guide','design.md':'# Design'}))
+    'requirements.md':'- [ ] [AC-001] Read guide','tasks.md':'- [ ] T-001: Guide\n  - 范围: `README.md`','design.md':'# Design'}))
     fs.writeFileSync(path.join(dir,feature,file),feature==='1.history'?content.replace('[ ]','[x]'):content,{mode:0o600});
   const entry={skillDir:path.join(root,'skills/cm-prd'),project:dir,specs:dir};
   const analysis=createCmPrdAnalysis({input:entry,runtime:'codex',record:()=>{},analyze:async()=>({

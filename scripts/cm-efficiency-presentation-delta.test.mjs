@@ -190,10 +190,11 @@ test('V2 is an explicit policy while create defaults and existing V1 values rema
 test('default and V1 prompts match the frozen pre-V2 bytes for both existing adapter variants',()=>{
   // The source and transport candidate had different pre-existing unchangedScope
   // wording. These exact hashes came from each adapter before this change; they were
-  // re-pinned once, deliberately, when the reviewer instructions gained the
-  // requirement-evidence rule (cm-requirement-evidence-v1).
-  const expected={full:new Set(['9a89e16fedae4795f62767c2dc333773a76a00de811ce4ee092c93b336364be3']),
-    v1:new Set(['54c3063003668796bd32b86b70015a6b05f9c2f068312c6d03ef5090d879ef8b'])};
+  // re-pinned deliberately when the reviewer instructions gained the
+  // requirement-evidence rule (cm-requirement-evidence-v1), and again when they
+  // gained the host-replay rule (cm-host-replay-v1).
+  const expected={full:new Set(['8cf6ae73bc414bd408b4756423a4748d708b9c559a6692aea585c903beaa35e7']),
+    v1:new Set(['b59c4ca5c36fe14d3056dd252fdc31d3e9724bca12855fe88d2bd3a110bd8338'])};
   for(const provider of ['claude','codex']){
     const request=reviewRequest(provider),full=buildReviewPrompt(request,provider);
     assert.equal(full,buildReviewPrompt(request,provider,null));

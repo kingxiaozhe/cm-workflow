@@ -23,7 +23,7 @@ const sourceCases={schemaVersion:'1.0',feature:'list',cases:['Render list','Conf
 const documents=()=>[
   {path:'requirements.md',content:'## 功能需求\n1. [F-001] Reversible list feedback\n'+sourceCases.cases.map(c=>`- [ ] [${c.acIds[0]}] ${c.expected[0]}`).join('\n')},
   {path:'design.md',content:'## 方案摘要\nLocal list component, one reversible objective.\n## 接口契约\nListView remains unchanged.'}];
-const draft=(tasks='- [ ] T-001: List feedback ~15min',mapping=['T-001','T-001','T-001'])=>({
+const draft=(tasks='- [ ] T-001: List feedback ~15min\n  - 范围: `README.md`',mapping=['T-001','T-001','T-001'])=>({
   status:'draft',summary:'Synthetic task boundaries',features:[{name:'list',testCasesReason:null,
     documents:[...documents(),{path:'tasks.md',content:tasks},{path:'test-cases.json',content:JSON.stringify({
       ...sourceCases,cases:sourceCases.cases.map((c,i)=>({...c,taskIds:[mapping[i]]}))})}]}]});
@@ -127,7 +127,7 @@ test('high/unknown-risk boundary rules reach the planner; existing semantic find
 
 test('explicit user split reaches planner unchanged; same-component independent tasks and cases remain intact',async t=>{
   const request='Keep rendering and deletion confirmation as independent tasks for different owners.';
-  const f=fixture(t,request),tasks='- [ ] T-001: Render and style list\n- [ ] T-002: Confirm deletion';
+  const f=fixture(t,request),tasks='- [ ] T-001: Render and style list\n  - 范围: `README.md`\n- [ ] T-002: Confirm deletion\n  - 范围: `README.md`';
   const host=f.make({generate:async payload=>{
     assert(payload.userAnswers.some(m=>m.text===request));assert(payload.messages.some(m=>m.text===request));
     assert.match(payload.instructions,/explicit user requests for independent tasks/);return draft(tasks,['T-001','T-002','T-001']);
@@ -141,7 +141,7 @@ test('explicit user split reaches planner unchanged; same-component independent 
 });
 
 test('contract-first DAG remains separate; cycles, task cap and lost AC coverage still fail mechanically',async t=>{
-  const f=fixture(t),tasks='- [ ] T-001: Freeze interface and throwing placeholder\n- [ ] T-002: Implement interface\n- [ ] T-003: Call interface\n- T-002 依赖 T-001\n- T-003 依赖 T-001';
+  const f=fixture(t),tasks='- [ ] T-001: Freeze interface and throwing placeholder\n  - 范围: `README.md`\n- [ ] T-002: Implement interface\n  - 范围: `README.md`\n- [ ] T-003: Call interface\n  - 范围: `README.md`\n- T-002 依赖 T-001\n- T-003 依赖 T-001';
   const host=f.make({generate:async payload=>{
     assert.match(payload.instructions,/preserve legitimate contract-first tasks and real dependencies/);
     return draft(tasks,['T-001','T-002','T-003']);
@@ -160,13 +160,13 @@ test('contract-first DAG remains separate; cycles, task cap and lost AC coverage
 
 test('existing failed draft and restored revision receive no first-plan regrouping; IDs and bytes survive',async t=>{
   const f=fixture(t);let generations=0;
-  const host=f.make({generate:async()=>{generations++;return draft('- [ ] T-001: Existing first\n- [ ] T-002: Existing second',['T-001','T-002','T-001']);},
+  const host=f.make({generate:async()=>{generations++;return draft('- [ ] T-001: Existing first\n  - 范围: `README.md`\n- [ ] T-002: Existing second\n  - 范围: `README.md`',['T-001','T-002','T-001']);},
     checkContext:async payload=>checked(payload,'acceptance_verifiability')});
   await host.advance('Analyze');await host.plan('Original plan');await host.verify();
   const checkpoint=host.checkpoint(),bytes=JSON.stringify(checkpoint);
   const restored=f.make({restored:checkpoint,generate:async payload=>{
     assert.doesNotMatch(payload.instructions,/FIRST task planning only/);assert.equal(payload.revision.round,2);
-    assert.equal(JSON.stringify(payload.revision.draft),JSON.stringify(checkpoint.draft));return draft('- [ ] T-001: Existing first\n- [ ] T-002: Existing second',['T-001','T-002','T-001']);
+    assert.equal(JSON.stringify(payload.revision.draft),JSON.stringify(checkpoint.draft));return draft('- [ ] T-001: Existing first\n  - 范围: `README.md`\n- [ ] T-002: Existing second\n  - 范围: `README.md`',['T-001','T-002','T-001']);
   }});
   assert.equal(JSON.stringify(restored.checkpoint()),bytes);
   await restored.plan('Correct only the finding');
@@ -180,7 +180,7 @@ test('approved task boundary drift remains blocked and does not rewrite approval
   const file=path.join(f.dir,'.cm-specs-status');fs.writeFileSync(file,JSON.stringify({status:'approved',features:['1.list'],specFiles:buildManifest(f.dir)}));
   const approval=fs.readFileSync(file),options={specsDir:f.dir,codeProject:f.dir};
   assert.equal(inspectCmAiAdmission(options).state,'ready');
-  const task=path.join(feature,'tasks.md');fs.appendFileSync(task,'\n- [ ] T-002: Expanded objective');
+  const task=path.join(feature,'tasks.md');fs.appendFileSync(task,'\n- [ ] T-002: Expanded objective\n  - 范围: `README.md`');
   const changed=fs.readFileSync(task),blocked=inspectCmAiAdmission(options);
   assert.equal(blocked.state,'blocked');assert.equal(blocked.reason,'spec_drift');
   assert.deepEqual(fs.readFileSync(file),approval);assert.deepEqual(fs.readFileSync(task),changed);f.unchanged();

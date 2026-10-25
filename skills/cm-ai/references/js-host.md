@@ -13,6 +13,7 @@
 {"version":2,"development":"conversation","bootstrap":"disabled","qa":"disabled","qaFix":"disabled","verification":"precheck"}
 ```
 
+`verification:"auto"` 是无人值守版：同一闸门由宿主对照开发结果里的逐条 `requirements` 与宿主私有副本里的实跑（改前基线、只放入测试文件、全部放入）自动作答，不需要 `liveEvidence`；缺证据或与实跑矛盾就停在 `verification_precheck_failed` 等人。详见控制文档「闸门由宿主自动作答」。
 `verification:"precheck"` 开启交付前验证闸门：审查前宿主发 `verification_precheck`，当前会话逐条回答任务描述与验证要求的满足情况和实际证据（基线计数、RED 失败用例名、位置清单等），证据写进交接文件给独立审查看。PLAN 须配 `liveEvidence`（kinds 含 `verification_precheck`，见 `../../../docs/live-evidence-drivers.md`），否则驾驶员启动前退出 2。
 模型、命令和路径仍来自原配置。加载原配置不自动启用能力；policy 也不能替代所需配置。
 单任务启动顺序为 `serve --config RUN.json --mode create|resume --host-context ID --control-config POLICY.json`，
@@ -194,16 +195,18 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    runtime，恢复不得换端或冒用旧会话。Codex单任务同仓specs可显式选择 js-host-modes.md 的受保护模式；
    当前Codex/Claude及批次同仓用 js-host-modes.md 的文本提案模式；未选择保护的同仓仍阻断。不搬动specs或删除保护检查；工具会话不是OS沙箱。
 3. 从已批准任务确定 scope、requirements 和顺序；不跳过未解决的 bootstrap 确认或依赖。
-   单代码根用 `cm-ai-admission.mjs --print-run-definition --scope ...` 生成运行定义，不要手写；`--scope` 必填（相对代码根、逗号分隔），`--requirements` 可选。需要跳过当前 `nextTask` 时可加 `--task T-xxx`，仅接受同 feature 的 `eligibleTasks`，选择会写入运行定义并绑定恢复指纹。已批准的跨 feature 顺序要先做后面的批次时加 `--feature 数字.slug`（写入 `featureSelection`；宿主也可用同名参数），仍校验全部批准、manifest 与该批次内依赖，不改旧批次任务；恢复须保持同一选择。完整命令见产品文档。
+   单代码根用 `cm-ai-admission.mjs --print-run-definition` 生成运行定义，不要手写。`tasks.md` 已为该任务写了 `- 范围:` 时以它为准，不传 `--scope`（传了且不一致报 `task_scope_mismatch`）；没写范围的任务 `--scope` 必填（相对代码根、逗号分隔），缺了报 `scope_required`。
    单任务用 `cm-ai-host.mjs`；多任务用 `cm-ai-batch-host.mjs` 的原 batch/workflows 配置。
    任务列表只包含该运行计划内的任务；恢复必须使用原身份、配置和真实当前会话身份，
    单任务同会话恢复用 `--mode resume --host-context {当前真实会话ID}` 加创建时的同一组启动输入（`--review-config`、`--runtime`、`--workflow-config` 等）；换会话恢复再加 `--original-host-context {创建运行的会话ID}`；
    两个 ID 相同等同未传新参数，create 传它报 `original_host_context_unavailable`。不能冒用旧 host-context。
 3.1 多任务批次可提议并行组，写进 batch 配置的可选 `parallel`（任务 key 的数组的数组）。
    只提议同时满足以下全部条件的任务，任一不满足就不进组；一个组都成立不了就**不写该字段**，正常串行：
-   - **scope 写全**：任务可能改动的每个文件都在 scope 里，包括已有文件（例如注册新模块的路由表、
-     index 导出）和测试文件。成员可以修改已有文件；写到 scope 以外会以 `out_of_scope` 停下重做。
-     说不清会碰哪些文件的任务不进组。成员各自审查只证明自己的交付；两个任务虽不改同一文件、
+   - **scope 来自 tasks.md**：新批次只把 `tasks.md` 写了 `- 范围:` 的任务放进组，batch 配置里的 scope
+     照抄它（不一致报 `task_scope_mismatch`）；没写范围或写 `串行` 的任务报 `parallel_scope_undeclared`，
+     标了 `- 设备: 需要` 的报 `parallel_device_task`。范围应写全：任务可能改动的每个文件，包括已有文件
+     （例如注册新模块的路由表、index 导出）和测试文件。成员可以修改已有文件；写到 scope 以外会以
+     `out_of_scope` 停下重做。升级前已开始的批次按原规则继续。成员各自审查只证明自己的交付；两个任务虽不改同一文件、
      却读写同一接口、配置或生成链时，组合后可能不兼容，应在 `tasks.md` 写成依赖、串行执行。
    - **scope 两两不交集**：候选之间不得有重复路径；runtime 建组时也会核对。
    - **无依赖路径**：按 `tasks.md` 依赖图计算**传递闭包**，组内任意两任务之间不得存在依赖路径。

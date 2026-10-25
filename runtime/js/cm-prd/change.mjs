@@ -15,6 +15,7 @@ import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdDraft} from './draft.mjs';
 import {checkPrdDraftMechanics,inspectPrdContextCheck,PRD_SELF_CHECK_RULES} from './self-check.mjs';
+import {recordPrdTaskScopes,approvedScopeExemptions,prdTaskScopeRecords} from './task-scope-record.mjs';
 import {replaceSessionFile} from './session.mjs';
 const names=['requirements.md','design.md','tasks.md','test-cases.json'];
 const valid=name=>/^[1-9]\d*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
@@ -53,7 +54,19 @@ export function inspectPrdChangeSnapshot(specs){
     if(bytes!==null)reviews[file]=sha(bytes);
   }
   const status=read(specs,'.cm-specs-status');
-  return json({directories,files,trees,reviews,status},4*1024*1024);
+  // Version 2 also binds the task-scope records (task-scope-record.mjs). A
+  // snapshot taken before it has no version and is compared in its own shape.
+  return json({directories,files,trees,reviews,status,snapshotVersion:2,scopeRecords:prdTaskScopeRecords(specs,directories)},4*1024*1024);
+}
+// The current specs still match a session's snapshot, in that snapshot's shape:
+// version 2 as a whole; an unversioned one that carries scopeRecords (bound only
+// when a record existed) still binds them; one without either binds neither.
+function snapshotUnchanged(specs,before){
+  const now=inspectPrdChangeSnapshot(specs);
+  if(Object.hasOwn(before,'snapshotVersion'))return digest(now)===digest(before);
+  const {snapshotVersion,scopeRecords,...legacy}=now;
+  if(Object.hasOwn(before,'scopeRecords'))return digest({...legacy,scopeRecords})===digest(before);
+  return digest(legacy)===digest(before);
 }
 // Same declaration grammar as admission and N5 mark-done (spec-task-line.mjs):
 // the approved original is read with the grammar its approval bound, the
@@ -127,7 +140,8 @@ export function inspectPrdChangeProposal(before,raw,selected,config,{rules=PRD_S
     &&!userCases(files).some(next=>next.feature===item.feature&&digest(next.value)===digest(item.value)));
   const draft={summary:raw.summary,features,draftDigest:digest({summary:raw.summary,features})};
   const mechanics=checkPrdDraftMechanics(draft,{change:true,rules,
-    previous:Object.fromEntries(selected.map(directory=>[directory,before.files[`${directory}/tasks.md`]]))});
+    previous:Object.fromEntries(selected.map(directory=>[directory,before.files[`${directory}/tasks.md`]])),
+    ...(rules>=3?{scopes:approvedScopeExemptions(before,features.map(feature=>feature.directory),grammar)}:{})});
   need(mechanics.status==='mechanical_subset_passed','prd_change_mechanics_failed');
   return json({...draft,mechanicalSelfCheck:mechanics,removed:raw.removed,files,changedUserCases,
     proposalDigest:digest({before,raw,selected}),counts:{added:resultDirs.filter(dir=>!before.directories.includes(dir)).length,
@@ -144,7 +158,7 @@ export function createPrdChange({admission,runtime,call,restored=null,selected=[
   let state=restored?structuredClone(restored):{stage:'ready',before:inspectPrdChangeSnapshot(admission.specs),selected,
     messages:[],analysis:null,parts:null,proposal:null,contextCheck:null,round:0,confirmation:null,reason,configDigest,userCases:readUserCases()};
   need(state.configDigest===configDigest,'prd_change_config_changed');
-  const current=()=>need(digest(inspectPrdChangeSnapshot(admission.specs))===digest(state.before)
+  const current=()=>need(snapshotUnchanged(admission.specs,state.before)
     &&digest(loadConfig({projectRoot:admission.project}))===configDigest&&digest(readUserCases())===digest(state.userCases),'prd_change_inputs_changed');
   const invoke=async(kind,payload,signal,role)=>{
     const route=resolveRole(config,role,runtime);need(route.route_state==='current-runtime','prd_change_adapter_unavailable');
@@ -247,7 +261,7 @@ export function applyPrdChange({specs,before,proposal,selected}){
   need(fs.realpathSync(reviews)===reviews,'prd_change_archive_invalid');
   const name=`prd-change-${proposal.proposalDigest}.json`,archive={version:1,before,proposal,selected};
   const existing=read(specs,`.reviews/${name}`);
-  if(existing===null){need(digest(inspectPrdChangeSnapshot(specs))===digest(before),'prd_change_inputs_changed');assertPrdReviewsSettled(specs,selected);}
+  if(existing===null){need(snapshotUnchanged(specs,before),'prd_change_inputs_changed');assertPrdReviewsSettled(specs,selected);}
   const archiveBytes=JSON.stringify(archive)+'\n';
   if(existing===null)replaceSessionFile(specs,`.reviews/${name}`,null,archiveBytes);
   else need(existing===archiveBytes,'prd_change_archive_changed');
@@ -281,6 +295,9 @@ export function applyPrdChange({specs,before,proposal,selected}){
     // Carry the last approval's tasks.md grammar to the next approval.
     ...(approvedGrammar(before)===TASK_GRAMMAR?{taskGrammar:TASK_GRAMMAR}:{})})+'\n';
   if(read(specs,statusFile)===before.status)replaceSessionFile(specs,statusFile,before.status,invalidated);
+  // Before any spec byte: later re-checks keep the scopes this proposal carries.
+  current();recordPrdTaskScopes(specs,proposal.features,
+    approvedScopeExemptions(before,proposal.features.map(feature=>feature.directory),approvedGrammar(before)));
   for(const [file,content] of Object.entries(expected)){
     if(!selected.includes(file.split('/')[0])&&oldDirs.includes(file.split('/')[0]))continue;
     current();const dir=path.dirname(path.join(specs,file));try{fs.mkdirSync(dir,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}

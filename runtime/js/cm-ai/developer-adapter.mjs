@@ -5,6 +5,7 @@ import {createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective} f
 
 import {readSpecificationMaterial} from './specification-material.mjs';
 import {readCarriedReview} from './reviewed-evidence-supersession-record.mjs';
+import {splitRequirementReport} from './requirement-evidence.mjs';
 
 const LIMIT=10*1024*1024;
 const INSTRUCTIONS=`Implement the single task described by the JSON data below in the host-selected workspace.
@@ -26,6 +27,12 @@ retrospective reason and each candidate trigger and action are one line of at mo
 Without learningInput, return only outcome and reason. A blocked result may include reason explaining why implementation is impossible (string, at most 1000 UTF-8 bytes, no NUL); application and retrospective are optional when blocked.
 The top-level reason explains blocked outcomes; otherwise it must be null. Use null when no explanation is available.
 Use outcome blocked when implementation is not possible. Do not claim implementation if no implementation was made.
+Always also return requirements: one item {requirement, satisfied, evidence, run, result} for each requirement written in the
+task's description and verification (specification), evidence naming where it is met (file, test name, expected command result).
+Use null when the task states none. The host runs the task's checks itself before development (baseline) and with only the
+task's test files delivered (red), and checks tagged items against those runs: set run "red" on an item stating that a new
+test fails before the implementation; set run "baseline" on an item stating the result before development, with result
+"passed" or "failed" when the item states it; result is read only on a baseline item; otherwise run and result are null. Never claim a run you have not reasoned about.
 When supersededReview exists, it is read-only context: the last review of an earlier, superseded run of this task, not a verdict on this run. Avoid repeating its problems, but implement only the supplied task and scope.`;
 
 // The host owns instructions and workflow evidence. Reject contradictory
@@ -99,8 +106,9 @@ export function validateDeveloperValue(value,request) {
     retrospective:createCmAiTaskLearningRetrospective({...binding,...value.retrospective})};
 }
 
-export function createDeveloperRun({worker,requestedModel,provider,protectedCurrentSession=false}) {
+export function createDeveloperRun({worker,requestedModel,provider,protectedCurrentSession=false,onRequirements=null}) {
   need(['codex','claude'].includes(provider),'invalid_provider');
+  need(onRequirements===null||typeof onRequirements==='function','invalid_input');
   need(typeof worker==='function');text(requestedModel);
   need(typeof protectedCurrentSession==='boolean'&&(!protectedCurrentSession||requestedModel==='current-session'));
   return async (raw,control)=>{
@@ -108,10 +116,13 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
     need(r.requestedModel===requestedModel,'invalid_input');
     need(control?.signal&&typeof control.signal.aborted==='boolean','invalid_input');
     let providerThreadId;
-    const envelope=(status,result=null,blockedReason=undefined)=>terminalFor({version:1,invocationId:r.invocationId,
+    const envelope=(status,result=null,blockedReason=undefined,failureCode=undefined)=>terminalFor({version:1,invocationId:r.invocationId,
       contextId:r.contextId,provider,effectiveModel:'unknown',status,
       accepted:!['unavailable','auth_required','permission_denied'].includes(status),result,
       ...(blockedReason===undefined?{}:{blockedReason}),
+      // Kept only when it is a plain code for a failed/unknown call without a result.
+      ...(failureCode!==undefined&&['failed','unknown'].includes(status)&&result===null&&blockedReason===undefined
+        &&typeof failureCode==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(failureCode)?{failureCode}:{}),
       ...(providerThreadId===undefined?{}:{providerThreadId})},r);
     const failed=(code,reason)=>envelope('failed',{code,reason,
       ...(protectedCurrentSession&&code==='invalid_result'?{retryable:true}:{})});
@@ -119,7 +130,7 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
     need(!control.signal.aborted,'cancelled');
     let response;
     try{response=await worker({prompt:buildDeveloperPrompt(r,provider)},control);}
-    catch{return envelope('unknown');}
+    catch(error){return envelope('unknown',null,undefined,error?.code);}
     if(control.signal.aborted||!response||typeof response!=='object'||Array.isArray(response))return envelope('unknown');
     try{response=json(response);}
     catch(error){
@@ -130,7 +141,10 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
     if(response.status==='succeeded'){
       try{
         if(Object.hasOwn(response,'providerThread')){id(response.providerThread);providerThreadId=response.providerThread;}
-        const result=validateDeveloperValue(response.value,r);
+        // The report goes to the host's gate; the journaled value keeps its contract.
+        const split=splitRequirementReport(response.value);
+        try{onRequirements?.(r.identity,split.items);}catch{/* a consumer never changes the terminal */}
+        const result=validateDeveloperValue(split.value,r);
         // Preserve the null failure result; the explanation is diagnostic only.
         return result.outcome==='blocked'?envelope('failed',null,result.reason):envelope('succeeded',result);
       }catch(error){return failed('invalid_result',error.code??'invalid_input');}
@@ -139,6 +153,6 @@ export function createDeveloperRun({worker,requestedModel,provider,protectedCurr
       return failed(response.code,response.reason??response.code);
     // A missing/ambiguous terminal may have performed writes. Never retry here.
     return envelope(['failed','unavailable','auth_required','permission_denied'].includes(response.status)
-      ?response.status:'unknown');
+      ?response.status:'unknown',null,undefined,response.code);
   };
 }

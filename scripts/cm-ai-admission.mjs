@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Product CLI for cm-ai N1/N2 inspection and explicit human approval.
 import fs from 'node:fs';
+import {declaredTaskScope,sameScope} from '../runtime/js/task-scope.mjs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {inspectCmAiAdmission,approveCmAiSpecs,matchesCmAiTaskSelection,explainCmAiTaskSelection} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
@@ -56,11 +57,20 @@ function buildRunDefinition(admission,input){
     repositoryId=name??path.basename(admission.codeProject);
   }
   const list=value=>value===undefined||value===''?[]:value.split(',').map(item=>item.trim());
+  // tasks.md is the authority once it declares the task's files; a session-supplied
+  // --scope must then match it exactly. Without a declaration --scope stays required.
+  const declared=declaredTaskScope(admission.specsDir,selected.feature,selected.id);
+  if(declared&&Object.hasOwn(input,'scope')&&!sameScope(declared.scope,list(input.scope)))
+    throw Object.assign(new Error('task_scope_mismatch'),{code:'task_scope_mismatch',
+      reason:`tasks.md 为 ${selected.id} 写的范围是 ${declared.scope.join(', ')}；--scope 给的是 ${list(input.scope).join(', ')}。去掉 --scope 即按 tasks.md`});
+  if(!declared&&!Object.hasOwn(input,'scope'))
+    throw Object.assign(new Error('scope_required'),{code:'scope_required',
+      reason:'tasks.md 没有为该任务写范围，--print-run-definition 需要 --scope：本任务允许修改的文件，相对代码根，逗号分隔（例：--scope src/todos.js,test/todos.test.js）'});
   const definition={version:1,specsDir:admission.specsDir,codeProject:admission.codeProject,
     feature:selected.feature,
     identity:{repositoryId,runId:input.runId??`${selected.feature.replace(/^\d+\./,'')}-${selected.id}`,
       taskId:selected.id,attempt:1},
-    scope:list(input.scope),requirements:list(input.requirements),
+    scope:declared?[...declared.scope]:list(input.scope),requirements:list(input.requirements),
     ...(input.task===undefined?{}:{taskSelection:{version:1,taskId:selected.id}}),
     ...(input.feature===undefined?{}:{featureSelection:{version:1,feature:input.feature}})};
   return validateRunDefinition(definition);
@@ -70,10 +80,6 @@ export function main(argv=process.argv.slice(2)){
   let input;
   try{input=parse(argv);}catch(error){process.stderr.write(`${usage}\nERROR: ${error.message}\n`);return 2;}
   if(input.help){process.stdout.write(`${usage}\n`);return 0;}
-  if(input.printRunDefinition&&!Object.hasOwn(input,'scope')){
-    process.stderr.write('--print-run-definition 需要 --scope：本任务允许修改的文件，相对代码根，逗号分隔（例：--scope src/todos.js,test/todos.test.js）\n');
-    return 2;
-  }
   const approval=input.approve?approveCmAiSpecs(input):null;
   const projectResults=approval?.projectResults??input.codeProjects.map(codeProject=>inspectCmAiAdmission({...input,codeProject}));
   const firstBlocked=projectResults.find(item=>item.state==='blocked');

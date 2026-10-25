@@ -146,7 +146,7 @@ test('new parallel batch merges reviewed members without committing private bind
   const f=fixture();f.parallel=true;
   try{
     f.batch.tasks=[1,2,3].map(n=>({feature:'1.work',taskId:`T-00${n}`,scope:[`task${n}.mjs`],requirements:['requirements.md']}));f.batch.parallel=[['1.work/T-001','1.work/T-002']];
-    fs.writeFileSync(path.join(f.specsDir,'1.work','tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n');
+    fs.writeFileSync(path.join(f.specsDir,'1.work','tasks.md'),'- [ ] T-001: first\n  - 范围: `task1.mjs`\n- [ ] T-002: second\n  - 范围: `task2.mjs`\n- [ ] T-003: final\n  - 范围: `task3.mjs`\n\n- T-003 依赖 T-001, T-002\n');
     fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
     const original=JSON.parse(fs.readFileSync(f.config)).workflows['1.work/T-001'];fs.writeFileSync(f.config,JSON.stringify({batch:f.batch,workflows:Object.fromEntries(f.batch.tasks.map(task=>[`1.work/${task.taskId}`,original]))}));
     const home=path.join(f.root,'home');fs.mkdirSync(home);f.env.CM_WORKFLOW_HOME=home;f.env.CM_WORKFLOW_LOG_HOME=path.join(f.root,'logs');

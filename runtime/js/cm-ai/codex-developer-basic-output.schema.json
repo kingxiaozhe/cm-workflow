@@ -1,9 +1,10 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["outcome", "reason"],
+  "required": ["outcome", "reason", "requirements"],
   "properties": {
     "outcome": {"type": "string", "enum": ["implemented", "blocked"]},
-    "reason": {"type": ["string", "null"]}
+    "reason": {"type": ["string", "null"]},
+    "requirements": {"type": ["array", "null"], "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["requirement", "satisfied", "evidence", "run", "result"], "properties": {"requirement": {"type": "string"}, "satisfied": {"type": "boolean"}, "evidence": {"type": "string"}, "run": {"type": ["string", "null"], "enum": ["red", "baseline", null]}, "result": {"type": ["string", "null"], "enum": ["passed", "failed", null]}}}}
   }
 }

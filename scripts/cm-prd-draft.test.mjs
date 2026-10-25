@@ -9,7 +9,7 @@ import {inspectPrdDraft} from '../runtime/js/cm-prd/draft.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const draft=()=>({status:'draft',summary:'Documentation draft',features:[{name:'guide',
   documents:['requirements.md','design.md','tasks.md'].map(file=>({path:file,
-    content:file==='requirements.md'?'- [ ] [AC-001] The guide describes setup.':file==='tasks.md'?'- [ ] T-001: Update guide':'# Synthetic design'})),
+    content:file==='requirements.md'?'- [ ] [AC-001] The guide describes setup.':file==='tasks.md'?'- [ ] T-001: Update guide\n  - 范围: `README.md`':'# Synthetic design'})),
   testCasesReason:'no_observable_behavior'}]});
 test('draft structure refuses missing triad, unsafe path and dropped user cases',()=>{
   const options={nextIndex:3,generateCases:true,userCasesProvided:false};

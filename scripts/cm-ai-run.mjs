@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Fixed, no-provider control entry. Executing adapters are a subsequent slice.
 import fs from 'node:fs';
+import {assertDeclaredScope} from '../runtime/js/task-scope.mjs';
 import {spawn as spawnChild} from 'node:child_process';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -300,7 +301,7 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
   // run here, before any journal, intent or execution directory exists, so it
   // cannot strand its first develop effect. A bootstrap run's own instruction
   // paths are checked by createHostBootstrap against its business scope.
-  if(mode==='create'&&!execution?.bootstrap)assertCreatableScope(definition?.scope);
+  if(mode==='create'&&!execution?.bootstrap){assertCreatableScope(definition?.scope);assertDeclaredScope(definition);}
   if(supersedeReason!==null&&mode!=='create')fail('supersede_unavailable');
   if(supersedeTarget!==null&&!execution?.configuration?.controlPolicy)fail('invalid_arguments');
   if(allowAbandonEffect&&mode!=='resume')fail('effect_abandon_unavailable');

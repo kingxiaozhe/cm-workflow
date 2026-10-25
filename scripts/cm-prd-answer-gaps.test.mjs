@@ -26,9 +26,9 @@ const version='\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08
 const docs=()=>[
   {path:'requirements.md',content:'## 需求版本'+version+'\n## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Read guide\n'},
   {path:'design.md',content:'## 设计版本'+version+'\n## 方案摘要\nExisting guide\n'},
-  {path:'tasks.md',content:'## 任务版本'+version+'\n- [x] T-001: Existing guide\n- [ ] T-002: Draft appendix\n'}];
+  {path:'tasks.md',content:'## 任务版本'+version+'\n- [x] T-001: Existing guide\n  - 范围: `README.md`\n- [ ] T-002: Draft appendix\n  - 范围: `README.md`\n'}];
 const revised=()=>docs().map(doc=>({path:doc.path,content:doc.content.replace('| 2026-09-08 | v1 | original |','| 2026-09-08 | v1 | original |\n| 2026-09-08 | v2 | change |')
-  +(doc.path==='tasks.md'?'\n- [ ] T-003: [NEW] Add example\n':'\nUpdated example\n')}));
+  +(doc.path==='tasks.md'?'\n- [ ] T-003: [NEW] Add example\n  - 范围: `README.md`\n':'\nUpdated example\n')}));
 function fixture(t){const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-gaps-')));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));fs.mkdirSync(path.join(dir,'docs'));fs.mkdirSync(path.join(dir,'mirror'));
   fs.writeFileSync(path.join(dir,'docs/input.md'),'Synthetic guide');fs.mkdirSync(path.join(dir,'1.guide'));
