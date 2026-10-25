@@ -200,6 +200,15 @@ if ($InstallComplete) {
         if ($LASTEXITCODE -ne 0) { throw "运行时声明未完成（核心安装已成功）" }
     }
 
+    # Skill hints: refresh the copy the hook runs, only for users who turned hints on.
+    # Never creates it or touches settings; any failure only warns.
+    try {
+        & node (Join-Path $Dest "scripts/cm-skill-hints.mjs") refresh
+        if ($LASTEXITCODE -ne 0) { Write-Warning "技能提醒运行副本刷新未完成（不影响本次安装）" }
+    } catch {
+        Write-Warning "技能提醒运行副本刷新未完成（不影响本次安装）：$($_.Exception.Message)"
+    }
+
     Write-Host "`n完成（已安装版本: v$Version）。请在 Claude Code 中运行 /cm-check 校验。"
     Write-Host "使用手册: $(Join-Path $Dest 'cm-workflow\docs\user-guide.md')"
     Write-Host @"

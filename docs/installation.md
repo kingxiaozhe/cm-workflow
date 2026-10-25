@@ -397,8 +397,14 @@ one `UserPromptSubmit` hook to `~/.claude/settings.json` and `~/.codex/hooks.jso
 (`--claude` or `--codex` for one side), keeping every other setting and hook. A
 file it cannot parse is left untouched. Codex asks you to trust the new hook the
 first time it runs; CM does not trust it for you. If the file changes while
-`enable` is writing it, nothing is written and you are asked to run it again. Run
-`enable` again after updating CM to refresh the copied table.
+`enable` is writing it, nothing is written and you are asked to run it again.
+
+Once hints are on (the hook is wired, or `~/.cm-workflow/skill-hints/` exists),
+every run of `install.sh`, `install-codex.sh` or `install.ps1` refreshes that copy
+(`node ~/.claude/scripts/cm-skill-hints.mjs refresh` does the same by hand). It
+replaces only the script, the table and the two helper scripts; host configs, Codex
+trust, session state and logs are left alone, and nothing is created for users who
+never enabled hints. A failed refresh is a warning, not an install failure.
 
 Your own rules live in `~/.cm-workflow/skill-hints.local.json`, which CM never
 overwrites. They take precedence over CM's table:
@@ -425,7 +431,8 @@ resumed later does not repeat a hint.
 `~/.cm-workflow/logs/skill-hints.jsonl` records rule id, skill, host and time of
 each hint and of each adoption (you typed the skill within the next five
 messages), never message text; it drops its older half past 1 MB. `/cm-check`
-reports whether the hook is wired, the switch and the rule counts.
+reports whether the hook is wired, the switch, the rule counts and whether the
+copy matches the installed version (with the `refresh` command when it does not).
 
 ## Uninstall
 

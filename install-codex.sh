@@ -501,6 +501,10 @@ echo
 echo "CM Workflow installed for Codex from: $PLUGIN_DEST"
 echo "User guide: $PLUGIN_DEST/docs/user-guide.md"
 echo "Start a new Codex thread, then run \$cm-check, \$cm-prd, or \$cm-test."
+# Skill hints: the hook runs a copy under ~/.cm-workflow/skill-hints; refresh it only for
+# users who turned hints on (never creates it, never touches hooks.json). Failure only warns.
+node "$PLUGIN_DEST/scripts/cm-skill-hints.mjs" refresh </dev/null ||
+  echo "⚠ 技能提醒运行副本刷新未完成（不影响本次安装）" >&2
 # Optional Matt Pocock companion skills: print what is missing and one command; never download.
 echo
 node "$PLUGIN_DEST/scripts/cm-matt-skills.mjs" hint </dev/null || true

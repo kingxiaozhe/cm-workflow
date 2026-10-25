@@ -11,7 +11,8 @@
 // and no tokens are spent; the CM table ships here, the user's own table lives in
 // ~/.cm-workflow/skill-hints.local.json and wins; the log keeps rule ids and times,
 // never message text. Any error exits quietly so a message is never held up.
-// Wiring is opt-in: `enable` adds the hook, the installer does not (yet).
+// Wiring is opt-in: `enable` adds the hook, the installer does not (yet); for users who
+// turned it on, the installer runs `refresh` so an upgrade reaches the copy the hook runs.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -241,8 +242,21 @@ function isOurs(hook,env,host){
   const interpreter=/^[^\s']+$/.test(word)?word:/^'[^']+'$/.test(word)?word.slice(1,-1):null;
   return Boolean(interpreter)&&/^node(?:\.exe)?$/i.test(path.basename(interpreter));
 }
-export const hasHintHook=(config,env,host)=>(config?.hooks?.UserPromptSubmit??[]).some(group=>
-  Array.isArray(group?.hooks)&&group.hooks.some(hook=>isOurs(hook,env,host)));
+// A UserPromptSubmit that is not a list holds no hook of ours. A config of the wrong shape
+// is reported by status and refused by enable: merging into it would drop what is there.
+const promptHooks=config=>config?.hooks?.UserPromptSubmit;
+const plainObject=value=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
+export function shapeError(config){
+  if(config===undefined)return null;
+  if(!plainObject(config))return '顶层不是对象';
+  if(config.hooks!==undefined&&!plainObject(config.hooks))return 'hooks 不是对象';
+  const list=promptHooks(config);
+  return list!==undefined&&!Array.isArray(list)?'UserPromptSubmit 不是列表':null;
+}
+export const hasHintHook=(config,env,host)=>{
+  const list=promptHooks(config);
+  return Array.isArray(list)&&list.some(group=>Array.isArray(group?.hooks)&&group.hooks.some(hook=>isOurs(hook,env,host)));
+};
 export function withHintHook(config,command){
   const next=structuredClone(config??{});
   next.hooks??={};
@@ -252,13 +266,54 @@ export function withHintHook(config,command){
   return next;
 }
 
+const COPIED=[...COMPANIONS,SCRIPT_NAME];
+const sourceOf=name=>name===SCRIPT_NAME?fileURLToPath(import.meta.url):path.join(here,name);
+// 'dir' only for a real directory: a link there would take every copy somewhere else.
+const copyDirKind=env=>{
+  try{return fs.lstatSync(installDir(env)).isDirectory()?'dir':'other';}
+  catch(error){return error.code==='ENOENT'?'missing':'other';}
+};
+// The copy reports on and refreshes from itself only: it cannot see the installed version.
+const runningFromCopy=env=>{try{return fs.realpathSync(here)===fs.realpathSync(installDir(env));}catch{return false;}};
 function copyInstall(env){
   const dir=installDir(env);
-  for(const name of COMPANIONS)writeAtomic(path.join(dir,name),fs.readFileSync(path.join(here,name),'utf8'));
-  writeAtomic(path.join(dir,SCRIPT_NAME),fs.readFileSync(fileURLToPath(import.meta.url),'utf8'));
+  if(copyDirKind(env)==='other')throw new Error(`${dir} 不是普通目录，未写入`);
+  for(const name of COPIED)writeAtomic(path.join(dir,name),fs.readFileSync(sourceOf(name),'utf8'));
 }
 
 const configFile=(host,env)=>host==='codex'?codexHooksPath(env):claudeSettingsPath(env);
+
+// Turned on = our hook is in a host config, or the copy directory exists (enable writes
+// it before the hook, and the hook keeps its state there). A link at that path does not
+// count. Read-only: nothing is created to find out.
+export function hintsInstalled(env){
+  if(copyDirKind(env)==='dir')return true;
+  return HOSTS.some(host=>{try{return hasHintHook(readJson(configFile(host,env)).value,env,host);}catch{return false;}});
+}
+// Copied files that differ from this version's. Missing, linked or special files count as
+// different and are never opened (a FIFO would block status; the hook refuses a linked table).
+export function staleCopies(env){
+  return COPIED.filter(name=>{
+    try{
+      const source=fs.readFileSync(sourceOf(name));
+      const st=fs.lstatSync(path.join(installDir(env),name));
+      return !st.isFile()||st.size!==source.length||!fs.readFileSync(path.join(installDir(env),name)).equals(source);
+    }catch{return true;}
+  });
+}
+const refreshCommand=()=>`node ${shellWord(fileURLToPath(import.meta.url))} refresh`;
+
+// Run by the installers: bring an enabled user's copy to this version. Only the four
+// copied files are replaced; host configs, Codex trust, session state and logs are not
+// touched, and a user who never enabled hints gets nothing. Failure is a warning.
+export function refresh({env=process.env,write=text=>process.stdout.write(text)}={}){
+  if(!hintsInstalled(env))return 0;
+  if(runningFromCopy(env)){write(`⚠ 这是运行副本本身（${installDir(env)}），拿不到已装版本，未刷新；请运行已装 CM 里的 cm-skill-hints.mjs refresh\n`);return 1;}
+  try{copyInstall(env);}
+  catch(error){write(`⚠ 技能提醒运行副本未刷新（${installDir(env)}）：${error.message}；可稍后运行 ${refreshCommand()}\n`);return 1;}
+  write(`技能提醒：运行副本已刷新（${installDir(env)}）。\n`);
+  return 0;
+}
 const LABEL={claude:'Claude',codex:'Codex'};
 class Drift extends Error{}
 
@@ -278,6 +333,8 @@ export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,
         const read=readJson(file);
         // A config we cannot parse is never rewritten: that would destroy user content.
         if(read.error)return `✗ ${LABEL[host]}：无法读取 ${file}（${read.error}），未改动。\n`;
+        const shape=shapeError(read.value);
+        if(shape)return `✗ ${LABEL[host]}：${file} 格式异常（${shape}），未改动。\n`;
         const config=read.value??{};
         if(hasHintHook(config,env,host))return `${LABEL[host]}：提醒钩子已挂，未改动。\n`;
         writeAtomic(file,JSON.stringify(withHintHook(config,hookCommand(env,host,node)),null,2)+'\n',{before:()=>{
@@ -304,10 +361,22 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   const lines=[];
   const wired=HOSTS.map(host=>{
     const read=readJson(configFile(host,env));
-    return `${LABEL[host]} ${read.error?`无法读取（${read.error}）`:hasHintHook(read.value,env,host)?'已挂':'未挂'}`;
+    const shape=read.error?null:shapeError(read.value);
+    return `${LABEL[host]} ${read.error?`无法读取（${read.error}）`:shape?`格式异常（${shape}）`
+      :hasHintHook(read.value,env,host)?'已挂':'未挂'}`;
   });
   const loaded=loadRules({env,rulesFile});
   lines.push(`skill hints: ${wired.join('，')}；开关 ${loaded.enabled?'开':`关（${localPath(env)} 里 enabled 为 false）`}`);
+  if(!hintsInstalled(env))lines.push('  运行副本：未建（还没开启）');
+  else if(runningFromCopy(env))lines.push('  ⚠ 这是从运行副本本身查的，无法核验它与已装版本是否一致；请用已装 CM 里的 cm-skill-hints.mjs status');
+  else{
+    const kind=copyDirKind(env);
+    const stale=kind==='dir'?staleCopies(env):[];
+    lines.push(kind==='missing'?`  ⚠ 运行副本缺失（${installDir(env)}），钩子跑不起来；运行 ${refreshCommand()} 补上`
+      :kind==='other'?`  ⚠ 运行副本目录不是普通目录（${installDir(env)}），CM 不会写进去；请移走后运行 ${refreshCommand()}`
+      :stale.length?`  ⚠ 运行副本与已装版本不一致（${stale.join('、')}）；运行 ${refreshCommand()} 刷新`
+      :'  运行副本：与已装版本一致');
+  }
   if(loaded.enabled){
     lines.push(`  对照表：CM 自带 ${loaded.defaultsError?`读取失败（${loaded.defaultsError}）`:`${loaded.cmCount} 条`}；用户自加 ${loaded.userCount} 条；关掉自带 ${loaded.disabledCount} 条`);
     if(loaded.localError)lines.push(`  ⚠ ${localPath(env)} 读取失败（${loaded.localError}），用户规则未生效`);
@@ -315,7 +384,7 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   return lines.join('\n')+'\n';
 }
 
-const USAGE='用法: cm-skill-hints.mjs hook --host claude|codex | status | enable [--claude] [--codex]\n';
+const USAGE='用法: cm-skill-hints.mjs hook --host claude|codex | status | refresh | enable [--claude] [--codex]\n';
 
 export async function main(argv=process.argv.slice(2),{env=process.env,readInput=()=>fs.readFileSync(0,'utf8'),
   write=text=>process.stdout.write(text),error=text=>process.stderr.write(text)}={}){
@@ -330,6 +399,7 @@ export async function main(argv=process.argv.slice(2),{env=process.env,readInput
     return 0;
   }
   if(command==='status'&&!rest.length){write(statusText({env}));return 0;}
+  if(command==='refresh'&&!rest.length)return refresh({env,write});
   if(command==='enable'){
     const hosts=rest.length?rest.map(flag=>flag.replace(/^--/,'')):HOSTS;
     if(hosts.some(host=>!HOSTS.includes(host))){error(USAGE);return 2;}
