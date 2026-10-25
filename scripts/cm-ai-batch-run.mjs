@@ -314,9 +314,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         batchGit(config.codeProject,['worktree','add','-b',branch,worktree,'HEAD'],'batch_worktree_failed');
       }
       need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
-      const definition=plans.get(key);
-      plans.set(key,validateRunDefinition({...definition,codeProject:worktree,
-        ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})}));
+      plans.set(key,worktreeDefinition(key));
     }
     // Include the main checkout as the second assignment after a partial merge.
     const assignments=remaining.map(key=>`${plans.get(key).identity.taskId}=${location(key).worktree}`);
@@ -390,6 +388,15 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   // Every member that finished and is not merged yet, in task order.
   const readyUnmerged=()=>{const state=progress();return [...plans.keys()].filter(key=>state.ready.has(key)&&!state.done.has(key));};
+  // Seal each such member for the conflict guidance. A member that fails its check
+  // stays unsealed and is named; the conflict itself is still returned.
+  async function sealForGuidance(){
+    const unsealed=[];
+    for(const key of readyUnmerged()){
+      try{await sealMember(progress().ready.get(key));}catch(cause){unsealed.push({taskKey:key,code:cause?.code??'batch_seal_failed'});}
+    }
+    return unsealed;
+  }
   async function mergeMember(row){
     const key=row.from_key,{worktree,branch}=location(key);
     let intent=progress().merging.get(key);
@@ -413,8 +420,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         record('batch_merge_conflict',{from_key:key,code:'merge_conflict',files,expected_old:intent.expected_old});
         // The guidance has the operator merge every unmerged member's branch: commit
         // each reviewed delivery there first, or its branch would merge as up to date.
-        for(const other of readyUnmerged())await sealMember(progress().ready.get(other));
-        return {outcome:'blocked',code:'merge_conflict',batchId:config.batchId,files,guidance:mergeConflictGuidance(key,files)};
+        const unsealed=await sealForGuidance();
+        return {outcome:'blocked',code:'merge_conflict',batchId:config.batchId,files,...(unsealed.length?{unsealed}:{}),guidance:mergeConflictGuidance(key,files,unsealed)};
       }
     }else{
       // A crash may happen after Git commits but before the handoff log append.
@@ -528,7 +535,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   // included, in task order: each is marked complete in tasks.md, so a new plan
   // would skip it, and its code exists only on its branch (committed there before
   // the guidance is given).
-  const mergeConflictGuidance=(key,files)=>{
+  const mergeConflictGuidance=(key,files,unsealed=[])=>{
     const listed=Array.isArray(files)&&files.length?files.join('、'):'（Git 未列出）';
     const pending=readyUnmerged();
     if(!pending.includes(key))pending.push(key);
@@ -536,7 +543,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     return stopGuidance(`并行成员 ${key} 的已审交付与已合并的结果在 ${listed} 上冲突；合并已撤销，主目录未改动，批次停止。`,
       `在主目录按任务顺序手动合并这些已完成未合并的成员分支：${steps.join('；')}；解决冲突后跑项目检查再提交；`
         +`然后删除这些成员工作树与分支；剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次继续。`,
-      ['这些任务已审查通过并在 tasks.md 记为完成，合入的是它们的已审代码；新批次会跳过它们，漏合就会缺代码',
+      [...(unsealed.length?[`以下成员的交付未能核对并提交到分支，分支里可能没有代码，先在其工作树核对后再合：${unsealed.map(item=>`${item.taskKey}（${item.code}）`).join('、')}`]:[]),
+        '这些任务已审查通过并在 tasks.md 记为完成，合入的是它们的已审代码；新批次会跳过它们，漏合就会缺代码',
         '合并后的组合没有经过审查，提交前必须跑项目检查','原批次不会再推进，不要再对它 advance']);
   };
   // reconcile_review exists only for external-model or execution-policy runs.
@@ -592,9 +600,14 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const {worktree,branch}=location(taskKey);
     need(fs.existsSync(worktree),'batch_member_action_unavailable');
     need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
-    const definition=plans.get(taskKey);
-    plans.set(taskKey,validateRunDefinition({...definition,codeProject:worktree,
-      ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})}));
+    plans.set(taskKey,worktreeDefinition(taskKey));
+  }
+  // A member's definition rooted in its worktree, always mapped from the original
+  // plan so binding twice (a stopped replay, then controlTarget) maps once.
+  function worktreeDefinition(key){
+    const {worktree}=location(key),definition=originalPlans.get(key);
+    return validateRunDefinition({...definition,codeProject:worktree,
+      ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})});
   }
   async function memberAction(request,state){
     const {option,flag}=BATCH_MEMBER_ACTIONS[request.operation],taskKey=request.taskKey;
@@ -670,10 +683,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       }
       if(initial.stopped){
         const conflict=initial.code==='merge_conflict'?initial.rows.findLast(row=>row.phase==='batch_merge_conflict'):null;
-        // A stop logged before its members were sealed (a crash, or an older version).
-        if(conflict)for(const other of readyUnmerged())await sealMember(initial.ready.get(other));
+        // A stop logged before its members were sealed (a crash, or an older version):
+        // advance seals them; status stays read-only and reports the stop as logged.
+        const unsealed=conflict&&request.operation==='advance'?await sealForGuidance():[];
         return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId,
-          ...(conflict?{files:conflict.files,guidance:mergeConflictGuidance(conflict.from_key,conflict.files)}:{})};
+          ...(conflict?{files:conflict.files,...(unsealed.length?{unsealed}:{}),guidance:mergeConflictGuidance(conflict.from_key,conflict.files,unsealed)}:{})};
       }
       if(Object.hasOwn(BATCH_MEMBER_ACTIONS,request.operation))return await memberAction(request,initial);
       if(request.operation==='advance'&&!initial.rows.length){

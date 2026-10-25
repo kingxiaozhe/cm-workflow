@@ -410,6 +410,17 @@ export async function batchFixture(mode,options={}){
       assert.equal(git(codeProject,['show',`${t2}:file1.js`]),'implemented');
       // A stop an older version logged left it uncommitted: the replay commits it.
       git(t2tree,['reset','-q','--soft','HEAD~1']);assert.throws(()=>git(codeProject,['show',`${t2}:file1.js`]));
+      // status stays read-only: it reports the stop and commits nothing.
+      const read=await open().handle({operation:'status',requestId:'status-after-conflict'});
+      assert.equal(read.code,'merge_conflict');assert.deepEqual(read.files,result.files);assert.match(read.guidance.nextStep,/T-002/);
+      assert.throws(()=>git(codeProject,['show',`${t2}:file1.js`]));
+      // A member that cannot be checked is named, and the conflict is still returned.
+      fs.renameSync(t2tree,t2tree+'.away');
+      const unchecked=await open().handle({operation:'advance',requestId:'unsealed-after-conflict'});
+      fs.renameSync(t2tree+'.away',t2tree);
+      assert.equal(unchecked.code,'merge_conflict');assert.deepEqual(unchecked.files,result.files);
+      assert.deepEqual(unchecked.unsealed.map(item=>item.taskKey),[`${feature}/T-002`]);
+      assert.match(unchecked.guidance.prerequisites[0],/未能核对并提交到分支.*1\.work\/T-002/);
       // The stop names the conflicted member's branch and worktree and the way on, then and on every later advance.
       for(const stop of [result,await open().handle({operation:'advance',requestId:'after-conflict'})]){
         assert.equal(stop.code,'merge_conflict');assert.deepEqual(stop.files,result.files);
