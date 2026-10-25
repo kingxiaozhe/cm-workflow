@@ -325,8 +325,9 @@ function validateRaw(value){
   // /cm-ai worktree parallelism (runtime/js/cm-ai/batch-plan.mjs). Not in the
   // defaults: a project that does not set it keeps its effective config unchanged.
   if(Object.hasOwn(root,'parallel')){
-    const parallel=requireMapping(root.parallel,'config.parallel');rejectUnknown(parallel,new Set(['enabled','max']),'config.parallel');
+    const parallel=requireMapping(root.parallel,'config.parallel');rejectUnknown(parallel,new Set(['enabled','max','worktreeAll']),'config.parallel');
     if(Object.hasOwn(parallel,'enabled')&&typeof parallel.enabled!=='boolean')throw new ConfigError('config.parallel.enabled must be boolean');
+    if(Object.hasOwn(parallel,'worktreeAll')&&typeof parallel.worktreeAll!=='boolean')throw new ConfigError('config.parallel.worktreeAll must be boolean');
     if(Object.hasOwn(parallel,'max')&&!((typeof parallel.max==='bigint'&&parallel.max>=1n&&parallel.max<=4n)
       ||(Number.isInteger(parallel.max)&&parallel.max>=1&&parallel.max<=4)))throw new ConfigError('config.parallel.max must be an integer from 1 to 4');
   }

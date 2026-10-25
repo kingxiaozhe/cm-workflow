@@ -21,7 +21,9 @@ import {createHostQaExecutor} from '../runtime/js/cm-ai/host-qa-executor.mjs';
 import {EXECUTION_POLICY_V1} from '../runtime/js/cm-ai/execution-policy.mjs';
 
 export async function batchFixture(mode,options={}){
-  const parallel=mode.startsWith('parallel');
+  // worktree-each: a chain T-001 -> T-002 -> T-003 that cannot pair; each task before
+  // the last still runs alone in its own worktree (one-member groups).
+  const each=mode==='worktree-each',parallel=mode.startsWith('parallel')||each;
   const recovery=mode==='parallel-recovery',blockedIds=options.blockedIds??['T-002'];
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-')));
   try{
@@ -30,7 +32,7 @@ export async function batchFixture(mode,options={}){
     for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
     // Each task declares the same file the batch config gives it (file<index>.js).
     fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: first\n  - 范围: `file0.js`\n- [ ] T-002: second\n  - 范围: `file1.js`\n'
-      +(parallel?'- [ ] T-003: final\n  - 范围: `file2.js`\n\n- T-003 依赖 T-001, T-002\n':''));
+      +(parallel?'- [ ] T-003: final\n  - 范围: `file2.js`\n\n'+(each?'- T-002 依赖 T-001\n- T-003 依赖 T-002\n':'- T-003 依赖 T-001, T-002\n'):''));
     // next-feature: a second approved feature waits after this batch's one.
     if(mode==='next-feature'){
       fs.mkdirSync(path.join(specsDir,'2.next'));
@@ -45,11 +47,11 @@ export async function batchFixture(mode,options={}){
       fs.writeFileSync(path.join(codeProject,parallel?'base.js':'file0.js'),'base\n');git(codeProject,['add','-A']);git(codeProject,['commit','-m','fixture baseline']);}
     const config={version:1,repositoryId:'batch-fixture',batchId:'batch-fixture',specsDir,codeProject,
       ...(options.executionPolicy?{executionPolicy:EXECUTION_POLICY_V1}:{}),
-      ...(parallel?{parallel:[[`${feature}/T-001`,`${feature}/T-002`]]}:{}),
+      ...(parallel?{parallel:each?[[`${feature}/T-001`],[`${feature}/T-002`]]:[[`${feature}/T-001`,`${feature}/T-002`]]}:{}),
       tasks:(parallel?['T-001','T-002','T-003']:['T-001','T-002']).map((taskId,index)=>({feature,taskId,scope:[`file${index}.js`],requirements:['requirements.md']}))};
     const calls=[],qaCalls=[],assessments=[],blockedEvidence=[],checkCalls=new Map();let qaReady=mode!=='qa-resume',started;
     const began=new Promise(resolve=>{started=resolve;});
-    let conflictHead=null,interrupted=false,reviewFailed=false,redoThrown=false;
+    let conflictHead=null,interrupted=false,reviewFailed=false,redoThrown=false;const eachSeen=[];
     const developerModel=mode==='parallel-redo'?'current-session':'fixture';
     const executionFor=async(definition,{parallelMember=false}={})=>({configuration:{kind:'batch-fixture-v1',...(parallelMember?{parallelMember:true}:{})},timeoutMs:3000,
       excludedContexts:['host'],applicableAgentFiles:[],
@@ -82,6 +84,15 @@ export async function batchFixture(mode,options={}){
             const logfile=path.join(specsDir,'运行日志.jsonl');
             for(let wait=0;wait<400&&!(fs.existsSync(logfile)&&fs.readFileSync(logfile,'utf8').includes('"phase":"batch_member_ready"'));wait++)
               await new Promise(resolve=>setTimeout(resolve,50));
+          }
+          if(each){
+            const id=definition.identity.taskId,worktree=path.join(root,'.cm-worktrees',batchSegment(config.batchId),id);
+            assert.equal(definition.codeProject,id==='T-003'?codeProject:worktree,`${id} code root`);
+            assert.equal(parallelMember,id!=='T-003');
+            // Each worktree starts from the main checkout after the earlier members merged.
+            if(id==='T-002')assert.equal(fs.readFileSync(path.join(worktree,'file0.js'),'utf8'),'implemented\n');
+            if(id==='T-003')for(const file of ['file0.js','file1.js'])assert.equal(fs.readFileSync(path.join(codeProject,file),'utf8'),'implemented\n');
+            eachSeen.push(id);
           }
           // A second attempt must change the rejected bytes (develop_unchanged_after_review).
           calls.push(definition.identity.taskId);fs.writeFileSync(path.join(definition.codeProject,definition.scope[0]),
@@ -207,6 +218,12 @@ export async function batchFixture(mode,options={}){
         }
       }return originalExists.call(fs,file,...args);
     };
+    if(each){
+      // The planner proposes exactly these one-member groups for this chain.
+      const {planCmAiBatch}=await import('../runtime/js/cm-ai/batch-plan.mjs');
+      const planned=planCmAiBatch({specsDir,codeProject,repositoryId:config.repositoryId,batchId:config.batchId});
+      assert.deepEqual(planned.config.batch.parallel,config.parallel);
+    }
     const batch=open(),pending=batch.handle({operation:'advance',requestId:'advance-1'});
     if(mode==='cancel'){
       await began;await batch.handle({operation:'cancel',requestId:'cancel'});
@@ -504,6 +521,20 @@ export async function batchFixture(mode,options={}){
         const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
         const order=phase=>rows.filter(row=>row.phase===phase).map(row=>row.from_key);
         assert.deepEqual(order('batch_member_ready'),[`${feature}/T-002`,`${feature}/T-001`],'T-002 finished first');
+      }
+      if(each){
+        // Both worker assertions ran (they would otherwise surface as unknown terminals).
+        assert.deepEqual(eachSeen,['T-001','T-002','T-003']);
+        // Every member worktree and branch is gone after its merge; the main checkout is clean.
+        const segment=batchSegment(config.batchId);
+        for(const id of ['T-001','T-002'])assert(!fs.existsSync(path.join(root,'.cm-worktrees',segment,id)),id);
+        assert.equal(git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']),'');
+        assert.equal(git(codeProject,['worktree','list','--porcelain']).split('\n').filter(line=>line.startsWith('worktree ')).length,1);
+        assert.equal(git(codeProject,['status','--porcelain']),'');
+        // One merge commit per member, in task order, then the final task's own commit.
+        const subjects=git(codeProject,['log','--format=%s','-5']).split('\n');
+        assert.deepEqual([subjects[0],subjects[2],subjects[4]],['T-003: final','T-002: second','T-001: first']);
+        for(const merge of [subjects[1],subjects[3]])assert.match(merge,/^Merge commit '[a-f0-9]{40}'$/);
       }
       if(mode==='parallel-existing')for(const file of ['file0.js','file1.js']){
         assert.equal(fs.readFileSync(path.join(codeProject,file),'utf8'),'implemented\n');
