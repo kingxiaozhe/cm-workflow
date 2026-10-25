@@ -664,3 +664,20 @@ test('a UserPromptSubmit that is not a list is reported by status, not thrown',a
   assert.match(statusText({env:f.env,rulesFile:f.rulesFile}),/Claude 格式异常（UserPromptSubmit 不是列表）/);
   assert.equal(fs.readFileSync(claudeSettingsPath(f.env),'utf8'),'{"hooks":{"UserPromptSubmit":{}}}');
 });
+
+test('enable refuses a host config whose hooks or UserPromptSubmit has the wrong shape and keeps its bytes',async t=>{
+  const f=fixture(t);
+  const shapes=['{"hooks":{"UserPromptSubmit":{"hooks":[{"type":"command","command":"echo keep-me"}]}}}',
+    '{"hooks":["keep-me"]}','{"hooks":"keep-me"}'];
+  for(const host of ['claude','codex']){
+    const file=host==='codex'?codexHooksPath(f.env):claudeSettingsPath(f.env);
+    fs.mkdirSync(path.dirname(file),{recursive:true});
+    for(const text of shapes){
+      fs.writeFileSync(file,text);
+      let out='';
+      assert.equal(await enable({env:f.env,hosts:[host],node:'/usr/bin/node',write:chunk=>{out+=chunk;}}),1,`${host} ${text}`);
+      assert.match(out,/格式异常.*未改动/);
+      assert.equal(fs.readFileSync(file,'utf8'),text);
+    }
+  }
+});

@@ -242,8 +242,17 @@ function isOurs(hook,env,host){
   const interpreter=/^[^\s']+$/.test(word)?word:/^'[^']+'$/.test(word)?word.slice(1,-1):null;
   return Boolean(interpreter)&&/^node(?:\.exe)?$/i.test(path.basename(interpreter));
 }
-// A UserPromptSubmit that is not a list holds no hook of ours; status reports its shape.
+// A UserPromptSubmit that is not a list holds no hook of ours. A config of the wrong shape
+// is reported by status and refused by enable: merging into it would drop what is there.
 const promptHooks=config=>config?.hooks?.UserPromptSubmit;
+const plainObject=value=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
+export function shapeError(config){
+  if(config===undefined)return null;
+  if(!plainObject(config))return '顶层不是对象';
+  if(config.hooks!==undefined&&!plainObject(config.hooks))return 'hooks 不是对象';
+  const list=promptHooks(config);
+  return list!==undefined&&!Array.isArray(list)?'UserPromptSubmit 不是列表':null;
+}
 export const hasHintHook=(config,env,host)=>{
   const list=promptHooks(config);
   return Array.isArray(list)&&list.some(group=>Array.isArray(group?.hooks)&&group.hooks.some(hook=>isOurs(hook,env,host)));
@@ -324,6 +333,8 @@ export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,
         const read=readJson(file);
         // A config we cannot parse is never rewritten: that would destroy user content.
         if(read.error)return `✗ ${LABEL[host]}：无法读取 ${file}（${read.error}），未改动。\n`;
+        const shape=shapeError(read.value);
+        if(shape)return `✗ ${LABEL[host]}：${file} 格式异常（${shape}），未改动。\n`;
         const config=read.value??{};
         if(hasHintHook(config,env,host))return `${LABEL[host]}：提醒钩子已挂，未改动。\n`;
         writeAtomic(file,JSON.stringify(withHintHook(config,hookCommand(env,host,node)),null,2)+'\n',{before:()=>{
@@ -350,8 +361,8 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   const lines=[];
   const wired=HOSTS.map(host=>{
     const read=readJson(configFile(host,env));
-    const list=promptHooks(read.value);
-    return `${LABEL[host]} ${read.error?`无法读取（${read.error}）`:list!==undefined&&!Array.isArray(list)?'格式异常（UserPromptSubmit 不是列表）'
+    const shape=read.error?null:shapeError(read.value);
+    return `${LABEL[host]} ${read.error?`无法读取（${read.error}）`:shape?`格式异常（${shape}）`
       :hasHintHook(read.value,env,host)?'已挂':'未挂'}`;
   });
   const loaded=loadRules({env,rulesFile});
