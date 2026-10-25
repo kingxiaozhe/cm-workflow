@@ -75,7 +75,9 @@ test('any message naming a credential stays local, however it is written',async(
     // Round 5: the word inside Chinese quotes or backticks.
     '写个交接，配置为 “密'+'码”=!Ab12','写个交接，配置为 `tok'+'en`=.abc123',
     // Round 6: separators and full-width forms inside a compound word.
-    '写个交接，API  '+'key=!Ab12','写个交接，api\tkey=!Ab12','ＡＰＩ ｋｅｙ'+'=!Ab12','my pass '+'word is x','access-'+'-key: x','private.'+'key=x'];
+    '写个交接，API  '+'key=!Ab12','写个交接，api\tkey=!Ab12','ＡＰＩ ｋｅｙ'+'=!Ab12','my pass '+'word is x','access-'+'-key: x','private.'+'key=x',
+    // Round 7: invisible characters inside the word.
+    'API\u200B'+'key=!Ab12','pass\u2060'+'word=!Ab12','API\u00AD'+'key=!Ab12','API\u0085'+'key=!Ab12','pa\u0301ss'+'word=x'];
   for(const text of named){
     assert.equal(hasSecret(text),true,text);
     const {calls,fetchImpl}=recorder(reply(HANDOFF));

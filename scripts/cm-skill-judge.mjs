@@ -32,13 +32,14 @@ const KEY_NAME='TYPESAFE_API_KEY';
 // mentions a credential has no such gap. It costs little: such a message only falls back
 // to keywords, and none of the 50 exam phrasings mentions one. A credential pasted with
 // no recognisable shape and no credential word can still pass, which the docs say.
-// Matched on a folded copy of the message: full-width forms made plain (NFKC),
-// lower case, and every space, underscore, hyphen, dot and other separator dropped, so
-// "API  key", "api_key", "ＡＰＩ ｋｅｙ" and "pass word" all read the same. Dropping
-// separators can join two words into a credential word by accident; that only costs
-// the Jev call.
+// Matched on a folded copy of the message that keeps letters and digits only: full-width
+// forms made plain and accents split off (NFKD), lower case, and every other character dropped (spaces,
+// punctuation, underscores, zero-width and other invisible characters, combining marks),
+// so "API  key", "api_key", "ＡＰＩ ｋｅｙ", "pass word" and "API\u200Bkey" all read the
+// same. Dropping them can join two words into a credential word by accident; that only
+// costs the Jev call.
 const CREDENTIAL_WORD=/apikey|secret|token|passwd|password|pwd|passcode|accesskey|privatekey|credential|密钥|秘钥|密码|口令|令牌|凭证|凭据/;
-const fold=text=>text.normalize('NFKC').toLowerCase().replace(/[\s_\-.·・‐-―]+/gu,'');
+const fold=text=>text.normalize('NFKD').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'');
 const SECRET_PATTERNS=[
   /\bsk-[A-Za-z0-9_-]{16,}/,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/,
