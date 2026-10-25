@@ -218,6 +218,9 @@ const PHRASES=[
   ['我拿不准预算状态机对不对，做个能点着玩的原型让我看看。','prototype',null],
   ['预算页面该长什么样我没想法，给我做几版差别很大的界面对比看看。','prototype',null],
   ['mock up a few versions of the budget page','prototype',null],
+  ['做个预算页面的可点击原型，数据先用 Object.create(null) 模拟。','prototype',null],
+  ['做几版界面对比看看，文案里要讲清楚 JavaScript 原型继承。','prototype',null],
+  ['不要讲原型链，给我做个预算页面原型。','prototype',null],
   ['上下文快用完了，写个交接吧','handoff',null],
   ['写个交接，下个会话接着做','handoff',null],
   ["we're running out of context, let's continue in a new session",'handoff',null],
@@ -227,7 +230,7 @@ const PHRASES=[
 const CHATTER=['今天天气怎么样','把这行改成中文','帮我看看这个报错是什么意思','提交一下代码','这个函数是做什么的',
   'JS 的原型链怎么理解','用 jmeter 给登录接口做压力测试','这个方案我已经想清楚了，直接写吧','右键的上下文菜单点不开','帮我把按钮颜色改成蓝色',
   '帮我写个压力测试方案','做个原型链的例子','我明天要和同事交接，帮我写一份交接文档。',
-  '用 JavaScript 做个原型继承的例子。','做一个原型对象，演示 Object.create 怎么继承属性。',
+  '用 JavaScript 做个原型继承的例子。','帮我写同事离职交接文档，需要补充项目上下文。','修好右键上下文菜单后，写一份给同事的交接文档。','做一个原型对象，演示 Object.create 怎么继承属性。',
   '用 JMeter 压力测试一下这个方案的登录接口，记录吞吐量和 P99。','这个方案上线前要压力测试一下并发','what is the weather today','rename this variable'];
 
 test('shipped table: real phrasings hint the author skill when it is installed',async t=>{
@@ -243,6 +246,13 @@ test('shipped table: without the author skill it falls back to the CM counterpar
 test('shipped table: everyday chatter never triggers',async t=>{
   const f=shipped(t);
   for(const prompt of CHATTER)assert.deepEqual(await f.hints(prompt),[],prompt);
+});
+
+test('shipped table: a long message of repeated cue words stays within the pattern budget',async t=>{
+  const f=shipped(t);
+  const prompt='压力测试'.repeat(498)+'仓库。原型看看';
+  assert.ok(prompt.length<MAX_PROMPT);
+  assert.deepEqual(await f.hints(prompt),['prototype']);
 });
 
 test('shipped table: grill-me and grill-with-docs are never hinted together',async t=>{
