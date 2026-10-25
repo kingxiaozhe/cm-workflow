@@ -20,6 +20,7 @@ import {inspectCmAiAdmission,parseFeatureTaskText} from './cm-ai-admission.mjs';
 import {approvedTaskGrammar} from '../spec-task-line.mjs';
 import {parseTaskScopes,scopesOverlap,BOOTSTRAP_FEATURE} from '../task-scope.mjs';
 import {need} from './effect-contract.mjs';
+import {featureHasBrowserCases} from './host-workflow-capabilities.mjs';
 
 // worktree_all: every task that could be a group member runs in a worktree, alone
 // when nothing pairs with it. false keeps only real groups (two or more members).
@@ -63,8 +64,13 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   // collects the members' deferred QA); a completed last task leaves no such task.
   const lastDone=parsed.tasks.filter(task=>!task.dropped).at(-1)?.completed===true;
   const tasks=schedule.map(task=>({feature:selected,taskId:task.id,scope:[...scopes.tasks.get(task.id).scope],requirements:[]}));
-  const groups=settings.enabled&&(settings.max>=2||settings.worktree_all)&&!lastDone
-    ?group(parsed,schedule,scopes,settings.max,settings.worktree_all):[];
+  // A task alone in a worktree runs its own QA there before it merges. Interactive
+  // QA (browser or simulator cases) may target a server or app built from the main
+  // checkout and would check unmerged code, so such a feature gets no one-member
+  // groups; real groups defer their QA to the last task in the main checkout.
+  const solo=settings.worktree_all&&!featureHasBrowserCases(specsDir,selected,codeProject);
+  const groups=settings.enabled&&(settings.max>=2||solo)&&!lastDone
+    ?group(parsed,schedule,scopes,settings.max,solo):[];
   const key=taskId=>`${selected}/${taskId}`;
   const config={batch:{version:1,repositoryId,batchId,specsDir,codeProject,tasks,
     ...(groups.length?{parallel:groups.map(members=>members.map(key))}:{})},

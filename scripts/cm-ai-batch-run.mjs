@@ -23,6 +23,7 @@ import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs'
 import {readControlPolicy,controlTarget,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
 import {BATCH_SEGMENT_FIELD,batchSegment,batchSegments,batchStarted,batchMemberWorktree,batchMemberBranch} from '../runtime/js/cm-ai/batch-location.mjs';
 import {declaredTaskScope,assertDeclaredScope} from '../runtime/js/task-scope.mjs';
+import {featureHasBrowserCases} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
@@ -852,6 +853,9 @@ function validateGroups(config,plans,{declared=false}={}){
       const scope=declaredTaskScope(config.specsDir,plans.get(key).feature,plans.get(key).identity.taskId);
       need(scope!==null,'parallel_scope_undeclared');need(!scope.device,'parallel_device_task');
     }
+    // A one-member group runs its own QA in its worktree; interactive QA may target the
+    // main checkout, so a new batch refuses one in a feature with such cases (batch-plan.mjs).
+    if(declared&&group.length===1)need(!featureHasBrowserCases(config.specsDir,feature,config.codeProject),'parallel_solo_interactive_qa');
     for(const key of group)used.add(key);
   }
   return groups;

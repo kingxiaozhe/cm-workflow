@@ -9,7 +9,7 @@ import {main} from './cm-ai-batch-plan.mjs';
 import {planCmAiBatch,parallelSettings} from '../runtime/js/cm-ai/batch-plan.mjs';
 
 const scope=file=>`\n  - 范围: \`${file}\``;
-function project(t,tasks,{feature='1.work',emptyCode=false}={}){
+function project(t,tasks,{feature='1.work',emptyCode=false,caseKinds=null}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-plan-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code');
@@ -17,6 +17,13 @@ function project(t,tasks,{feature='1.work',emptyCode=false}={}){
   if(!emptyCode)fs.writeFileSync(path.join(codeProject,'README.md'),'# Existing project\n');
   for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,feature,name),'# Fixture\n');
   fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),tasks);
+  // caseKinds: a test contract with one blocking case per kind (browser = interactive QA).
+  if(caseKinds){
+    fs.writeFileSync(path.join(specsDir,feature,'requirements.md'),'- [AC-001]: fixture\n');
+    fs.writeFileSync(path.join(specsDir,feature,'test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:feature.replace(/^\d+\./,''),
+      cases:caseKinds.map((kind,index)=>({id:`TC-${String(index+1).padStart(3,'0')}`,origin:'user',kind,blocking:true,acIds:['AC-001'],
+        taskIds:['T-001'],title:`${kind} fixture`,preconditions:[],steps:['Observe fixture'],expected:['Fixture evidence'],cleanup:[]}))}));
+  }
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   return {root,specsDir,codeProject,plan:(settings)=>planCmAiBatch({specsDir,codeProject,repositoryId:'r',batchId:'plan-batch-1',...(settings?{settings}:{})})};
 }
@@ -135,6 +142,21 @@ test('worktree_all (default): every task except the last ones and device tasks r
   assert.deepEqual(off.groups,[]);assert.equal(Object.hasOwn(off.config.batch,'parallel'),false);
   // Serial modes are unchanged: undeclared scope and the scaffold feature.
   assert.equal(project(t,diamond().replace(scope('b.js'),'')).plan().mode,'serial');
+});
+
+test('a feature with interactive QA cases keeps its unpaired tasks in the main checkout; real groups are unchanged',t=>{
+  // Interactive QA (browser, simulator) may target a server or app built from the main
+  // checkout, so a task alone in a worktree would be checked against unmerged code.
+  const f=project(t,diamond(),{caseKinds:['logic','browser']}),plan=f.plan();
+  assert.deepEqual(plan.groups,[['T-002','T-003']]);
+  assert.ok(createCmAiBatch({configuration:plan.config.batch,executionFor:async()=>({}),logHome:path.join(f.root,'log')}));
+  const chain=`- [ ] T-001: a${scope('a.js')}\n- [ ] T-002: b${scope('b.js')}\n- [ ] T-003: c${scope('c.js')}\n\n- T-002 依赖 T-001\n- T-003 依赖 T-002\n`;
+  assert.deepEqual(project(t,chain,{caseKinds:['browser']}).plan().groups,[]);
+  // The batch host refuses a hand-written one-member group in such a feature.
+  assert.throws(()=>createCmAiBatch({configuration:{...plan.config.batch,parallel:[['1.work/T-001'],['1.work/T-002','1.work/T-003']]},
+    executionFor:async()=>({}),logHome:path.join(f.root,'log-solo')}),{code:'parallel_solo_interactive_qa'});
+  // Logic-only cases do not stop one-member groups.
+  assert.deepEqual(project(t,diamond(),{caseKinds:['logic']}).plan().groups,[['T-001'],['T-002','T-003']]);
 });
 
 test('a scaffold feature is serial; a finished project is complete; settings are validated',t=>{

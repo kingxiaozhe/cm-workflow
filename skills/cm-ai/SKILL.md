@@ -143,4 +143,4 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 
 **任务状态镜像：** `tasks.md` 是唯一权威任务源。运行时支持任务面板时，可将未完成任务镜像到 Codex/OMX 计划或 Claude 任务清单；N3/N5 同步状态。断点恢复必须由磁盘重建镜像：`[x]` 跳过或标为 completed，`[DROPPED]` 不镜像，不得重复创建条目。
 
-**执行策略：** 遵守 `runtime/orchestration.md`。单代码根默认先用 `cm-ai-batch-plan.mjs` 按已批准 `tasks.md` 生成批次：默认每个任务都在自己的 worktree 里开发、做完按任务顺序合回主目录；无依赖、`- 范围:` 不重叠的任务同组并行。功能最后一个任务、批次最后执行的任务和 `- 设备: 需要` 的任务留在主目录串行；任何任务没写范围或是脚手架功能时整个功能串行。单独进 worktree 的任务照常按固定检查点判定 QA，触发就在它的 worktree 里跑、通过才合回；只有 2 人及以上同组并行的任务 QA 延后到功能末任务统一跑。项目 `parallel.worktree_all: false` 只保留真正的并行组，`parallel.enabled: false` 不建任何 worktree。
+**执行策略：** 遵守 `runtime/orchestration.md`。单代码根默认先用 `cm-ai-batch-plan.mjs` 按已批准 `tasks.md` 生成批次：默认每个任务都在自己的 worktree 里开发、做完按任务顺序合回主目录；无依赖、`- 范围:` 不重叠的任务同组并行。功能最后一个任务、批次最后执行的任务和 `- 设备: 需要` 的任务留在主目录串行；功能有浏览器等交互式验收用例时不单独开 worktree（同组并行不受影响）；任何任务没写范围或是脚手架功能时整个功能串行。单独进 worktree 的任务照常按固定检查点判定 QA，触发就在它的 worktree 里跑、通过才合回；只有 2 人及以上同组并行的任务 QA 延后到功能末任务统一跑。项目 `parallel.worktree_all: false` 只保留真正的并行组，`parallel.enabled: false` 不建任何 worktree。
