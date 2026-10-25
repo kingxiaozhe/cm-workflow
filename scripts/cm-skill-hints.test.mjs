@@ -612,3 +612,55 @@ test('main refresh is wired and reports its own exit code',async t=>{
   assert.ok(!fs.existsSync(installDir(f.env)));
   assert.equal(await main(['refresh','extra'],{env:f.env,write:()=>{},error:()=>{}}),2);
 });
+
+test('refresh and enable never write through a linked copy directory, even with the hook wired',async t=>{
+  const f=fixture(t);
+  const elsewhere=path.join(f.home,'elsewhere');
+  fs.mkdirSync(elsewhere);
+  fs.writeFileSync(path.join(elsewhere,RULES_NAME),'keep');
+  fs.mkdirSync(f.env.CM_WORKFLOW_HOME,{recursive:true});
+  fs.symlinkSync(elsewhere,installDir(f.env));
+  fs.mkdirSync(path.dirname(claudeSettingsPath(f.env)),{recursive:true});
+  fs.writeFileSync(claudeSettingsPath(f.env),JSON.stringify({hooks:{UserPromptSubmit:[{hooks:[{type:'command',command:hookCommand(f.env,'claude','/usr/bin/node')}]}]}}));
+  let out='';
+  assert.equal(await refresh({env:f.env,write:text=>{out+=text;}}),1);
+  assert.match(out,/⚠.*未刷新.*不是普通目录/);
+  assert.equal(await enable({env:f.env,hosts:['claude'],write:()=>{}}),1);
+  assert.deepEqual(fs.readdirSync(elsewhere),[RULES_NAME]);
+  assert.equal(fs.readFileSync(path.join(elsewhere,RULES_NAME),'utf8'),'keep');
+  assert.match(statusText({env:f.env,rulesFile:f.rulesFile}),/⚠ 运行副本目录不是普通目录/);
+});
+
+test('status never blocks on a special file in the copy and does not take a linked file as current',
+  {skip:process.platform==='win32'},async t=>{
+    const f=fixture(t);
+    await enable({env:f.env,node:'/usr/bin/node',write:()=>{}});
+    const dir=installDir(f.env);
+    fs.rmSync(path.join(dir,'cm-matt-skills.mjs'));
+    execFileSync('mkfifo',[path.join(dir,'cm-matt-skills.mjs')]);
+    fs.rmSync(path.join(dir,RULES_NAME));
+    fs.symlinkSync(defaultRulesPath(),path.join(dir,RULES_NAME));
+    fs.rmSync(path.join(dir,'cm-config-lock.mjs'));
+    const text=statusText({env:f.env,rulesFile:f.rulesFile});
+    assert.match(text,/运行副本与已装版本不一致（cm-matt-skills\.mjs、cm-config-lock\.mjs、cm-skill-hints\.json）/);
+  });
+
+test('run from the copy itself, status and refresh do not claim the copy is current',async t=>{
+  const f=fixture(t);
+  await enable({env:f.env,node:'/usr/bin/node',write:()=>{}});
+  const copy=await import(path.join(installDir(f.env),SCRIPT_NAME));
+  fs.writeFileSync(path.join(installDir(f.env),RULES_NAME),'{"rules":[]}');
+  assert.match(copy.statusText({env:f.env}),/无法核验.*已装版本/);
+  let out='';
+  assert.equal(await copy.refresh({env:f.env,write:text=>{out+=text;}}),1);
+  assert.match(out,/运行副本本身/);
+  assert.equal(fs.readFileSync(path.join(installDir(f.env),RULES_NAME),'utf8'),'{"rules":[]}');
+});
+
+test('a UserPromptSubmit that is not a list is reported by status, not thrown',async t=>{
+  const f=fixture(t);
+  fs.mkdirSync(path.dirname(claudeSettingsPath(f.env)),{recursive:true});
+  fs.writeFileSync(claudeSettingsPath(f.env),'{"hooks":{"UserPromptSubmit":{}}}');
+  assert.match(statusText({env:f.env,rulesFile:f.rulesFile}),/Claude 格式异常（UserPromptSubmit 不是列表）/);
+  assert.equal(fs.readFileSync(claudeSettingsPath(f.env),'utf8'),'{"hooks":{"UserPromptSubmit":{}}}');
+});

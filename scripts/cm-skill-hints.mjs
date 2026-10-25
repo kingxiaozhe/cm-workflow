@@ -242,8 +242,12 @@ function isOurs(hook,env,host){
   const interpreter=/^[^\s']+$/.test(word)?word:/^'[^']+'$/.test(word)?word.slice(1,-1):null;
   return Boolean(interpreter)&&/^node(?:\.exe)?$/i.test(path.basename(interpreter));
 }
-export const hasHintHook=(config,env,host)=>(config?.hooks?.UserPromptSubmit??[]).some(group=>
-  Array.isArray(group?.hooks)&&group.hooks.some(hook=>isOurs(hook,env,host)));
+// A UserPromptSubmit that is not a list holds no hook of ours; status reports its shape.
+const promptHooks=config=>config?.hooks?.UserPromptSubmit;
+export const hasHintHook=(config,env,host)=>{
+  const list=promptHooks(config);
+  return Array.isArray(list)&&list.some(group=>Array.isArray(group?.hooks)&&group.hooks.some(hook=>isOurs(hook,env,host)));
+};
 export function withHintHook(config,command){
   const next=structuredClone(config??{});
   next.hooks??={};
@@ -253,10 +257,19 @@ export function withHintHook(config,command){
   return next;
 }
 
+const COPIED=[...COMPANIONS,SCRIPT_NAME];
 const sourceOf=name=>name===SCRIPT_NAME?fileURLToPath(import.meta.url):path.join(here,name);
+// 'dir' only for a real directory: a link there would take every copy somewhere else.
+const copyDirKind=env=>{
+  try{return fs.lstatSync(installDir(env)).isDirectory()?'dir':'other';}
+  catch(error){return error.code==='ENOENT'?'missing':'other';}
+};
+// The copy reports on and refreshes from itself only: it cannot see the installed version.
+const runningFromCopy=env=>{try{return fs.realpathSync(here)===fs.realpathSync(installDir(env));}catch{return false;}};
 function copyInstall(env){
   const dir=installDir(env);
-  for(const name of [...COMPANIONS,SCRIPT_NAME])writeAtomic(path.join(dir,name),fs.readFileSync(sourceOf(name),'utf8'));
+  if(copyDirKind(env)==='other')throw new Error(`${dir} 不是普通目录，未写入`);
+  for(const name of COPIED)writeAtomic(path.join(dir,name),fs.readFileSync(sourceOf(name),'utf8'));
 }
 
 const configFile=(host,env)=>host==='codex'?codexHooksPath(env):claudeSettingsPath(env);
@@ -265,13 +278,18 @@ const configFile=(host,env)=>host==='codex'?codexHooksPath(env):claudeSettingsPa
 // it before the hook, and the hook keeps its state there). A link at that path does not
 // count. Read-only: nothing is created to find out.
 export function hintsInstalled(env){
-  try{if(fs.lstatSync(installDir(env)).isDirectory())return true;}catch{/* 没有副本目录 */}
+  if(copyDirKind(env)==='dir')return true;
   return HOSTS.some(host=>{try{return hasHintHook(readJson(configFile(host,env)).value,env,host);}catch{return false;}});
 }
-// Copied files that differ from this version's (a missing one counts as different).
+// Copied files that differ from this version's. Missing, linked or special files count as
+// different and are never opened (a FIFO would block status; the hook refuses a linked table).
 export function staleCopies(env){
-  return [...COMPANIONS,SCRIPT_NAME].filter(name=>{
-    try{return !fs.readFileSync(path.join(installDir(env),name)).equals(fs.readFileSync(sourceOf(name)));}catch{return true;}
+  return COPIED.filter(name=>{
+    try{
+      const source=fs.readFileSync(sourceOf(name));
+      const st=fs.lstatSync(path.join(installDir(env),name));
+      return !st.isFile()||st.size!==source.length||!fs.readFileSync(path.join(installDir(env),name)).equals(source);
+    }catch{return true;}
   });
 }
 const refreshCommand=()=>`node ${shellWord(fileURLToPath(import.meta.url))} refresh`;
@@ -281,6 +299,7 @@ const refreshCommand=()=>`node ${shellWord(fileURLToPath(import.meta.url))} refr
 // touched, and a user who never enabled hints gets nothing. Failure is a warning.
 export function refresh({env=process.env,write=text=>process.stdout.write(text)}={}){
   if(!hintsInstalled(env))return 0;
+  if(runningFromCopy(env)){write(`⚠ 这是运行副本本身（${installDir(env)}），拿不到已装版本，未刷新；请运行已装 CM 里的 cm-skill-hints.mjs refresh\n`);return 1;}
   try{copyInstall(env);}
   catch(error){write(`⚠ 技能提醒运行副本未刷新（${installDir(env)}）：${error.message}；可稍后运行 ${refreshCommand()}\n`);return 1;}
   write(`技能提醒：运行副本已刷新（${installDir(env)}）。\n`);
@@ -331,16 +350,19 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   const lines=[];
   const wired=HOSTS.map(host=>{
     const read=readJson(configFile(host,env));
-    return `${LABEL[host]} ${read.error?`无法读取（${read.error}）`:hasHintHook(read.value,env,host)?'已挂':'未挂'}`;
+    const list=promptHooks(read.value);
+    return `${LABEL[host]} ${read.error?`无法读取（${read.error}）`:list!==undefined&&!Array.isArray(list)?'格式异常（UserPromptSubmit 不是列表）'
+      :hasHintHook(read.value,env,host)?'已挂':'未挂'}`;
   });
   const loaded=loadRules({env,rulesFile});
   lines.push(`skill hints: ${wired.join('，')}；开关 ${loaded.enabled?'开':`关（${localPath(env)} 里 enabled 为 false）`}`);
   if(!hintsInstalled(env))lines.push('  运行副本：未建（还没开启）');
+  else if(runningFromCopy(env))lines.push('  ⚠ 这是从运行副本本身查的，无法核验它与已装版本是否一致；请用已装 CM 里的 cm-skill-hints.mjs status');
   else{
-    const stale=staleCopies(env);
-    let dir;
-    try{dir=fs.lstatSync(installDir(env)).isDirectory();}catch{dir=false;}
-    lines.push(!dir?`  ⚠ 运行副本缺失（${installDir(env)}），钩子跑不起来；运行 ${refreshCommand()} 补上`
+    const kind=copyDirKind(env);
+    const stale=kind==='dir'?staleCopies(env):[];
+    lines.push(kind==='missing'?`  ⚠ 运行副本缺失（${installDir(env)}），钩子跑不起来；运行 ${refreshCommand()} 补上`
+      :kind==='other'?`  ⚠ 运行副本目录不是普通目录（${installDir(env)}），CM 不会写进去；请移走后运行 ${refreshCommand()}`
       :stale.length?`  ⚠ 运行副本与已装版本不一致（${stale.join('、')}）；运行 ${refreshCommand()} 刷新`
       :'  运行副本：与已装版本一致');
   }
