@@ -460,6 +460,17 @@ if [ -n "$NODE_BIN" ]; then
       fi
     fi
   fi
+  # Optional Matt Pocock companion skills: a /cm-check report only, never a failure.
+  # Installers run this check without --print-effective and print their own hint.
+  if [ "$PRINT_EFFECTIVE" -eq 1 ] && [ -f "$ROOT/scripts/cm-matt-skills.mjs" ]; then
+    "$NODE_BIN" "$ROOT/scripts/cm-matt-skills.mjs" status ||
+      warn "recommended skills status unavailable"
+  fi
+  # Optional skill-hints hook: wiring, switch and table counts; a report only, never a failure.
+  if [ "$PRINT_EFFECTIVE" -eq 1 ] && [ -f "$ROOT/scripts/cm-skill-hints.mjs" ]; then
+    "$NODE_BIN" "$ROOT/scripts/cm-skill-hints.mjs" status ||
+      warn "skill hints status unavailable"
+  fi
 else
   fail "Node.js 18+ is required for CM workflow config validation"
 fi

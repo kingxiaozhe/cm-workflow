@@ -88,3 +88,28 @@ test('withAnnounceHook does not mutate its input',()=>{
   withAnnounceHook(input);
   assert.equal(JSON.stringify(input),snapshot);
 });
+
+test('an existing empty or blank settings file is reported and left byte-identical',async t=>{
+  for(const content of ['','  \n']){
+    const f=fixture(t,content);
+    const text=await run(f.env,'y');
+    assert.match(text,/无法解析/);
+    assert.equal(fs.readFileSync(settingsPath(f.env),'utf8'),content);
+  }
+});
+
+test('settings edited while the question waits are kept, not overwritten by the old copy',async t=>{
+  const f=fixture(t,{statusLine:{command:'old'}});
+  let text='';
+  const output=new Writable({write(chunk,_e,cb){text+=chunk;cb();}});
+  // Someone edits settings.json while the user is still reading the question.
+  const input=new Readable({read(){
+    fs.writeFileSync(settingsPath(f.env),JSON.stringify({statusLine:{command:'new'},permissions:{allow:['x']}}));
+    this.push('y\n');this.push(null);
+  }});
+  await main({env:f.env,input,output,interactive:true});
+  const settings=f.read();
+  assert.equal(settings.statusLine.command,'new');
+  assert.deepEqual(settings.permissions,{allow:['x']});
+  assert.ok(hasAnnounceHook(settings));
+});

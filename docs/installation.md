@@ -343,6 +343,89 @@ supported Bash environment, add the following commands to Claude Code's
 
 Set `CM_UPDATE_REMOTE` when your team intentionally uses a fork.
 
+## Optional companion skills (Matt Pocock)
+
+CM recommends twelve skills from [mattpocock/skills](https://github.com/mattpocock/skills)
+(MIT) for work between CM stages, such as grilling a plan before `cm-prd` or finding
+refactoring opportunities before `cm-refactor`. CM never depends on them and never
+downloads them on its own. After installing, `install.sh` and `install-codex.sh`
+list the ones missing from `~/.claude/skills` and `~/.agents/skills` and print one
+command; later installs shorten this to one line while the same set is missing.
+`/cm-check` reports the same status.
+
+To install them, run the printed command, for example:
+
+```bash
+node ~/.claude/scripts/cm-matt-skills.mjs install
+```
+
+The command fetches only commit `5beb35b` into a private temporary repository,
+reads files straight from git without a checkout, and checks every file and the
+upstream `LICENSE` against the SHA-256 list built into the script. Any mismatch,
+extra or missing file, or non-regular file aborts the whole install before
+anything is written. Each skill is copied with `LICENSE` into both skill
+directories; a skill whose name already exists is skipped and reported, never
+overwritten, and a skills directory that is not a usable directory is reported
+as a failure. Nothing downloaded is executed: git runs without your git
+configuration, hooks or credential helpers, over https or local paths only;
+proxy settings are taken from `https_proxy`-style environment variables.
+`--source <https URL or path>` uses a mirror, which must serve the pinned commit
+by id; the commit and checksums still apply. Start a new session to see newly
+installed skills.
+
+## Optional skill hints (trial)
+
+A `UserPromptSubmit` hook that reads each message you type, matches it against a
+keyword table and, when a skill fits, shows you a one-line hint such as
+`💡 技能提醒：可以试 /grill-me——…`. The hint is shown to you directly
+(`systemMessage`) and is not added to the model's context. It only hints; it
+never runs a skill. Matching is local
+keyword and optional regex matching: nothing is sent anywhere and no tokens are
+spent on it. Messages over 2000 characters and text inside ``` fences are
+skipped, at most two skills are hinted per message, and each skill at most once
+per session. Sessions that CM itself launches set `CM_SKILL_HINTS=off`.
+
+The installer does not enable it yet. To try it:
+
+```bash
+node ~/.claude/scripts/cm-skill-hints.mjs enable
+```
+
+This copies the script, CM's table and the author-skill checker
+(`cm-matt-skills.mjs`) to `~/.cm-workflow/skill-hints/` and adds
+one `UserPromptSubmit` hook to `~/.claude/settings.json` and `~/.codex/hooks.json`
+(`--claude` or `--codex` for one side), keeping every other setting and hook. A
+file it cannot parse is left untouched. Codex asks you to trust the new hook the
+first time it runs; CM does not trust it for you. If the file changes while
+`enable` is writing it, nothing is written and you are asked to run it again. Run
+`enable` again after updating CM to refresh the copied table.
+
+Your own rules live in `~/.cm-workflow/skill-hints.local.json`, which CM never
+overwrites. They take precedence over CM's table:
+
+```json
+{
+  "enabled": true,
+  "disable": ["fix-bug"],
+  "rules": [
+    {"id": "my-review", "skill": "codex-review", "keywords": ["二审", "交叉审查"], "reason": "让 Codex 独立审一遍"}
+  ]
+}
+```
+
+`"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
+user rule with the same `id` as a CM rule replaces it. `patterns` (regular
+expressions) share a 200 ms budget per message; past it they count as no match. An
+author skill (`grill-me`, `handoff`, `wayfinder`) is only hinted when its pinned
+author version (see above) is installed for that host; otherwise its CM
+counterpart is hinted, if there is one. Per-session state (a few hundred bytes
+each, under `~/.cm-workflow/skill-hints/state/`) is never removed, so a session
+resumed later does not repeat a hint.
+`~/.cm-workflow/logs/skill-hints.jsonl` records rule id, skill, host and time of
+each hint and of each adoption (you typed the skill within the next five
+messages), never message text; it drops its older half past 1 MB. `/cm-check`
+reports whether the hook is wired, the switch and the rule counts.
+
 ## Uninstall
 
 For a Codex install registered by the installer, remove the enabled plugin and

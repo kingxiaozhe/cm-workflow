@@ -546,3 +546,6 @@ else
   echo "自动更新器未自动启用；按 docs/installation.md 手工配置 SessionStart hook。"
 fi
 echo "后台自动升级仍需另行开启，见 docs/installation.md。"
+# Optional Matt Pocock companion skills: print what is missing and one command; never download.
+echo
+node "$DEST/scripts/cm-matt-skills.mjs" hint </dev/null || true
