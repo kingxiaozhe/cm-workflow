@@ -262,14 +262,15 @@ test('v2 disabled QA still assesses mandatory feature completion and cannot repo
     r=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host'}));assert.equal(r.status,0,r.stderr);
     result=JSON.parse(r.stdout).result;combined+=r.stderr;
   }
-  assert.match(combined,/应答 qa_assess/);
+  // qa:"disabled": the host confirms the read-only assessment itself; the decision is still made.
+  assert.doesNotMatch(combined,/应答 qa_assess/);
   assert.equal(result.code,'qa_triggered',JSON.stringify(result));assert.equal(result.pendingAction,'qa_execution');
   assert.notEqual(result.state,'run_done');
   const rows=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
   assert.ok(rows.some(row=>row.event==='qa'&&row.status==='triggered'&&row.reason==='feature_complete'));
   assert.equal(rows.some(row=>row.node==='N6'&&row.event==='test_run'&&row.phase==='complete'&&row.result==='PASS'),false);
 });
-test('regression: single-task v2 without --workflow-config still asks qa_assess instead of stalling at qa_decision_required',t=>{
+test('regression: single-task v2 without --workflow-config still decides QA instead of stalling at qa_decision_required',t=>{
   const f=fixture(t);f.review('approved');
   let r=f.drive(f.plan());assert.equal(r.status,0,r.stderr);
   let result=JSON.parse(r.stdout).result,combined=r.stderr;
@@ -278,12 +279,13 @@ test('regression: single-task v2 without --workflow-config still asks qa_assess 
     result=JSON.parse(r.stdout).result;combined+=r.stderr;
   }
   assert.notEqual(result.code,'qa_decision_required',JSON.stringify(result));
-  assert.match(combined,/应答 qa_assess/);
+  // qa:"disabled": the host confirms the read-only assessment itself; the decision is still made.
+  assert.doesNotMatch(combined,/应答 qa_assess/);
   // 唯一任务完成即 feature 完成：必需 QA 被触发，但 disabled 没有执行器，停在 qa_execution，不能报 run_done。
   assert.equal(result.code,'qa_triggered',JSON.stringify(result));assert.equal(result.pendingAction,'qa_execution');
 });
 
-test('regression: serial batch member with workflows[key]:null answers the implicit qa_assess',t=>{
+test('regression: serial batch member with workflows[key]:null still gets the implicit QA decision',t=>{
   const f=fixture(t,true);f.review('approved');
   const run=path.join(f.root,'run.json'),config=JSON.parse(fs.readFileSync(run,'utf8'));
   config.workflows[key]=null;fs.writeFileSync(run,JSON.stringify(config));
@@ -293,7 +295,8 @@ test('regression: serial batch member with workflows[key]:null answers the impli
     r=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host'}));assert.equal(r.status,0,r.stderr);
     result=JSON.parse(r.stdout).result;combined+=r.stderr;
   }
-  assert.match(combined,/应答 qa_assess/);
+  // qa:"disabled": the host confirms the read-only assessment itself; the decision is still made.
+  assert.doesNotMatch(combined,/应答 qa_assess/);
   assert.equal(result.code,'qa_triggered',JSON.stringify(result));assert.equal(result.pendingAction,'qa_execution');
 });
 

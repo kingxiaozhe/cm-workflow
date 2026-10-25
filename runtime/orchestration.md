@@ -70,7 +70,9 @@ OMX absence is not a reason to skip review, evidence, task marking, QA, or docum
 
 ## Serial and parallel execution
 
-Serial is the default. `cm-ai` is explicitly allowed to delegate to Codex subagents only when all conditions hold:
+For a single code root, `cm-ai` plans each feature with `scripts/cm-ai-batch-plan.mjs`: tasks whose approved `tasks.md` scope (`- 范围:`) is declared, disjoint and dependency-free, and that need no device, run in parallel Git worktrees (at most `parallel.max` per group, default 2; `parallel.enabled: false` in the project configuration turns it off); everything else runs serially. Any task without a declared scope keeps the whole feature serial.
+
+Outside that planner, serial is the default. `cm-ai` is explicitly allowed to delegate to Codex subagents only when all conditions hold:
 
 1. tasks have no dependency edge between them;
 2. their expected file sets do not overlap;

@@ -264,7 +264,8 @@ function preflight(){
     // v2 成员没有 workflow 配置时宿主也会隐式补上 QA 判定（implicit-qa-decision.mjs）。
     if(control||workflow?.qa){
       // A rescheduled second generation runs serially and asks qa_assess like a serial task.
-      if(!batch.parallel?.some(group=>group.includes(key))||rescheduled.has(key))kinds.push('qa_assess');
+      // 策略 qa:"disabled" 时宿主自己确认，不再问（host-workflow-capabilities.mjs）。
+      if((!batch.parallel?.some(group=>group.includes(key))||rescheduled.has(key))&&control?.policy.qa!=='disabled')kinds.push('qa_assess');
       if(workflow?.qa&&(!control||control.policy.qa==='run')){
         const cases=readJson(path.join(batch.specsDir,task.feature,'test-cases.json'),'test-cases');
         for(const kind of ['logic','browser'])if(cases?.cases?.some(item=>item.kind===kind))kinds.push(`qa_${kind}`);
