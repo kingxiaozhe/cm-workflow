@@ -143,4 +143,4 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 
 **任务状态镜像：** `tasks.md` 是唯一权威任务源。运行时支持任务面板时，可将未完成任务镜像到 Codex/OMX 计划或 Claude 任务清单；N3/N5 同步状态。断点恢复必须由磁盘重建镜像：`[x]` 跳过或标为 completed，`[DROPPED]` 不镜像，不得重复创建条目。
 
-**执行策略：** 遵守 `runtime/orchestration.md`；串行默认，只有无依赖、文件边界不重叠、契约已稳定且环境确实支持时才可并行。
+**执行策略：** 遵守 `runtime/orchestration.md`。单代码根默认先用 `cm-ai-batch-plan.mjs` 按已批准 `tasks.md` 生成批次：无依赖、`- 范围:` 不重叠、不需设备的任务自动进 worktree 并行组，其余串行；任何任务没写范围时整个功能串行。项目 `parallel.enabled: false` 关闭分组。

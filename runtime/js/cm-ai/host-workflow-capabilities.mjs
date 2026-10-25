@@ -84,8 +84,14 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
   if(configuration.qa!==null||controlPolicy!==null){
     result.qaLogHome=logHome;
     const requestTimeout={timeoutMs:configuration.qa?.timeoutMs??60000};
-    result.qaDecisionProvider=parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,criticalPaths:configuration.qa?.criticalPaths??{},
-      assess:(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout)});
+    // The assessment is a read-only confirmation; the decision itself comes from
+    // the host policy (host-qa-policy.mjs). A v2 run whose policy disables QA has
+    // nobody to ask when it runs unattended, so the host confirms it here; the
+    // decision, its triggers and its record are unchanged.
+    const assess=controlPolicy?.qa==='disabled'?async()=>({confirmed:true})
+      :(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout);
+    result.qaDecisionProvider=parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,
+      criticalPaths:configuration.qa?.criticalPaths??{},assess});
   }
   if(configuration.qa!==null&&(controlPolicy===null||controlPolicy.qa==='run')){
     need(allowQa===true,'qa_authorization_required');

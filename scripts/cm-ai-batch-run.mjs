@@ -314,9 +314,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         batchGit(config.codeProject,['worktree','add','-b',branch,worktree,'HEAD'],'batch_worktree_failed');
       }
       need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
-      const definition=plans.get(key);
-      plans.set(key,validateRunDefinition({...definition,codeProject:worktree,
-        ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})}));
+      plans.set(key,worktreeDefinition(key));
     }
     // Include the main checkout as the second assignment after a partial merge.
     const assignments=remaining.map(key=>`${plans.get(key).identity.taskId}=${location(key).worktree}`);
@@ -368,9 +366,13 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       return null;
     }finally{members.delete(key);run.close();}
   }
-  async function mergeMember(row){
+  // Verify a ready member's completed, QA-deferred delivery and commit it on its
+  // branch. Idempotent: an already committed worktree gets no new commit.
+  async function sealMember(row,commit=true){
     const key=row.from_key,{worktree,branch}=location(key);
     need(row.worktree===worktree&&row.branch===branch,'batch_worktree_mismatch');
+    // A stopped batch replays without preparing its group: bind the member root here.
+    if(plans.get(key).codeProject!==worktree)bindWorktree(key);
     // Reopen the unchanged member root to verify its actual completion and QA.
     const run=await open(key);
     try{
@@ -380,10 +382,31 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       need(findCmAiQaDecision({specsDir:config.specsDir,feature:plans.get(key).feature,
         identity:row.identity,packageDigest:row.package_digest})?.status==='skipped','batch_qa_not_ready');
     }finally{run.close();}
+    if(!commit)return;
+    batchGit(worktree,['add','-A']);
+    if(batchGit(worktree,['status','--porcelain']))batchGit(worktree,['commit',...taskCommitArgs(plans.get(key).identity.taskId,taskDescription(config,plans.get(key)))]);
+  }
+  // Every member that finished and is not merged yet, in task order.
+  const readyUnmerged=()=>{const state=progress();return [...plans.keys()].filter(key=>state.ready.has(key)&&!state.done.has(key));};
+  // Seal each such member for the conflict guidance. A member that fails its check
+  // stays unsealed and is named; the conflict itself is still returned.
+  async function sealForGuidance(){
+    const unsealed=[];
+    for(const key of readyUnmerged()){
+      try{await sealMember(progress().ready.get(key));}catch(cause){unsealed.push({taskKey:key,code:cause?.code??'batch_seal_failed'});}
+    }
+    return unsealed;
+  }
+  // status checks nothing and runs nothing: an empty Git status does not prove a
+  // reviewed delivery is on its branch, and Git may run configured programs. Every
+  // unmerged member is reported unverified; advance seals them and answers again.
+  const unsealedReadOnly=()=>readyUnmerged().map(key=>({taskKey:key,code:'batch_seal_unverified'}));
+  async function mergeMember(row){
+    const key=row.from_key,{worktree,branch}=location(key);
     let intent=progress().merging.get(key);
+    // A logged merge intent already names the member commit.
+    await sealMember(row,!intent);
     if(!intent){
-      batchGit(worktree,['add','-A']);
-      if(batchGit(worktree,['status','--porcelain']))batchGit(worktree,['commit',...taskCommitArgs(plans.get(key).identity.taskId,taskDescription(config,plans.get(key)))]);
       need(batchGit(config.codeProject,['status','--porcelain'])==='','batch_main_dirty');
       intent={from_key:key,expected_old:batchGit(config.codeProject,['rev-parse','HEAD']),member_commit:batchGit(worktree,['rev-parse','HEAD'])};
       record('batch_merge_started',intent);
@@ -399,7 +422,10 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         batchGit(config.codeProject,['merge','--abort'],'batch_merge_abort_failed');
         need(batchGit(config.codeProject,['rev-parse','HEAD'])===intent.expected_old,'batch_merge_history_changed');
         record('batch_merge_conflict',{from_key:key,code:'merge_conflict',files,expected_old:intent.expected_old});
-        return {outcome:'blocked',code:'merge_conflict',batchId:config.batchId,files};
+        // The guidance has the operator merge every unmerged member's branch: commit
+        // each reviewed delivery there first, or its branch would merge as up to date.
+        const unsealed=await sealForGuidance();
+        return {outcome:'blocked',code:'merge_conflict',batchId:config.batchId,files,...(unsealed.length?{unsealed}:{}),guidance:mergeConflictGuidance(key,files,unsealed)};
       }
     }else{
       // A crash may happen after Git commits but before the handoff log append.
@@ -443,20 +469,17 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const pending=group.filter(key=>membership.has(key)&&!initial.ready.has(key)&&!initial.done.has(key));
     const results=await Promise.allSettled(pending.map(key=>driveMember(key,request)));
     if(cancelled)return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};
-    for(const row of progress().ready.values()){
-      if(!group.includes(row.from_key)||progress().done.has(row.from_key))continue;
-      const result=await mergeMember(row);if(result)return result;
-    }
-    let waiting=null,rejected=null,recoverable=null,unresolved=null;const rescheduled=[];
-    for(const [index,result] of results.entries()){
-      if(result.status==='rejected'){rejected??=result.reason;continue;}
-      const status=result.value;if(!status)continue;
+    // Classify every member result before merging: a member rescheduled to a serial
+    // second generation is the only one a later member may merge ahead of.
+    const decisions=results.map((result,index)=>{
+      if(result.status==='rejected')return {kind:'rejected',reason:result.reason};
+      const status=result.value;if(!status)return {kind:'none'};
       // Retryable validation, review transport and completed-task QA stay on
       // their existing recovery path; a new run must not bypass those gates.
       const terminal=['blocked','failed','unknown'].includes(status.state)
         &&!developmentRetryable(status)&&!completionRetryable(status)
         ||status.state==='pending_review'&&status.code!==null&&!reviewRetryable(status);
-      if(!terminal){waiting??=status;continue;}
+      if(!terminal)return {kind:'waiting',status};
       const key=pending[index];
       // Q25: a member that can still be resolved in its own run (original-invocation
       // receipts, interrupted effect, a redo awaiting stop confirmation) keeps its
@@ -464,10 +487,33 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       // in its run with an explicit stop; only a raw checkpointed blocked terminal is
       // rescheduled serially. Ordinary batches follow the same rules (they used to
       // reschedule every terminal, unknown included, and develop gen 2 at once).
-      if(IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
+      if(IN_RUN_ACTIONS.has(status.pendingAction))return {kind:'recoverable',key,status};
       const history=memberRunHistory(config.specsDir,plans.get(key).identity.runId);
-      if(!memberRescheduleAllowed(status,history)){
+      if(!memberRescheduleAllowed(status,history))return {kind:'unresolved',key,status,history};
+      return {kind:'reschedule',key,status};
+    });
+    const skipped=new Set([...progress().blocked.keys(),...decisions.filter(item=>item.kind==='reschedule').map(item=>item.key)]);
+    // A merge an earlier process started (its intent is logged, its handoff is
+    // not) is finished first: it may already be in Git. The rest merge in task
+    // order, not completion order: a later member waits while an earlier one is
+    // still unfinished (retrying, recovering, stopped), except one rescheduled to a
+    // serial second generation, which is redone on top of the merged result.
+    const unfinished=[...progress().merging.keys()].filter(key=>group.includes(key)&&!progress().done.has(key));
+    for(const key of [...unfinished,...[...plans.keys()].filter(key=>group.includes(key)&&!unfinished.includes(key))]){
+      if(progress().done.has(key))continue;
+      const row=progress().ready.get(key);
+      if(!row){if(skipped.has(key))continue;break;}
+      const result=await mergeMember(row);if(result)return result;
+    }
+    let waiting=null,rejected=null,recoverable=null,unresolved=null;const rescheduled=[];
+    for(const decision of decisions){
+      if(decision.kind==='rejected'){rejected??=decision.reason;continue;}
+      if(decision.kind==='waiting'){waiting??=decision.status;continue;}
+      if(decision.kind==='recoverable'){recoverable??={key:decision.key,status:decision.status};continue;}
+      if(decision.kind==='unresolved'){const {key,status,history}=decision;
         unresolved??={key,status,history,raw:history?.state?`${history.state.state}/${history.state.code??history.state.state}`:'unreadable'};continue;}
+      if(decision.kind!=='reschedule')continue;
+      const {key,status}=decision;
       rescheduled.push(key);
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
         reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
@@ -485,6 +531,27 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   const stopGuidance=(summary,nextStep,prerequisites)=>Object.freeze({summary,nextStep,recoveryOperation:null,
     prerequisites:Object.freeze(prerequisites),authorizationGranted:false});
+  // A member whose reviewed, completed delivery does not merge (members never share a
+  // scope file, so this is a file outside every scope). The batch stays stopped; the
+  // operator merges by hand and plans the rest as a new batch. Redoing the task
+  // serially would mean reopening a completed, reviewed task, which is not automatic.
+  // Every member that finished and is not merged yet is listed, the conflicted one
+  // included, in task order: each is marked complete in tasks.md, so a new plan
+  // would skip it, and its code exists only on its branch (committed there before
+  // the guidance is given).
+  const mergeConflictGuidance=(key,files,unsealed=[])=>{
+    const listed=Array.isArray(files)&&files.length?files.join('、'):'（Git 未列出）';
+    const pending=readyUnmerged();
+    if(!pending.includes(key))pending.push(key);
+    const steps=pending.map(item=>{const {worktree,branch}=location(item);return `${item}：git merge --no-ff ${branch}（工作树 ${worktree}）`;});
+    return stopGuidance(`并行成员 ${key} 的已审交付与已合并的结果在 ${listed} 上冲突；合并已撤销，主目录未改动，批次停止。`,
+      `在主目录按任务顺序手动合并这些已完成未合并的成员分支：${steps.join('；')}；解决冲突后跑项目检查再提交；`
+        +`然后删除这些成员工作树与分支；剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次继续。`,
+      [...(unsealed.length?[`以下成员的交付尚未确认提交到分支，分支里可能没有代码：${unsealed.map(item=>`${item.taskKey}（${item.code}）`).join('、')}。`
+          +'先恢复缺失的工作树，再对本批次 advance 一次：它只核对并提交这些交付、重新给出本指引；这里不再列出后才能合并和清理']:[]),
+        '这些任务已审查通过并在 tasks.md 记为完成，合入的是它们的已审代码；新批次会跳过它们，漏合就会缺代码',
+        '合并后的组合没有经过审查，提交前必须跑项目检查','原批次不会再推进；advance 只会补提交并重复本指引']);
+  };
   // reconcile_review exists only for external-model or execution-policy runs.
   const batchKind=strict=>strict?'外部模型或执行策略批次':'批次';
   // Name only exits whose entry conditions accept this member. Recoverable pendingActions
@@ -538,9 +605,14 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const {worktree,branch}=location(taskKey);
     need(fs.existsSync(worktree),'batch_member_action_unavailable');
     need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
-    const definition=plans.get(taskKey);
-    plans.set(taskKey,validateRunDefinition({...definition,codeProject:worktree,
-      ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})}));
+    plans.set(taskKey,worktreeDefinition(taskKey));
+  }
+  // A member's definition rooted in its worktree, always mapped from the original
+  // plan so binding twice (a stopped replay, then controlTarget) maps once.
+  function worktreeDefinition(key){
+    const {worktree}=location(key),definition=originalPlans.get(key);
+    return validateRunDefinition({...definition,codeProject:worktree,
+      ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})});
   }
   async function memberAction(request,state){
     const {option,flag}=BATCH_MEMBER_ACTIONS[request.operation],taskKey=request.taskKey;
@@ -614,7 +686,14 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
           :await run.host.handle({version:1,operation:'reconcile_review',requestId:request.requestId,identity:definition.identity,invocationId:request.invocationId});}
         finally{run.close();}
       }
-      if(initial.stopped)return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId};
+      if(initial.stopped){
+        const conflict=initial.code==='merge_conflict'?initial.rows.findLast(row=>row.phase==='batch_merge_conflict'):null;
+        // A stop logged before its members were sealed (a crash, or an older version):
+        // advance seals them; status stays read-only and reports the stop as logged.
+        const unsealed=!conflict?[]:request.operation==='advance'?await sealForGuidance():unsealedReadOnly();
+        return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId,
+          ...(conflict?{files:conflict.files,...(unsealed.length?{unsealed}:{}),guidance:mergeConflictGuidance(conflict.from_key,conflict.files,unsealed)}:{})};
+      }
       if(Object.hasOwn(BATCH_MEMBER_ACTIONS,request.operation))return await memberAction(request,initial);
       if(request.operation==='advance'&&!initial.rows.length){
         const dirty=batchGit(config.codeProject,['status','--porcelain']);
@@ -662,11 +741,19 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         const handoff=result.outcome==='refreshed'&&result.pendingAction==='start_next_task';
         if(request.operation!=='advance'||(!finished&&!handoff))return {...result,batchId:config.batchId};
         const next=handoff?`${result.nextTask.feature}/${result.nextTask.id}`:null;
-        if(handoff)need(plans.has(next),'batch_task_scope_required');
+        // A batch plans one feature (cm-ai-batch-plan.mjs). When its last task hands
+        // off to the next feature, this batch is done: the next feature is planned as
+        // a new batch. Anything else outside the plan is still refused.
+        const featureDone=handoff&&!plans.has(next)&&[...plans.keys()].at(-1)===liveKey
+          &&result.nextTask.feature!==plans.get(liveKey).feature;
+        if(handoff&&!featureDone)need(plans.has(next),'batch_task_scope_required');
         let task_commit=commitChanges(config.codeProject,taskCommitArgs(plans.get(liveKey).identity.taskId,taskDescription(config,plans.get(liveKey))));
         if(task_commit)record('batch_task_committed',{from_key:liveKey,task_commit});
         else task_commit=progress().rows.filter(row=>row.phase==='batch_task_committed'&&row.from_key===liveKey).at(-1)?.task_commit??null;
         if(finished)return {...result,batchId:config.batchId,task_commit};
+        if(featureDone)return {...result,batchId:config.batchId,task_commit,batchComplete:true,nextFeature:result.nextTask.feature,
+          guidance:stopGuidance(`本批次的功能 ${plans.get(liveKey).feature} 已全部完成。`,
+            `下一个功能是 ${result.nextTask.feature}：用 cm-ai-batch-plan.mjs 以新的批次 ID 生成它的批次再继续。`,[])};
         record('batch_handoff',{from_key:liveKey,to_key:next,checkpoint:active.checkpoint(),package_digest:result.packageDigest,task_commit});
         active.close();active=null;liveKey=next;
       }
@@ -734,6 +821,10 @@ function validateGroups(config,plans,{declared=false}={}){
     need([...ids].every(id=>[...ids].every(other=>other===id||!reaches(id,other))),'parallel_dependency_conflict');
     const ordered=parsed.tasks.filter(task=>!task.dropped),last=ordered.at(-1);
     need(last&&!ids.has(last.id)&&plans.has(`${feature}/${last.id}`),'parallel_final_task_excluded');
+    // The batch runs in plan order: the feature's last planned task collects the
+    // members' deferred QA, so it cannot be a member either (new batches).
+    if(declared)need(!ids.has(plans.get([...plans.keys()].filter(key=>plans.get(key).feature===feature).at(-1)).identity.taskId),
+      'parallel_final_task_excluded');
     const paths=new Set();
     for(const key of group)for(const file of plans.get(key).scope){
       need(!paths.has(file),'parallel_scope_overlap');paths.add(file);

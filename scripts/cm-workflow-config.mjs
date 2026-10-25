@@ -284,7 +284,7 @@ function requireString(value,location,choices=null){
 }
 
 function validateRaw(value){
-  const root=requireMapping(value,'config');rejectUnknown(root,new Set(['version','project','runtimes','roles','policies']),'config');
+  const root=requireMapping(value,'config');rejectUnknown(root,new Set(['version','project','runtimes','roles','policies','parallel']),'config');
   if(typeof root.version!=='bigint'||root.version!==1n)throw new ConfigError('config.version must equal integer 1');
   if(Object.hasOwn(root,'project')){
     const project=requireMapping(root.project,'config.project');rejectUnknown(project,new Set(['type','workflow']),'config.project');
@@ -321,6 +321,14 @@ function validateRaw(value){
       throw new ConfigError('config.policies.generate_cases must be boolean');
     if(Object.hasOwn(policies,'auto_fix'))requireString(policies.auto_fix,'config.policies.auto_fix',AUTO_FIX_POLICIES);
     if(Object.hasOwn(policies,'delivery'))requireString(policies.delivery,'config.policies.delivery',DELIVERY_MODES);
+  }
+  // /cm-ai worktree parallelism (runtime/js/cm-ai/batch-plan.mjs). Not in the
+  // defaults: a project that does not set it keeps its effective config unchanged.
+  if(Object.hasOwn(root,'parallel')){
+    const parallel=requireMapping(root.parallel,'config.parallel');rejectUnknown(parallel,new Set(['enabled','max']),'config.parallel');
+    if(Object.hasOwn(parallel,'enabled')&&typeof parallel.enabled!=='boolean')throw new ConfigError('config.parallel.enabled must be boolean');
+    if(Object.hasOwn(parallel,'max')&&!((typeof parallel.max==='bigint'&&parallel.max>=1n&&parallel.max<=4n)
+      ||(Number.isInteger(parallel.max)&&parallel.max>=1&&parallel.max<=4)))throw new ConfigError('config.parallel.max must be an integer from 1 to 4');
   }
 }
 
@@ -493,7 +501,8 @@ function loadConfigUsing(input,userDefaults){
   if(SECRET_VALUE.test(text))throw new ConfigError('configuration contains a secret-like value');
   try{
     const raw=parseDocument(configPath,text);walkForSecrets(raw);validateRaw(raw);
-    const normalizedRaw={...raw,version:Number(raw.version)};
+    const normalizedRaw={...raw,version:Number(raw.version),
+      ...(raw.parallel&&Object.hasOwn(raw.parallel,'max')?{parallel:{...raw.parallel,max:Number(raw.parallel.max)}}:{})};
     const projectDeclared=raw.runtimes?.available!==undefined;
     const user=projectDeclared?null:userDefaults();
     const defaults=user?deepMerge(DEFAULT_CONFIG,runtimePreset(user.preset)):DEFAULT_CONFIG;
