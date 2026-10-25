@@ -325,8 +325,13 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const host={async handle(request){
       try{
         reconciling=request.operation==='reconcile_review';const result=await driver.handle(request);
-        if(controlPolicy&&request.operation==='status'&&result.state!=='running')
-          return {...result,controlTarget:await driver.controlTarget()};
+        if(controlPolicy&&request.operation==='status'&&result.state!=='running'){
+          // A merge conflict stays reported when its member cannot be targeted (e.g.
+          // its worktree is gone); the target is marked unavailable, not invented.
+          if(result.code!=='merge_conflict')return {...result,controlTarget:await driver.controlTarget()};
+          try{return {...result,controlTarget:await driver.controlTarget()};}
+          catch(cause){return {...result,controlTargetUnavailable:{code:safeCode(cause)}};}
+        }
         return result;
       }
       catch(cause){const reason=boundedReason(cause);return {outcome:'blocked',code:safeCode(cause),...(reason?{reason}:{})};}

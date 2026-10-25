@@ -413,17 +413,21 @@ export async function batchFixture(mode,options={}){
       // status stays read-only: it reports the stop and commits nothing.
       const read=await open().handle({operation:'status',requestId:'status-after-conflict'});
       assert.equal(read.code,'merge_conflict');assert.deepEqual(read.files,result.files);assert.match(read.guidance.nextStep,/T-002/);
+      // ...but names the member not proven committed, and asks for advance before any merge.
+      assert.deepEqual(read.unsealed,[{taskKey:`${feature}/T-002`,code:'batch_seal_pending'}]);
+      assert.match(read.guidance.prerequisites[0],/尚未确认提交到分支.*1\.work\/T-002.*advance 一次/);
       assert.throws(()=>git(codeProject,['show',`${t2}:file1.js`]));
       // A member that cannot be checked is named, and the conflict is still returned.
       fs.renameSync(t2tree,t2tree+'.away');
+      assert.deepEqual((await open().handle({operation:'status',requestId:'status-missing'})).unsealed,[{taskKey:`${feature}/T-002`,code:'batch_worktree_missing'}]);
       const unchecked=await open().handle({operation:'advance',requestId:'unsealed-after-conflict'});
       fs.renameSync(t2tree+'.away',t2tree);
       assert.equal(unchecked.code,'merge_conflict');assert.deepEqual(unchecked.files,result.files);
       assert.deepEqual(unchecked.unsealed.map(item=>item.taskKey),[`${feature}/T-002`]);
-      assert.match(unchecked.guidance.prerequisites[0],/未能核对并提交到分支.*1\.work\/T-002/);
+      assert.match(unchecked.guidance.prerequisites[0],/尚未确认提交到分支.*1\.work\/T-002（batch_member_action_unavailable）/);
       // The stop names the conflicted member's branch and worktree and the way on, then and on every later advance.
       for(const stop of [result,await open().handle({operation:'advance',requestId:'after-conflict'})]){
-        assert.equal(stop.code,'merge_conflict');assert.deepEqual(stop.files,result.files);
+        assert.equal(stop.code,'merge_conflict');assert.deepEqual(stop.files,result.files);assert.equal(stop.unsealed,undefined);
         assert.equal(stop.guidance.recoveryOperation,null);assert.equal(stop.guidance.authorizationGranted,false);
         // T-001 conflicts; T-002 is ready, marked done in tasks.md and not merged: both are listed, in task order.
         assert.match(stop.guidance.nextStep,new RegExp(`T-001：git merge --no-ff cm/${segment}/work/T-001（工作树 [^）]+）；1\\.work/T-002：git merge --no-ff cm/${segment}/work/T-002`));

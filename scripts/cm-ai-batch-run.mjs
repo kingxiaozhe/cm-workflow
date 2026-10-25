@@ -397,6 +397,16 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     }
     return unsealed;
   }
+  // Read-only counterpart for status: a member whose worktree is missing or still
+  // has uncommitted changes is not proven sealed and is named, nothing is written.
+  const unsealedReadOnly=()=>readyUnmerged().flatMap(key=>{
+    const {worktree}=location(key);
+    if(!fs.existsSync(worktree))return [{taskKey:key,code:'batch_worktree_missing'}];
+    const options=gitOptions(),excluded=config.externalModels||config.executionPolicy?['--','.',':!.cm-external-models-v1.json',':!.cm-model-config.lock']:[];
+    const result=spawnSync('git',['-C',worktree,'status','--porcelain',...excluded],{...options,env:{...options.env,GIT_OPTIONAL_LOCKS:'0'}});
+    if(result.error||result.status!==0)return [{taskKey:key,code:'batch_seal_unverified'}];
+    return result.stdout.trim()?[{taskKey:key,code:'batch_seal_pending'}]:[];
+  });
   async function mergeMember(row){
     const key=row.from_key,{worktree,branch}=location(key);
     let intent=progress().merging.get(key);
@@ -543,9 +553,10 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     return stopGuidance(`并行成员 ${key} 的已审交付与已合并的结果在 ${listed} 上冲突；合并已撤销，主目录未改动，批次停止。`,
       `在主目录按任务顺序手动合并这些已完成未合并的成员分支：${steps.join('；')}；解决冲突后跑项目检查再提交；`
         +`然后删除这些成员工作树与分支；剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次继续。`,
-      [...(unsealed.length?[`以下成员的交付未能核对并提交到分支，分支里可能没有代码，先在其工作树核对后再合：${unsealed.map(item=>`${item.taskKey}（${item.code}）`).join('、')}`]:[]),
+      [...(unsealed.length?[`以下成员的交付尚未确认提交到分支，分支里可能没有代码：${unsealed.map(item=>`${item.taskKey}（${item.code}）`).join('、')}。`
+          +'先恢复缺失的工作树，再对本批次 advance 一次：它只核对并提交这些交付、重新给出本指引；这里不再列出后才能合并和清理']:[]),
         '这些任务已审查通过并在 tasks.md 记为完成，合入的是它们的已审代码；新批次会跳过它们，漏合就会缺代码',
-        '合并后的组合没有经过审查，提交前必须跑项目检查','原批次不会再推进，不要再对它 advance']);
+        '合并后的组合没有经过审查，提交前必须跑项目检查','原批次不会再推进；advance 只会补提交并重复本指引']);
   };
   // reconcile_review exists only for external-model or execution-policy runs.
   const batchKind=strict=>strict?'外部模型或执行策略批次':'批次';
@@ -685,7 +696,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         const conflict=initial.code==='merge_conflict'?initial.rows.findLast(row=>row.phase==='batch_merge_conflict'):null;
         // A stop logged before its members were sealed (a crash, or an older version):
         // advance seals them; status stays read-only and reports the stop as logged.
-        const unsealed=conflict&&request.operation==='advance'?await sealForGuidance():[];
+        const unsealed=!conflict?[]:request.operation==='advance'?await sealForGuidance():unsealedReadOnly();
         return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId,
           ...(conflict?{files:conflict.files,...(unsealed.length?{unsealed}:{}),guidance:mergeConflictGuidance(conflict.from_key,conflict.files,unsealed)}:{})};
       }
