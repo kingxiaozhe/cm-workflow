@@ -439,14 +439,15 @@ and sends nothing. `--no-skill-hints` does not turn anything off; it only stops
 installs from adding the hook. An install does not wire the hook when:
 
 - you pass `--no-skill-hints` (`-NoSkillHints` for `install.ps1`) or set
-  `CM_SKILL_HINTS_INSTALL=off` (this also works for `cm-workflow install`). The host
-  is then recorded as settled, so later installs without the flag do not wire it
-  either; a hook already there is kept;
+  `CM_SKILL_HINTS_INSTALL=off` (this also works for `cm-workflow install`). This
+  covers that run only: the next install without them wires the host as usual, and
+  a hook already there is kept;
 - `~/.cm-workflow/skill-hints.local.json` has `"enabled": false`; or it cannot be
-  read, or is not an object, or its `enabled` is not `true`/`false` (with a warning;
-  nothing is changed until you fix it);
-- that host is settled: the hook was there before and you removed it, or an earlier
-  install was told not to add it. CM keeps settled hosts in
+  read, or is not an object, or a known field has the wrong type (`enabled` and
+  `judge` must be `true`/`false`, `rules` a list, `disable` a list of strings). Then
+  it warns and changes nothing until you fix the file;
+- that host is settled: the hook was there before and you removed it. CM keeps the
+  hosts it has wired or found wired in
   `~/.cm-workflow/skill-hints.auto.json` (`{"version": 1, "hosts": [...]}`), written
   under the same lock as its other config writes and before any copy is made. If
   `~/.cm-workflow/skill-hints/` exists but that file does not (you ran `enable`
@@ -492,7 +493,9 @@ overwrites. They take precedence over CM's table:
 }
 ```
 
-`"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
+A local file that cannot be read or has a field of the wrong type is ignored as a
+whole: CM's own table still hints, nothing is sent to Jev, and `/cm-check` reports
+the file. `"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
 user rule with the same `id` as a CM rule replaces it, and a user rule only ever
 hints (it never starts a skill). `patterns` (regular
 expressions) share a 200 ms budget per message; past it they count as no match. An
