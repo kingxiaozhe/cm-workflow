@@ -547,7 +547,10 @@ export function validateCmAiAnswer(kind,value,root){
     if(value.status==='succeeded'){
       exact(value,['status','value','edits'],'develop.json');
       requireShape(object(value.value)&&['implemented','blocked'].includes(value.value.outcome),'develop.json.value.outcome');
-      exact(value.value,['outcome','application','retrospective','reason'],'develop.json.value');
+      exact(value.value,['outcome','application','retrospective','reason','requirements'],'develop.json.value');
+      // The per-requirement report the prompt asks for; the host validates and splits it off.
+      requireShape(!Object.hasOwn(value.value,'requirements')||value.value.requirements===null
+        ||Array.isArray(value.value.requirements)&&value.value.requirements.length<=64,'develop.json.value.requirements');
       if(value.value.outcome==='implemented')requireShape(object(value.value.application)
         &&['applied','no_relevant_lesson'].includes(value.value.application.status)
         &&(value.value.application.status==='applied'?nonempty(value.value.application.note):value.value.application.note===null)

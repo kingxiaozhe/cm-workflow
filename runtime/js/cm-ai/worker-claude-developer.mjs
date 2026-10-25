@@ -23,8 +23,10 @@ export function validateClaudeProposal(raw){
   shape(result,['status','value','edits']);
   const value=result.value,nullable=v=>v===null||typeof v==='string';
   need(value&&typeof value==='object','invalid_result');
-  shape(value,['outcome',...['application','retrospective','reason'].filter(key=>Object.hasOwn(value,key))]);
+  shape(value,['outcome',...['application','retrospective','reason','requirements'].filter(key=>Object.hasOwn(value,key))]);
   need(['implemented','blocked'].includes(value.outcome),'invalid_result');
+  // The per-requirement report is validated where the host splits it off (requirement-evidence.mjs).
+  if(Object.hasOwn(value,'requirements'))need(value.requirements===null||Array.isArray(value.requirements)&&value.requirements.length<=64,'invalid_result');
   if(Object.hasOwn(value,'reason'))need(nullable(value.reason),'invalid_result');
   if(Object.hasOwn(value,'application')){
     shape(value.application,['status','note']);
@@ -54,6 +56,12 @@ export function validateClaudeProposal(raw){
   return result;
 }
 
+const STARTUP_NOTICES=new Set(['dev_intent','ui_invalidate']);
+function startupNotice(subtype,onNotice){
+  if(subtype==='dev_intent')return reportClaudeDevIntentNotice(onNotice);
+  if(typeof onNotice!=='function')return;
+  try{onNotice({kind:'claude_system_notice',subtype});}catch{}
+}
 function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null){
   let session=null,initialized=false,done=false,value,assistant=false,noticeCount=0,thinkingCount=0;
   const tools=new Set();
@@ -63,9 +71,11 @@ function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null){
       need(typeof event.session_id==='string'&&event.session_id.trim()&&event.session_id.length<=128,'invalid_session');
       if(session!==null)need(event.session_id===session,'session_mismatch');
       if(!initialized){
-        if(event.type==='system'&&event.subtype==='dev_intent'){
+        // CLI 2.1.289 emits ui_invalidate before init, as the review stream
+        // already accepts. A notice never initializes the turn.
+        if(event.type==='system'&&STARTUP_NOTICES.has(event.subtype)){
           need(noticeCount<32,'unexpected_event');noticeCount++;
-          session=event.session_id;reportClaudeDevIntentNotice(onNotice);return;
+          session=event.session_id;startupNotice(event.subtype,onNotice);return;
         }
         need(event.type==='system'&&event.subtype==='init','missing_init');
         session=event.session_id;initialized=true;return;
@@ -75,9 +85,9 @@ function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null){
         reportClaudeRateLimitNotice(event.rate_limit_info,onNotice);return;
       }
       if(event.type==='system'){
-        if(event.subtype==='dev_intent'){
+        if(STARTUP_NOTICES.has(event.subtype)){
           need(noticeCount<32,'unexpected_event');noticeCount++;
-          reportClaudeDevIntentNotice(onNotice);return;
+          startupNotice(event.subtype,onNotice);return;
         }
         need(event.subtype==='thinking_tokens'&&thinkingCount<64,'unexpected_event');thinkingCount++;return;
       }

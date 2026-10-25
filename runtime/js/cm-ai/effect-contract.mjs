@@ -129,6 +129,7 @@ export const id=v=>need(typeof v==='string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127
 export const text=v=>need(typeof v==='string' && v.trim().length>0);
 export const validBlockedReason=v=>need(typeof v==='string'&&v.trim().length>0
   &&Buffer.byteLength(v,'utf8')<=1000&&!/[\x00-\x08\x0b-\x1f]/.test(v));
+export const validFailureCode=v=>need(typeof v==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(v));
 export const hex=v=>need(typeof v==='string' && /^[a-f0-9]{64}$/.test(v));
 export const freeze=v=>{if(v && typeof v==='object'){Object.values(v).forEach(freeze);Object.freeze(v);}return v;};
 export function arrayItems(value) {
@@ -184,7 +185,15 @@ export function terminalFor(raw,request) {
   const v=json(raw);
   shape(v,['version','invocationId','contextId','provider','effectiveModel','status','accepted','result',
     ...(Object.hasOwn(v,'providerThreadId')?['providerThreadId']:[]),
-    ...(Object.hasOwn(v,'blockedReason')?['blockedReason']:[])]);
+    ...(Object.hasOwn(v,'blockedReason')?['blockedReason']:[]),
+    ...(Object.hasOwn(v,'failureCode')?['failureCode']:[])]);
+  // The worker's own code for a developer call that ended without a result
+  // (timeout, missing_init, provider_failed...). Diagnostic only: it never
+  // changes the terminal, its retry rules or any later decision.
+  if(Object.hasOwn(v,'failureCode')){
+    need(request.role==='developer'&&['failed','unknown'].includes(v.status)&&v.result===null
+      &&!Object.hasOwn(v,'blockedReason'));validFailureCode(v.failureCode);
+  }
   if(Object.hasOwn(v,'blockedReason')){
     need(request.role==='developer'&&v.status==='failed'&&v.result===null);
     validBlockedReason(v.blockedReason);

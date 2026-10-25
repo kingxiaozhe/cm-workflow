@@ -7,7 +7,7 @@ import {readExternalModels} from './external-models.mjs';
 import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-config-revision.mjs';
 import {readCloseoutPolicy} from './knowledge-closeout.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
-import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,requestFor,JOURNAL_REASON_LIMIT,boundedReason} from './effect-contract.mjs';
+import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,validFailureCode,requestFor,JOURNAL_REASON_LIMIT,boundedReason} from './effect-contract.mjs';
 import {readReviewBaseline,readReviewPackage,reviewSpecsPath,reviewMaterialLimitReason} from './review-package.mjs';
 import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
@@ -787,7 +787,12 @@ function callRequest(call,adapter,contextId,role,payload,identity,session,index)
     ...(Object.hasOwn(call,'providerThreadId')?['providerThreadId']:[]),
     ...(Object.hasOwn(call,'failureResult')?['failureResult']:[]),
     ...(Object.hasOwn(call,'blockedReason')?['blockedReason']:[]),
+    ...(Object.hasOwn(call,'failureCode')?['failureCode']:[]),
     ...(Object.hasOwn(call,'documentationSync')?['documentationSync']:[])]);
+  if(Object.hasOwn(call,'failureCode')){
+    need(role==='developer'&&['failed','unknown'].includes(call.terminal)&&!Object.hasOwn(call,'failureResult')
+      &&!Object.hasOwn(call,'blockedReason'),'runner_call');validFailureCode(call.failureCode);
+  }
   // Q16: the documentation-sync-started record this developer call journaled.
   if(Object.hasOwn(call,'documentationSync')){need(role==='developer','runner_call');hex(call.documentationSync);}
   if(Object.hasOwn(call,'blockedReason')){

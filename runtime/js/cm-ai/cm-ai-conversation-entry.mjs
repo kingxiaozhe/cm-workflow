@@ -80,7 +80,9 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
   ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
-    ?{blockedReason:status.calls.at(-1).blockedReason}:{})});
+    ?{blockedReason:status.calls.at(-1).blockedReason}:{}),
+  ...(['blocked','unknown'].includes(status.state)&&typeof status.calls?.at(-1)?.failureCode==='string'
+    ?{failureCode:status.calls.at(-1).failureCode}:{})});
 const correctionSummary=(operation,status)=>status.code==='correction_review_required'
   ?summary(operation,status,'blocked'):null;
 // run_done is a project claim: every approved feature's latest mandatory QA must
