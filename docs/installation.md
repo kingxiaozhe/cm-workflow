@@ -378,9 +378,11 @@ installed skills.
 A `UserPromptSubmit` hook that reads each message you type, matches it against a
 keyword table and, when a skill fits, shows you a one-line hint such as
 `💡 技能提醒：可以试 /grill-me——…`. The hint is shown to you directly
-(`systemMessage`) and is not added to the model's context. Matching is local
-keyword and optional regex matching: nothing is sent anywhere and no tokens are
-spent on it. Messages over 2000 characters and text inside ``` fences are
+(`systemMessage`) and is not added to the model's context. For these hints,
+matching is local keyword and optional regex matching: nothing is sent anywhere
+and no tokens are spent on it. The three auto-started skills below are the
+exception: when a TypeSafe key is available, the first 500 characters of each
+message are sent to TypeSafe's Jev to judge them. Messages over 2000 characters and text inside ``` fences are
 skipped, at most two skills are hinted per message, and each skill at most once
 per session. Sessions that CM itself launches set `CM_SKILL_HINTS=off`.
 
@@ -398,8 +400,11 @@ version is installed for that host:
 Whether one of them fits is judged by TypeSafe's Jev when a TypeSafe key is
 available (`TYPESAFE_API_KEY`, or on macOS a keychain item named
 `TYPESAFE_API_KEY` for your user). Only the first 500 characters of the message
-are sent; a message that looks like it contains a credential (API keys, tokens,
-private keys, `password=`-style assignments) is never sent. Jev gets at most 3
+are sent. A message that looks like it contains a credential is kept local: known
+key shapes (API keys, tokens, private keys), `password=`-style assignments and the
+same in words (`密码是 …`, `my password is …`), long strings near a credential word,
+and the TypeSafe key itself. This is pattern matching, not a guarantee: a credential
+with no recognisable shape and no credential word nearby can still be sent. Jev gets at most 3
 seconds, with a second request when the first fails or has not answered within 1
 second. Without a key, on a credential-looking message, or when Jev fails, the
 same keyword table decides. A message that opens with a command (`/handoff …`) is

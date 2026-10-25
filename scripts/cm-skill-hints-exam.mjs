@@ -8,16 +8,18 @@
 //   node scripts/cm-skill-hints-exam.mjs --keywords    score the keyword fallback alone, no network
 //
 // The repository test replays the recorded answers through a fake Jev, so every change
-// is scored without calling Jev; the recording names the question it answered and goes
-// stale (the test fails) when a rule's `when`/`near` text changes. Target: hit rate
-// >= 95% on the should-use cases, false triggers <= 5% on the others.
+// is scored without calling Jev. Each answer is keyed by the hash of the exact request
+// it answered (model, clipped message, question), so changing a phrasing or a rule's
+// `when`/`near` text leaves it unmatched and the test fails until it is re-recorded.
+// Target: hit rate >= 95% on the should-use cases, false triggers <= 5% on the others,
+// both for all 50 and for the 43 that reach Jev (7 open with a command the host runs).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {hook,loadRules,defaultRulesPath,opensWithCommand,typed} from './cm-skill-hints.mjs';
-import {question,clip,apiKey} from './cm-skill-judge.mjs';
+import {apiKey,requestBody} from './cm-skill-judge.mjs';
 
 export const EXAM_NAME='cm-skill-hints.exam.json';
 export const examPath=()=>path.join(path.dirname(fileURLToPath(import.meta.url)),EXAM_NAME);
@@ -28,8 +30,9 @@ export function invokeChoices(rulesFile=defaultRulesPath()){
   const {rules}=loadRules({env:{HOME:'/nonexistent',CM_WORKFLOW_HOME:'/nonexistent/.cm'},rulesFile});
   return rules.filter(rule=>rule.invoke).map(rule=>({skill:rule.skill,when:rule.invoke.when,near:rule.invoke.near}));
 }
-// Identifies the exact question Jev was asked, so a recording cannot outlive it.
-export const questionHash=choices=>crypto.createHash('sha256').update(JSON.stringify(question(choices))).digest('hex').slice(0,16);
+export const bodyHash=body=>crypto.createHash('sha256').update(body).digest('hex').slice(0,16);
+// The request this case sends today; a recording made for any other request does not apply.
+export const expectedRequest=(item,choices=invokeChoices())=>bodyHash(requestBody(item.prompt,choices));
 
 // Every invoke skill counts as the installed author version; roots point at /srv paths
 // that are never read.
@@ -53,13 +56,20 @@ export function passed(item,started,host='claude'){
   return started===null&&opensWithCommand(item.prompt)&&typed(item.prompt,item.expect,host);
 }
 
-export function score(results){
+function rates(results){
   const should=results.filter(item=>item.expect!==null);
   const shouldNot=results.filter(item=>item.expect===null);
   const hit=should.filter(item=>item.pass).length/should.length;
   const falseTrigger=shouldNot.filter(item=>!item.pass).length/shouldNot.length;
   return {hit,falseTrigger,should:should.length,shouldNot:shouldNot.length,
     ok:hit>=TARGET.hit&&falseTrigger<=TARGET.falseTrigger,failed:results.filter(item=>!item.pass)};
+}
+// All 50, and separately the ones judged at all (a command-led message never is), so
+// the command cases cannot dilute either rate.
+export function score(results){
+  const all=rates(results);
+  const judged=rates(results.filter(item=>!item.command));
+  return {...all,judged,ok:all.ok&&judged.ok};
 }
 
 // Runs every case through hook(). `fetchImpl` is the Jev transport (real or fake);
@@ -76,25 +86,25 @@ export async function runExam({exam=readExam(),fetchImpl,key='exam-key',keywords
         const response=await fetchImpl(url,options);
         if(!onReply)return response;
         const text=await response.text();
-        onReply(item,JSON.parse(text));
+        if(response.ok)onReply(item,JSON.parse(text),options.body);
         return new Response(text,{status:response.status,headers:{'Content-Type':'application/json'}});
       });
       const started=Date.now();
       const output=await hook({prompt:item.prompt,session_id:item.id},{env,host,
         loadAuthor:async()=>installedCheck(skills),judgeOptions:{key,fetchImpl:transport}});
       const skill=startedSkill(output);
-      results.push({id:item.id,expect:item.expect,started:skill,pass:passed(item,skill,host),ms:Date.now()-started});
+      results.push({id:item.id,expect:item.expect,started:skill,pass:passed(item,skill,host),command:opensWithCommand(item.prompt),ms:Date.now()-started});
     }finally{fs.rmSync(home,{recursive:true,force:true});}
   }
   return results;
 }
 
-// A fake Jev that answers from the exam's recording, keyed by the exact text sent.
+// A fake Jev that answers from the exam's recording, keyed by the hash of the exact
+// request body; an unrecorded request gets a 400, so the hook falls back to keywords.
 export function replayFetch(exam){
-  const byState=new Map(exam.cases.filter(item=>item.jev).map(item=>[clip(item.prompt),item.jev]));
+  const byRequest=new Map(exam.cases.filter(item=>item.jev).map(item=>[item.jev.request,item.jev.probabilities]));
   return async(url,options)=>{
-    const sent=JSON.parse(options.body);
-    const probabilities=byState.get(sent.state);
+    const probabilities=byRequest.get(bodyHash(options.body));
     if(!probabilities)return new Response('{"error":"not recorded"}',{status:400});
     return new Response(JSON.stringify({answers:{skill:{type:'choice',probabilities}}}),{status:200});
   };
@@ -113,20 +123,20 @@ async function cli(argv){
   let tokens={input:0,output:0,calls:0};
   const replies=new Map();
   const started=Date.now();
-  const results=await runExam({exam,keywordsOnly,key,fetchImpl:keywordsOnly?undefined:globalThis.fetch,onReply:(item,reply)=>{
-    replies.set(item.id,reply?.answers?.skill?.probabilities);
+  const results=await runExam({exam,keywordsOnly,key,fetchImpl:keywordsOnly?undefined:globalThis.fetch,onReply:(item,reply,body)=>{
+    replies.set(item.id,{request:bodyHash(body),probabilities:reply?.answers?.skill?.probabilities});
     tokens={input:tokens.input+(reply?.usage?.input_tokens??0),output:tokens.output+(reply?.usage?.output_tokens??0),calls:tokens.calls+1};
   }});
   const result=score(results);
   for(const item of results)process.stdout.write(`${item.pass?'ok':'XX'} ${item.id} 期望=${item.expect??'无'} 实际=${item.started??'无'} ${item.ms}ms\n`);
-  process.stdout.write(`\n该用命中 ${percent(result.hit)}（${result.should} 句），不该用误触发 ${percent(result.falseTrigger)}（${result.shouldNot} 句）；`
-    +`${result.ok?'达标':'未达标'}。用时 ${((Date.now()-started)/1000).toFixed(1)} 秒`
+  process.stdout.write(`\n全部：该用命中 ${percent(result.hit)}（${result.should} 句），不该用误触发 ${percent(result.falseTrigger)}（${result.shouldNot} 句）。\n`
+    +`经判断的（去掉 ${results.filter(item=>item.command).length} 句命令开头）：该用命中 ${percent(result.judged.hit)}（${result.judged.should} 句），`
+    +`不该用误触发 ${percent(result.judged.falseTrigger)}（${result.judged.shouldNot} 句）。\n${result.ok?'达标':'未达标'}。用时 ${((Date.now()-started)/1000).toFixed(1)} 秒`
     +(keywordsOnly?'，只用关键词。\n':`，Jev 调用 ${tokens.calls} 次，输入 ${tokens.input} / 输出 ${tokens.output} token。\n`));
   if(record&&!keywordsOnly){
-    const choices=invokeChoices();
     const missing=exam.cases.filter(item=>!opensWithCommand(item.prompt)&&!replies.get(item.id));
     if(missing.length){process.stderr.write(`有 ${missing.length} 句没拿到 Jev 回答（${missing.map(item=>item.id).join('、')}），未保存；请重跑。\n`);return 1;}
-    exam.recorded={date:new Date().toISOString().slice(0,10),question:questionHash(choices)};
+    exam.recorded={date:new Date().toISOString().slice(0,10)};
     for(const item of exam.cases){const reply=replies.get(item.id);if(reply)item.jev=reply;else delete item.jev;}
     fs.writeFileSync(examPath(),JSON.stringify(exam,null,2)+'\n');
     process.stdout.write(`已保存 Jev 回答到 ${examPath()}。\n`);

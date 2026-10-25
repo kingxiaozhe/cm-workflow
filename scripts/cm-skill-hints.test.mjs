@@ -215,7 +215,8 @@ const PHRASES=[
   ['在这个仓库里加多币种，逼问我把技术方案理清','grill-with-docs','cm-challenge'],
   ['帮我定一下技术方案，存储用 SQLite 还是 JSON','grill-with-docs','cm-challenge'],
   ['help me think this through for the codebase','grill-with-docs','cm-challenge'],
-  ['src/storage 下面拆了五个小文件，接口太碎了。帮我想想怎么设计一个更深的模块接口。','improve-codebase-architecture','cm-refactor'],
+  // One module's interface is codebase-design (model-invocable), not the whole-codebase report.
+  ['src/storage 下面拆了五个小文件，接口太碎了。帮我想想怎么设计一个更深的模块接口。',null,null],
   ['代码太乱了，不知道从哪重构','improve-codebase-architecture','cm-refactor'],
   ['the architecture is a mess, where to start refactoring?','improve-codebase-architecture','cm-refactor'],
   ['我拿不准预算状态机对不对，做个能点着玩的原型让我看看。','prototype',null],
@@ -240,7 +241,7 @@ const CHATTER=['今天天气怎么样','把这行改成中文','帮我看看这�
 
 test('shipped table: real phrasings hint the author skill when it is installed',async t=>{
   const f=shipped(t);
-  for(const [prompt,skill] of PHRASES)assert.deepEqual(await f.hints(prompt),[skill],prompt);
+  for(const [prompt,skill] of PHRASES)assert.deepEqual(await f.hints(prompt),skill?[skill]:[],prompt);
 });
 
 test('shipped table: without the author skill it falls back to the CM counterpart, or stays quiet',async t=>{
@@ -698,9 +699,12 @@ function invoking(t,{installed=['handoff','wayfinder'],local,answer={none:1},key
     authorSkills:installed.flatMap(name=>[['.claude/skills',name],['.agents/skills',name]])});
   const calls=[];
   const fetchImpl=async(url,options)=>{
-    calls.push(JSON.parse(options.body));
+    const sent=JSON.parse(options.body);
+    calls.push(sent);
     if(answer instanceof Error)throw answer;
-    return new Response(JSON.stringify({answers:{skill:{type:'choice',probabilities:answer}}}),{status:200});
+    // Options the test leaves out get 0, so every option asked has a probability.
+    const probabilities=Object.fromEntries(Object.keys(sent.questions.skill.criteria).map(label=>[label,answer[label]??0]));
+    return new Response(JSON.stringify({answers:{skill:{type:'choice',probabilities}}}),{status:200});
   };
   const loadAuthor=async()=>({...(await loadAuthorCheck()),skills:f.authorOptions.skills,license:f.authorOptions.license});
   const run=async(prompt,{host='claude',session='s1',loadJudgeModule}={})=>{
@@ -744,13 +748,13 @@ test('Jev decides when it answers: a keyword match it calls none starts and hint
 
 test('when Jev fails, the invoke rule\'s keywords decide, and the failure is logged without text',async t=>{
   const f=invoking(t,{answer:new TypeError('fetch failed')});
-  const out=await f.run('会话太长了，密码是 hunter2');
+  const out=await f.run('会话太长了，换个会话接着做');
   assert.equal(out.systemMessage,'🤖 技能自动调用：已让模型用 /handoff');
   assert.equal(f.calls.length,2);
   assert.deepEqual(f.log().map(({event,via,error,skill,mode})=>({event,via,error,skill,mode})),[
     {event:'judge-error',via:undefined,error:'network',skill:undefined,mode:undefined},
     {event:'invoke',via:'keyword',error:undefined,skill:'handoff',mode:'direct'}]);
-  assert.doesNotMatch(fs.readFileSync(logFile(f.env),'utf8'),/hunter2|会话太长|fake-key/);
+  assert.doesNotMatch(fs.readFileSync(logFile(f.env),'utf8'),/会话太长|换个会话|fake-key/);
   assert.equal(await f.run('今天先到这',{session:'s2'}),null);
 });
 
@@ -759,8 +763,12 @@ test('a message with a credential never reaches Jev; keywords still work',async 
   const secret='sk-'+'Q1w2E3r4'.repeat(3);
   assert.equal((await f.run(`会话太长了，key 是 ${secret}`)).systemMessage,'🤖 技能自动调用：已让模型用 /handoff');
   assert.equal(await f.run(`换个话题，key 是 ${secret}`,{session:'s2'}),null);
+  assert.equal(await f.run('换个话题，密码是 hunter2',{session:'s3'}),null);
+  // The TypeSafe key itself, whatever its shape.
+  assert.equal(await f.run('帮我看看配置里的 fake-key 对不对',{session:'s4'}),null);
   assert.equal(f.calls.length,0);
-  assert.deepEqual(f.log().filter(entry=>entry.event==='judge-error').map(entry=>entry.error),['secret','secret']);
+  assert.deepEqual(f.log().filter(entry=>entry.event==='judge-error').map(entry=>entry.error),['secret','secret','secret','secret']);
+  assert.doesNotMatch(fs.readFileSync(logFile(f.env),'utf8'),/hunter2|Q1w2E3r4|fake-key/);
 });
 
 test('nothing is judged or added when the message opens with a command or is too long',async t=>{

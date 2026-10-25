@@ -24,7 +24,10 @@ export const NONE='none';
 const KEY_NAME='TYPESAFE_API_KEY';
 
 // Shapes of credentials people paste by accident. A false alarm only costs the Jev
-// call (keywords still run), so these lean towards catching too much.
+// call (keywords still run), so these lean towards catching too much. It is a
+// heuristic: a credential with no recognisable shape and no credential word nearby
+// can still pass, which the docs say.
+const CREDENTIAL_WORD='(?:api[_ -]?key|secret|token|passw(?:or)?d|pwd|passcode|access[_ -]?key|private[_ -]?key|credential|密钥|秘钥|密码|口令|令牌|凭证|凭据)';
 const SECRET_PATTERNS=[
   /\bsk-[A-Za-z0-9_-]{16,}/,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/,
@@ -34,13 +37,17 @@ const SECRET_PATTERNS=[
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
   /\bBearer\s+[A-Za-z0-9._~+/-]{16,}/i,
-  /(?:api[_-]?key|secret|token|passw(?:or)?d|pwd|access[_-]?key|密钥|密码|口令|令牌)["'\s]*[:=：]\s*["']?[^\s"'，。]{6,}/i,
+  // "密码：x", "api_key = x", and in words: "密钥是 x", "my password is x".
+  new RegExp(`${CREDENTIAL_WORD}["'\\s]*(?:[:=：]|是|为|is|was|=>)\\s*["'“]?[^\\s"'”，。]{6,}`,'i'),
 ];
+const CREDENTIAL_NEAR=new RegExp(CREDENTIAL_WORD,'i');
 // A long run of letters and digits mixing cases and digits looks like a token; plain hex
 // (commit ids, hashes) does not.
 const tokenLike=word=>word.length>=32&&!/^[0-9a-f]+$/i.test(word)&&/[a-z]/.test(word)&&/[A-Z]/.test(word)&&/\d/.test(word);
+// With a credential word anywhere in the message, any long run counts, hex included.
 export const hasSecret=text=>SECRET_PATTERNS.some(pattern=>pattern.test(text))
-  ||(text.match(/[A-Za-z0-9_+/=-]{32,}/g)??[]).some(tokenLike);
+  ||(text.match(/[A-Za-z0-9_+/=-]{32,}/g)??[]).some(tokenLike)
+  ||(CREDENTIAL_NEAR.test(text)&&/[A-Za-z0-9_+/=-]{24,}/.test(text));
 
 // The key comes from TYPESAFE_API_KEY, else (macOS only) the login keychain, the same
 // place jev-mcp reads. Empty when neither has it.
@@ -71,6 +78,9 @@ export function question(choices){
   return {type:'choice',instructions:'用户这条消息是在请求下面哪一件事？只看用户本人此刻要做什么。',criteria};
 }
 
+// Exactly what is sent; the exam's recordings are keyed by its hash.
+export const requestBody=(prompt,choices)=>JSON.stringify({model:JEV_MODEL,state:clip(prompt),questions:{skill:question(choices)}});
+
 // {skill, probability} when Jev answered (skill null = none of them), else {error}.
 // `choices` is [{skill, when, near?}]; `when` describes the situation in the user's words.
 export async function judge({prompt,choices,env=process.env,fetchImpl=globalThis.fetch,key,
@@ -80,9 +90,11 @@ export async function judge({prompt,choices,env=process.env,fetchImpl=globalThis
   const started=now();
   const token=key??apiKey(env);
   if(!token)return {error:'no-key'};
+  // The key in use is the one credential known for sure: a message holding it stays local.
+  if(prompt.includes(token))return {error:'secret'};
   const left=budgetMs-(now()-started);
   if(left<=50)return {error:'timeout'};
-  const body=JSON.stringify({model:JEV_MODEL,state:clip(prompt),questions:{skill:question(choices)}});
+  const body=requestBody(prompt,choices);
   return new Promise(resolve=>{
     const controllers=[];
     let settled=false;
@@ -104,7 +116,8 @@ export async function judge({prompt,choices,env=process.env,fetchImpl=globalThis
       fetchImpl(JEV_URL,{method:'POST',signal:controller.signal,
         headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body})
         .then(async response=>{
-          if(response.status>=500)throw Object.assign(new Error('server'),{category:'http-5xx'});
+          // Overloaded or rate-limited is worth the second request; other client errors are not.
+          if(response.status>=500||response.status===429)throw Object.assign(new Error('server'),{category:`http-${response.status===429?'429':'5xx'}`});
           if(!response.ok)return finish({error:'http-4xx'});
           let reply;
           try{reply=await response.json();}catch{return finish({error:'bad-reply'});}
@@ -124,15 +137,20 @@ export async function judge({prompt,choices,env=process.env,fetchImpl=globalThis
   });
 }
 
+// A reply counts only when it gives a probability in [0, 1] for every option asked;
+// anything else is bad-reply, so the caller falls back to keywords instead of taking
+// a malformed answer as "none" or as a skill.
 function read(reply,choices){
-  const answer=reply?.answers?.skill;
-  const probabilities=answer?.probabilities;
-  if(!probabilities||typeof probabilities!=='object')return {error:'bad-reply'};
+  const probabilities=reply?.answers?.skill?.probabilities;
+  if(!probabilities||typeof probabilities!=='object'||Array.isArray(probabilities))return {error:'bad-reply'};
+  const asked=Object.keys(question(choices).criteria);
+  const valid=label=>typeof probabilities[label]==='number'&&probabilities[label]>=0&&probabilities[label]<=1;
+  if(!asked.every(valid))return {error:'bad-reply'};
   let best=null;
   for(const choice of choices){
-    const p=Number(probabilities[choice.skill]);
-    if(Number.isFinite(p)&&(!best||p>best.probability))best={skill:choice.skill,probability:p};
+    const p=probabilities[choice.skill];
+    if(!best||p>best.probability)best={skill:choice.skill,probability:p};
   }
-  if(!best||best.probability<THRESHOLD)return {skill:null,probability:Number(probabilities[NONE])||0};
+  if(best.probability<THRESHOLD)return {skill:null,probability:probabilities[NONE]};
   return best;
 }

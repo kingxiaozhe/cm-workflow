@@ -43,7 +43,7 @@
       "author": true,
       "invoke": {"mode": "ask", "when": "请求对整个代码库做一次架构体检：找出全局哪些地方值得重构或加深、出一份架构改进报告", "near": "只针对某一个模块、目录或文件，讨论它的接口怎么设计、怎么拆分或怎么测试；或者只是让解释现有架构"},
       "keywords": [],
-      "patterns": ["^(?![\\s\\S]*(只整理结构|不改变行为|不改行为|重构一下|refactor without changing behavior))[\\s\\S]*(接口太碎|模块太碎|拆得太碎|架构(太|很|好)?乱|代码(太|很)乱|不知道从哪(里|儿)?(开始|下手)?重构|从哪(里|儿)?(开始|下手)重构|想整理(一下)?代码结构|改善(一下)?架构|优化(一下)?架构|架构(该)?怎么改|耦合太(重|严重|紧)|模块边界不清|越写越乱|improve (the )?(codebase )?architecture|architecture is a mess|codebase is a mess|where to start refactoring|too many shallow modules)"],
+      "patterns": ["^(?![\\s\\S]*(只整理结构|不改变行为|不改行为|重构一下|refactor without changing behavior))[\\s\\S]*(拆得太碎|架构(太|很|好)?乱|代码(太|很)乱|不知道从哪(里|儿)?(开始|下手)?重构|从哪(里|儿)?(开始|下手)重构|想整理(一下)?代码结构|改善(一下)?架构|优化(一下)?架构|架构(该)?怎么改|耦合太(重|严重|紧)|模块边界不清|越写越乱|improve (the )?(codebase )?architecture|architecture is a mess|codebase is a mess|where to start refactoring|too many shallow modules)"],
       "reason": "先找出值得重构的地方，出一份报告再动手",
       "fallback": {"skill": "cm-refactor", "reason": "按边界分批重构，用行为判官保证行为不变"}
     },
