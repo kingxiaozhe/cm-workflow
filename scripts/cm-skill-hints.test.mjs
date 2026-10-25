@@ -190,6 +190,8 @@ test('the shipped table loads cleanly and every rule resolves to a CM skill or a
   }
   for(const rule of table.rules.filter(rule=>rule.fallback))assert.ok(skills.has(rule.fallback.skill));
   // A message naming the skill is never hinted, so such a keyword could never fire.
+  // Anchored patterns scan the message once, which keeps the shared regex budget.
+  for(const rule of table.rules)for(const source of rule.patterns??[])assert.ok(source.startsWith('^'),`${rule.id} 有未锚定的正则`);
   for(const rule of table.rules)for(const word of rule.keywords)assert.ok(!word.toLowerCase().includes(rule.skill),`${rule.id} 的关键词「${word}」含技能名，永远不会触发`);
   // Installed-or-not is decided by the pinned fingerprint, so an author rule must name a pinned skill.
   const pinned=new Set(SKILLS.map(skill=>skill.name));
@@ -223,6 +225,7 @@ const PHRASES=[
   ['不要讲原型链，给我做个预算页面原型。','prototype',null],
   ['上下文快用完了，写个交接吧','handoff',null],
   ['写个交接，下个会话接着做','handoff',null],
+  ['这个会话快满了，写个交接。','handoff',null],
   ["we're running out of context, let's continue in a new session",'handoff',null],
   ['这个改造一个会话做不完，拆成几个会话推进','wayfinder','cm-prd'],
   ['this is too big for one session','wayfinder','cm-prd'],
@@ -230,7 +233,8 @@ const PHRASES=[
 const CHATTER=['今天天气怎么样','把这行改成中文','帮我看看这个报错是什么意思','提交一下代码','这个函数是做什么的',
   'JS 的原型链怎么理解','用 jmeter 给登录接口做压力测试','这个方案我已经想清楚了，直接写吧','右键的上下文菜单点不开','帮我把按钮颜色改成蓝色',
   '帮我写个压力测试方案','做个原型链的例子','我明天要和同事交接，帮我写一份交接文档。',
-  '用 JavaScript 做个原型继承的例子。','帮我写同事离职交接文档，需要补充项目上下文。','修好右键上下文菜单后，写一份给同事的交接文档。','做一个原型对象，演示 Object.create 怎么继承属性。',
+  '用 JavaScript 做个原型继承的例子。','帮我写同事离职交接文档，需要补充项目上下文。','修好右键上下文菜单后，写一份给同事的交接文档。',
+  '帮我写同事离职交接文档，附上项目上下文快照。','交接文档里的项目上下文要怎么整理？','做一个用完就扔的原型对象，演示原型继承。','做一个原型对象，演示 Object.create 怎么继承属性。',
   '用 JMeter 压力测试一下这个方案的登录接口，记录吞吐量和 P99。','这个方案上线前要压力测试一下并发','what is the weather today','rename this variable'];
 
 test('shipped table: real phrasings hint the author skill when it is installed',async t=>{
