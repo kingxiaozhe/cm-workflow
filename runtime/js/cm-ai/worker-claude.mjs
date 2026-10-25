@@ -39,7 +39,9 @@ export function claudeReviewFingerprint({cwd,model,cli='claude',effort=null,veri
 export function claudeEnvironment() {
   const allowed=['PATH','HOME','USER','LOGNAME','TMPDIR','LANG','LC_ALL','ANTHROPIC_API_KEY'];
   return {...Object.fromEntries(Object.entries(process.env).filter(([key])=>allowed.includes(key))),
-    CLAUDE_CODE_MAX_RETRIES:'0',CLAUDE_CODE_RETRY_WATCHDOG:'0'};
+    CLAUDE_CODE_MAX_RETRIES:'0',CLAUDE_CODE_RETRY_WATCHDOG:'0',
+    // CM's own sessions are not a person typing: the skill-hints hook stays out of them.
+    CM_SKILL_HINTS:'off'};
 }
 export function claudePreflightMatches(receipt,options) {
   return receipt?.passed===true && receipt.provider==='claude'
