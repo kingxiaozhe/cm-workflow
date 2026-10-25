@@ -16,7 +16,7 @@ for(const mode of ['repair','limit','scope'])test(`bounded self-check revision: 
       drafts++;assert.equal(payload.revision===null,drafts===1);
       return {status:'draft',summary:'Guide',features:[{name:mode==='scope'&&drafts===2?'outside':'guide',testCasesReason:'no_observable_behavior',
         documents:[{path:'requirements.md',content:'- [ ] [AC-001] Document setup.'},
-          {path:'tasks.md',content:'- [ ] T-001: Update guide'},{path:'design.md',content:`# Design v${drafts}`}]}]};
+          {path:'tasks.md',content:'- [ ] T-001: Update guide\n  - 范围: `README.md`'},{path:'design.md',content:`# Design v${drafts}`}]}]};
     },checkContext:async({draft})=>{
       checks++;return {draftDigest:draft.draftDigest,features:draft.features.map(feature=>({directory:feature.directory,
         checks:draft.mechanicalSelfCheck.pending.map((id,index)=>({id,status:index===0&&(checks===1||mode==='limit')?'failed':'passed',

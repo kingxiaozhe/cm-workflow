@@ -31,7 +31,7 @@ async function fixture(t){
     analyze:async()=>({status:'analyzed',summary:'Synthetic batch',sourcePaths:['docs/input.md'],openQuestions:[]}),
     generate:async()=>({status:'draft',summary:'Synthetic batch',features:['alpha','beta'].map(name=>({name,
       testCasesReason:'no_observable_behavior',documents:[{path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Explain setup.'},
-        {path:'design.md',content:'## 方案摘要\nDocumentation'},{path:'tasks.md',content:'- [ ] T-001: Explain setup'}]}))}),checkContext:async p=>checked(p)};
+        {path:'design.md',content:'## 方案摘要\nDocumentation'},{path:'tasks.md',content:'- [ ] T-001: Explain setup\n  - 范围: `README.md`'}]}))}),checkContext:async p=>checked(p)};
   const analysis=createCmPrdAnalysis(options);await analysis.advance('Analyze');await analysis.plan('Draft');await analysis.verify();
   savePrdDraft({specs:entry.specs,writeEnabled:true,getDraft:()=>analysis.currentDraftForSave()});
   const prepare=()=>analysis.prepareReview('split','1.alpha');

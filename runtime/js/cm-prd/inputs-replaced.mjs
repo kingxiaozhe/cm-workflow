@@ -77,6 +77,9 @@ export function replacePrdInputs({session,sessionId,approved,reason,successorSpe
       if(required){const gate=inspectPrdReview({stage,feature:slug,evidence:path.join(base,prefix+'-r1.md'),receipt:path.join(base,prefix+'-disposition.json')});
         if(gate.outcome!=='completed')unreviewed.push({feature,stage,outcome:gate.outcome});}
     }
+    // The save's task-scope record decides how later re-checks run; keep it with the reviews.
+    const scopeRecord=`.reviews/prd-${slug}-task-scope.json`,scopeBytes=readCmInitSource(entry.specs,scopeRecord);
+    if(scopeBytes!==null)reviewRecords.push({path:scopeRecord,sha256:sha(scopeBytes),bytes:scopeBytes.toString('base64')});
   }
   const body=json({version:1,status:'inputs_replaced',sessionId,reason,request,oldInputs,replacementInputs,
     successor:{sessionId:successorSessionId,entry:nextEntry,runtime,inputs:inputs(nextEntry)},features,reviewRecords,unreviewed,sessionState},limit);

@@ -1366,6 +1366,12 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 | 组内任意两任务之间不存在依赖路径（按 `tasks.md` 依赖图的传递闭包判定） | `parallel_dependency_conflict` |
 | 组内各任务 `scope` 两两不含相同路径 | `parallel_scope_overlap` |
 | 该 feature 最后一个未 DROPPED 的任务不得进组，且必须在 `tasks` 内 | `parallel_final_task_excluded` |
+| 新批次的成员必须在 `tasks.md` 写了 `- 范围:`（不是 `串行`） | `parallel_scope_undeclared` |
+| 新批次的成员不得标 `- 设备: 需要` | `parallel_device_task` |
+
+`tasks.md` 为某任务写了范围时，batch 配置里该任务的 scope 必须与它相同（顺序不限），否则建批次时报
+`task_scope_mismatch`；单任务 `--print-run-definition` 直接取用它。后两条组规则只对尚未写 `batch_start` 的新批次生效，
+升级前已开始的批次按原规则恢复。
 
 末任务被排除，是因为成员 QA 会延后到它那里统一执行。
 

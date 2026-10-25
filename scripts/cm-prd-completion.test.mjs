@@ -7,9 +7,11 @@ import {spawn,spawnSync} from 'node:child_process';
 import {once} from 'node:events';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
+import {semanticDigest} from './cm-spec-manifest.mjs';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange,assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {recordPrdReview} from './cm-prd-review-gate.mjs';
+import {parseFeatureTaskText} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 
 // Keep runtime declarations and log mirrors independent of the invoking user's home.
 const isolatedWorkflowHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-completion-home-'));
@@ -21,9 +23,9 @@ const version='\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08
 const docs=()=>[
   {path:'requirements.md',content:'## 需求版本'+version+'\n## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Read guide\n'},
   {path:'design.md',content:'## 设计版本'+version+'\n## 方案摘要\nExisting guide\n'},
-  {path:'tasks.md',content:'## 任务版本'+version+'\n- [x] T-001: Existing guide\n- [ ] T-002: Draft appendix\n'}];
+  {path:'tasks.md',content:'## 任务版本'+version+'\n- [x] T-001: Existing guide\n  - 范围: `README.md`\n- [ ] T-002: Draft appendix\n  - 范围: `README.md`\n'}];
 const revised=()=>docs().map(doc=>({path:doc.path,content:doc.content.replace('| 2026-09-08 | v1 | original |','| 2026-09-08 | v1 | original |\n| 2026-09-08 | v2 | change |')
-  .replace('Existing guide\n','Existing guide\n')+(doc.path==='tasks.md'?'\n- [ ] T-003: [NEW] Add example\n':'\nUpdated example\n')}));
+  .replace('Existing guide\n','Existing guide\n')+(doc.path==='tasks.md'?'\n- [ ] T-003: [NEW] Add example\n  - 范围: `README.md`\n':'\nUpdated example\n')}));
 function fixture(t){const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-complete-')));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));fs.mkdirSync(path.join(dir,'docs'));fs.mkdirSync(path.join(dir,'mirror'));
   fs.writeFileSync(path.join(dir,'docs/input.md'),'Synthetic guide');fs.mkdirSync(path.join(dir,'1.guide'));
@@ -103,7 +105,7 @@ test('approved change retains revision history for the next real cm-prd change',
   assert.doesNotThrow(()=>assertPrdReviewsSettled(dir,['1.guide'],{requireSplit:true}));
   const nextDocs=revised().map(doc=>({path:doc.path,content:doc.content.replace('| 2026-09-08 | v2 | change |',
       '| 2026-09-08 | v2 | change |\n| 2026-09-08 | v3 | another change |')+
-      (doc.path==='tasks.md'?'\n- [ ] T-004: [NEW] More examples\n':'\nMore detail\n')}));
+      (doc.path==='tasks.md'?'\n- [ ] T-004: [NEW] More examples\n  - 范围: `README.md`\n':'\nMore detail\n')}));
   const nextBefore=inspectPrdChangeSnapshot(dir);
   const nextProposal=inspectPrdChangeProposal(nextBefore,{status:'draft',summary:'Another guide change',removed:[],features:[
     {directory:'1.guide',documents:nextDocs,testCasesReason:'no_observable_behavior'}]},selected,config);
@@ -134,11 +136,18 @@ test('controlled inventory revision retains old review and archives removed feat
   fs.writeFileSync(evidence,'---\nat: 2026-09-08T00:00:00Z\nreviewer: codex-subagent\nindependent: true\nscope:\n  - 1.guide/tasks.md\n---\nSynthetic original review',{mode:0o600});
   recordPrdReview({stage:'split',feature:'guide',evidence,receipt,disposition:'no_findings',finding_count:0,unresolved_count:0,
     artifact:docs().map(doc=>path.join(dir,'1.guide',doc.path))});
+  // The approval covers 1.guide's tasks, so they may stay without scope in the change.
+  fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2,features:['1.guide','2.obsolete'],
+    specFiles:[{path:'1.guide/tasks.md',sha256:semanticDigest(path.join(dir,'1.guide/tasks.md'))}]}),{mode:0o600});
   const originalReview=fs.readFileSync(evidence),before=inspectPrdChangeSnapshot(dir),raw={status:'draft',summary:'Explicit inventory revision',removed:['2.obsolete'],features:[
     {directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'},
     {directory:'3.examples',documents:docs().map(doc=>({...doc,content:doc.content.replace('[x]','[ ]')})),testCasesReason:'no_observable_behavior'}]};
   const selected=['1.guide','2.obsolete'],proposal=inspectPrdChangeProposal(before,raw,selected,loadConfig({projectRoot:dir}));
   const result=applyPrdChange({specs:dir,before,proposal,selected});assert.deepEqual(result.features,['1.guide','3.examples']);
+  // Later re-checks of these files keep the scope rule; approved tasks stay exempt.
+  const record=name=>JSON.parse(fs.readFileSync(path.join(dir,`.reviews/prd-${name}-task-scope.json`),'utf8'));
+  assert.deepEqual(record('guide').exempt,parseFeatureTaskText(before.files['1.guide/tasks.md']).tasks.map(task=>task.id).sort());
+  assert.deepEqual(record('examples').exempt,[]);
   assert.ok(fs.readFileSync(evidence).equals(originalReview));assert.equal(fs.existsSync(path.join(dir,'2.obsolete')),false);
   assert.equal(fs.readFileSync(path.join(dir,`.reviews/prd-change-${proposal.proposalDigest}-removed/2.obsolete/asset.txt`),'utf8'),'original retained asset');
   assert.equal(applyPrdChange({specs:dir,before,proposal,selected}).status,'awaiting_review');
@@ -146,11 +155,42 @@ test('controlled inventory revision retains old review and archives removed feat
   assert.throws(()=>applyPrdChange({specs:dir,before,proposal,selected}),/conflict/);
   assert.equal(fs.readFileSync(path.join(dir,'1.guide/design.md'),'utf8'),'User third version');
 });
+// A session's snapshot keeps its own version: one taken before scope records were
+// bound still matches; a version-2 snapshot notices a changed record.
+test('change snapshot binds scope records only from version 2; earlier snapshots still resume',t=>{
+  const dir=fixture(t),config=loadConfig({projectRoot:dir}),selected=['1.guide'];
+  fs.mkdirSync(path.join(dir,'.reviews'));const record=path.join(dir,'.reviews/prd-guide-task-scope.json');
+  fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:[]})+'\n',{mode:0o600});
+  const current=inspectPrdChangeSnapshot(dir);assert.equal(current.snapshotVersion,2);assert.ok(current.scopeRecords['1.guide']);
+  const {snapshotVersion,scopeRecords,...legacy}=current;
+  const raw={status:'draft',summary:'Change',removed:[],features:[{directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'}]};
+  const fresh=inspectPrdChangeProposal(current,raw,selected,config);
+  fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n',{mode:0o600});
+  assert.throws(()=>applyPrdChange({specs:dir,before:current,proposal:fresh,selected}),/prd_change_inputs_changed/);
+  // Unversioned with scopeRecords (bound only when a record existed): unchanged resumes, drift is refused.
+  const unversioned={...legacy,scopeRecords:{'1.guide':JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n'}};
+  const middle=inspectPrdChangeProposal(unversioned,raw,selected,config);
+  fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:[]})+'\n',{mode:0o600});
+  assert.throws(()=>applyPrdChange({specs:dir,before:unversioned,proposal:middle,selected}),/prd_change_inputs_changed/);
+  fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:['T-001']})+'\n',{mode:0o600});
+  // Neither field: the oldest shape binds no record.
+  const old=inspectPrdChangeProposal(legacy,raw,selected,config);
+  assert.equal(applyPrdChange({specs:dir,before:legacy,proposal:old,selected}).status,'awaiting_review');
+});
+test('an unversioned snapshot with scopeRecords resumes while its records are unchanged',t=>{
+  const dir=fixture(t),config=loadConfig({projectRoot:dir}),selected=['1.guide'];
+  fs.mkdirSync(path.join(dir,'.reviews'));
+  fs.writeFileSync(path.join(dir,'.reviews/prd-guide-task-scope.json'),JSON.stringify({version:1,enforced:true,exempt:[]})+'\n',{mode:0o600});
+  const {snapshotVersion,...unversioned}=inspectPrdChangeSnapshot(dir);
+  const raw={status:'draft',summary:'Change',removed:[],features:[{directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'}]};
+  const proposal=inspectPrdChangeProposal(unversioned,raw,selected,config);
+  assert.equal(applyPrdChange({specs:dir,before:unversioned,proposal,selected}).status,'awaiting_review');
+});
 test('change cannot invent completion or erase completed lines; user case changes are surfaced',t=>{
   const dir=fixture(t),before=inspectPrdChangeSnapshot(dir),config=loadConfig({projectRoot:dir});
   const raw={status:'draft',summary:'Change',removed:[],features:[{directory:'1.guide',documents:revised(),testCasesReason:'no_observable_behavior'}]};
   for(const mode of ['erase','invent']){const bad=structuredClone(raw);const task=bad.features[0].documents.find(doc=>doc.path==='tasks.md');
-    task.content=mode==='erase'?task.content.replace('[x]','[ ]'):task.content.replace('- [ ] T-002: Draft appendix','- [x] T-002: Draft appendix [CHANGED]');
+    task.content=mode==='erase'?task.content.replace('[x]','[ ]'):task.content.replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [x] T-002: Draft appendix [CHANGED]');
     assert.throws(()=>inspectPrdChangeProposal(before,bad,['1.guide'],config),/prd_completed_task/);}
   const synthetic={...before,files:{...before.files,'1.guide/test-cases.json':JSON.stringify({cases:[{id:'TC-001',origin:'user',expected:'Original user intent'}]})}};
   const proposal=inspectPrdChangeProposal(synthetic,raw,['1.guide'],config);assert.equal(proposal.changedUserCases.length,1);
@@ -173,12 +213,13 @@ test('change guards completed tasks written without a colon or with a full-width
 // approval an unfenced full-width example is prose, not the completed task.
 test('change guard reads the approved original with the legacy grammar',t=>{
   const dir=fixture(t),config=loadConfig({projectRoot:dir}),example='- [ ] T-001：旧写法示例';
-  fs.writeFileSync(path.join(dir,'1.guide/tasks.md'),docs()[2].content.replace('- [x] T-001: Existing guide\n',
-    `- [x] T-001: Existing guide\n${example}\n`),{mode:0o600});
+  // The example sits after T-001's own sub-item, so it never splits a task from its scope.
+  const owned='- [x] T-001: Existing guide\n  - 范围: `README.md`\n';
+  fs.writeFileSync(path.join(dir,'1.guide/tasks.md'),docs()[2].content.replace(owned,`${owned}${example}\n`),{mode:0o600});
   const before=inspectPrdChangeSnapshot(dir),task=revised().find(doc=>doc.path==='tasks.md');
   const fenced={status:'draft',summary:'Fence the old example',removed:[],features:[{directory:'1.guide',
-    documents:revised().map(doc=>doc.path==='tasks.md'?{...doc,content:task.content.replace('- [x] T-001: Existing guide\n',
-      `- [x] T-001: Existing guide\n\`\`\`md\n${example}\n\`\`\`\n`)}:doc),testCasesReason:'no_observable_behavior'}]};
+    documents:revised().map(doc=>doc.path==='tasks.md'?{...doc,content:task.content.replace(owned,
+      `${owned}\`\`\`md\n${example}\n\`\`\`\n`)}:doc),testCasesReason:'no_observable_behavior'}]};
   const proposal=inspectPrdChangeProposal(before,fenced,['1.guide'],config);
   assert.equal(proposal.proposalDigest.length,64);
 });
@@ -186,11 +227,13 @@ test('change guard reads the approved original with the legacy grammar',t=>{
 // last approval bound, carried through the awaiting_review status of the first.
 function sharedGrammarFixture(t){
   const dir=fixture(t),tasks=path.join(dir,'1.guide/tasks.md');
-  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix','- [ ] T-002：Draft appendix'),{mode:0o600});
-  fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2}),{mode:0o600});
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix'),{mode:0o600});
+  // A real approval lists the approved bytes; its tasks may stay without scope in a change.
+  fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',taskGrammar:2,features:['1.guide'],
+    specFiles:[{path:'1.guide/tasks.md',sha256:semanticDigest(tasks)}]}),{mode:0o600});
   return dir;
 }
-const fullWidth=docs=>docs.map(doc=>doc.path==='tasks.md'?{...doc,content:doc.content.replace('- [ ] T-002: Draft appendix','- [ ] T-002：Draft appendix')}:doc);
+const fullWidth=docs=>docs.map(doc=>doc.path==='tasks.md'?{...doc,content:doc.content.replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix')}:doc);
 const status=dir=>JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'),'utf8'));
 test('a second change of the same feature before re-approval keeps the approved grammar',t=>{
   const dir=sharedGrammarFixture(t),config=loadConfig({projectRoot:dir}),selected=['1.guide'];
@@ -201,7 +244,7 @@ test('a second change of the same feature before re-approval keeps the approved 
   applyPrdChange({specs:dir,before,proposal,selected});
   assert.equal(status(dir).status,'awaiting_review');assert.equal(status(dir).taskGrammar,2);
   const second=first.map(doc=>({...doc,content:doc.content+'\n| 2026-09-08 | v3 | again |\n'
-    +(doc.path==='tasks.md'?'- [ ] T-004: [NEW] Another example\n':'Again\n')}));
+    +(doc.path==='tasks.md'?'- [ ] T-004: [NEW] Another example\n  - 范围: `README.md`\n':'Again\n')}));
   before=inspectPrdChangeSnapshot(dir);
   proposal=inspectPrdChangeProposal(before,{status:'draft',summary:'Second',removed:[],features:[{directory:'1.guide',
     documents:second,testCasesReason:'no_observable_behavior'}]},selected,config);
@@ -222,7 +265,7 @@ test('a second change of another feature before re-approval still carries the ap
 });
 test('an unapproved legacy status never switches the change guard to the shared grammar',t=>{
   const dir=fixture(t),config=loadConfig({projectRoot:dir}),tasks=path.join(dir,'1.guide/tasks.md');
-  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix','- [ ] T-002：Draft appendix'),{mode:0o600});
+  fs.writeFileSync(tasks,fs.readFileSync(tasks,'utf8').replace('- [ ] T-002: Draft appendix\n  - 范围: `README.md`','- [ ] T-002：Draft appendix'),{mode:0o600});
   fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'awaiting_review'}),{mode:0o600});
   const before=inspectPrdChangeSnapshot(dir);
   // Under the old grammar the full-width line is prose, so rewriting it as a

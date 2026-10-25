@@ -91,9 +91,30 @@ test('print-run-definition requires explicit scope and emits no draft when omitt
   fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],testCases:[]}));
   const result=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,
     '--print-run-definition'],{encoding:'utf8'});
-  assert.equal(result.status,2);
+  // Without a scope in tasks.md the session must still name the files.
+  assert.equal(result.status,1);
   assert.equal(result.stdout,'');
-  assert.equal(result.stderr,'--print-run-definition 需要 --scope：本任务允许修改的文件，相对代码根，逗号分隔（例：--scope src/todos.js,test/todos.test.js）\n');
+  const error=JSON.parse(result.stderr).error;
+  assert.equal(error.code,'scope_required');
+  assert.match(error.reason,/--print-run-definition 需要 --scope：本任务允许修改的文件，相对代码根，逗号分隔/);
+}));
+
+test('print-run-definition takes the scope tasks.md declares and refuses a different --scope',()=>fixture(({specs,code})=>{
+  fs.writeFileSync(path.join(specs,'1.login','tasks.md'),'- [ ] T-001: implement login\n  - 范围: `src/login.js`, `test/login.test.js`\n  - 测试文件: `test/login.test.js`\n');
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],testCases:[]}));
+  const run=(...extra)=>spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--print-run-definition',...extra],{encoding:'utf8'});
+  const declared=run();
+  assert.equal(declared.status,0,declared.stderr);
+  assert.deepEqual(JSON.parse(declared.stdout).scope,['src/login.js','test/login.test.js']);
+  // The same files in another order are the same scope.
+  assert.equal(run('--scope','test/login.test.js,src/login.js').status,0);
+  const different=run('--scope','src/login.js');
+  assert.equal(different.status,1);assert.equal(different.stdout,'');
+  assert.equal(JSON.parse(different.stderr).error.code,'task_scope_mismatch');
+  // A malformed scope sub-item refuses instead of falling back to --scope.
+  fs.writeFileSync(path.join(specs,'1.login','tasks.md'),'- [ ] T-001: implement login\n  - 范围: `src/*.js`\n');
+  const invalid=run('--scope','src/login.js');
+  assert.equal(invalid.status,1);assert.equal(JSON.parse(invalid.stderr).error.code,'task_scope_invalid');
 }));
 
 test('print-run-definition preserves non-ready admission output and exit status',()=>fixture(({specs,code})=>{
