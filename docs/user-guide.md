@@ -189,7 +189,7 @@ $cm-prd ~/projects/my-app-specs
 例外的任务直接在主目录串行：功能的最后一个任务、批次里最后执行的任务、标了 `- 设备: 需要` 的任务。
 有任务没写范围或是脚手架功能时，整个功能都在主目录串行。
 在 worktree 里开发的任务不逐个跑 QA，统一到功能最后一个任务跑一次。
-项目配置里写 `parallel: {worktreeAll: false}` 只让能同时开发的任务进 worktree，其余回到主目录串行；
+项目配置里写 `parallel: {worktree_all: false}` 只让能同时开发的任务进 worktree，其余回到主目录串行；
 写 `parallel: {enabled: false}` 完全不建 worktree；`max` 调每组人数（默认 2，最多 4）。
 只读探索可以并行；不满足上述条件时工作流自动串行。
 

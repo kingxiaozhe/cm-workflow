@@ -800,7 +800,7 @@ function taskDescription(config,definition){
 // tasks.md scope (written at split time) and never a device task. A batch that
 // started before that rule keeps resuming under the rules it began with.
 // A one-member group is a task developed alone in its own worktree (batch-plan.mjs
-// worktreeAll) under the same member rules. Batches written before it existed never
+// worktree_all) under the same member rules. Batches written before it existed never
 // contain one (they were refused), so their resume is unchanged.
 function validateGroups(config,plans,{declared=false}={}){
   const groups=config.parallel??[];need(Array.isArray(groups),'invalid_parallel_groups');const used=new Set();

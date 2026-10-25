@@ -20,14 +20,14 @@ function project(t,tasks,{feature='1.work',emptyCode=false}={}){
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   return {root,specsDir,codeProject,plan:(settings)=>planCmAiBatch({specsDir,codeProject,repositoryId:'r',batchId:'plan-batch-1',...(settings?{settings}:{})})};
 }
-// worktreeAll:false keeps the earlier planner: only groups of two or more.
-const legacy=Object.freeze({enabled:true,max:2,worktreeAll:false});
+// worktree_all:false keeps the earlier planner: only groups of two or more.
+const legacy=Object.freeze({enabled:true,max:2,worktree_all:false});
 // T-001 first; T-002 and T-003 each need only T-001; T-004 needs both.
 const diamond=(extra={})=>`- [ ] T-001: contract${scope('a.js')}\n- [ ] T-002: left${scope(extra.left??'b.js')}${extra.leftDevice?'\n  - 设备: 需要':''}\n`
   +`- [ ] T-003: right${scope(extra.right??'c.js')}\n- [ ] T-004: final${scope('d.js')}\n\n`
   +'- T-002 依赖 T-001\n- T-003 依赖 T-001\n- T-004 依赖 T-002, T-003\n';
 
-test('legacy (worktreeAll:false): the diamond groups its two independent middle tasks, and the batch host accepts the config',t=>{
+test('legacy (worktree_all:false): the diamond groups its two independent middle tasks, and the batch host accepts the config',t=>{
   const f=project(t,diamond()),plan=f.plan(legacy);
   assert.equal(plan.mode,'batch');assert.equal(plan.feature,'1.work');
   assert.deepEqual(plan.groups,[['T-002','T-003']]);
@@ -93,7 +93,7 @@ test('legacy: max bounds the group; a member needing a task still to run is not 
   assert.deepEqual(plan.config.batch.tasks.map(task=>task.taskId),['T-002','T-003','T-004']);assert.deepEqual(plan.groups,[['T-002','T-003']]);
 });
 
-test('worktreeAll (default): every task except the last ones and device tasks runs in its own worktree',t=>{
+test('worktree_all (default): every task except the last ones and device tasks runs in its own worktree',t=>{
   // Diamond: T-001 alone in a worktree, then T-002 + T-003 together; T-004 (the last) in the main checkout.
   const f=project(t,diamond()),plan=f.plan();
   assert.deepEqual(plan.groups,[['T-001'],['T-002','T-003']]);
@@ -128,10 +128,10 @@ test('worktreeAll (default): every task except the last ones and device tasks ru
     executionFor:async()=>({}),logHome:path.join(tailProject.root,'log')}),{code:'parallel_final_task_excluded'});
   // The feature's last task already done: no group at all, as before.
   assert.deepEqual(project(t,`- [ ] T-001: a${scope('a.js')}\n- [ ] T-002: b${scope('b.js')}\n- [x] T-003: final${scope('c.js')}\n`).plan().groups,[]);
-  // Off switches: worktreeAll:false keeps only real pairs; enabled:false plans no worktree at all.
-  assert.deepEqual(project(t,diamond()).plan({enabled:true,max:2,worktreeAll:false}).groups,[['T-002','T-003']]);
-  assert.deepEqual(project(t,chain).plan({enabled:true,max:2,worktreeAll:false}).groups,[]);
-  const off=project(t,diamond()).plan({enabled:false,max:2,worktreeAll:true});
+  // Off switches: worktree_all:false keeps only real pairs; enabled:false plans no worktree at all.
+  assert.deepEqual(project(t,diamond()).plan({enabled:true,max:2,worktree_all:false}).groups,[['T-002','T-003']]);
+  assert.deepEqual(project(t,chain).plan({enabled:true,max:2,worktree_all:false}).groups,[]);
+  const off=project(t,diamond()).plan({enabled:false,max:2,worktree_all:true});
   assert.deepEqual(off.groups,[]);assert.equal(Object.hasOwn(off.config.batch,'parallel'),false);
   // Serial modes are unchanged: undeclared scope and the scaffold feature.
   assert.equal(project(t,diamond().replace(scope('b.js'),'')).plan().mode,'serial');
@@ -140,10 +140,10 @@ test('worktreeAll (default): every task except the last ones and device tasks ru
 test('a scaffold feature is serial; a finished project is complete; settings are validated',t=>{
   assert.deepEqual(project(t,`- [ ] T-001: scaffold\n  - 范围: 串行\n`,{feature:'0.bootstrap',emptyCode:true}).plan(),{mode:'serial',feature:'0.bootstrap',reason:'bootstrap_feature'});
   assert.deepEqual(project(t,diamond().replaceAll('- [ ]','- [x]')).plan(),{mode:'complete'});
-  assert.deepEqual(parallelSettings({}),{enabled:true,max:2,worktreeAll:true});
-  assert.deepEqual(parallelSettings({parallel:{max:3}}),{enabled:true,max:3,worktreeAll:true});
-  assert.deepEqual(parallelSettings({parallel:{worktreeAll:false}}),{enabled:true,max:2,worktreeAll:false});
-  for(const parallel of [{max:5},{max:0},{enabled:'yes'},{max:2.5},{worktreeAll:'no'},{worktreeAll:1}])assert.throws(()=>parallelSettings({parallel}),{code:'invalid_parallel_settings'});
+  assert.deepEqual(parallelSettings({}),{enabled:true,max:2,worktree_all:true});
+  assert.deepEqual(parallelSettings({parallel:{max:3}}),{enabled:true,max:3,worktree_all:true});
+  assert.deepEqual(parallelSettings({parallel:{worktree_all:false}}),{enabled:true,max:2,worktree_all:false});
+  for(const parallel of [{max:5},{max:0},{enabled:'yes'},{max:2.5},{worktree_all:'no'},{worktree_all:1}])assert.throws(()=>parallelSettings({parallel}),{code:'invalid_parallel_settings'});
 });
 
 test('the CLI reads the project parallel settings and prints the plan',t=>{
@@ -156,7 +156,7 @@ test('the CLI reads the project parallel settings and prints the plan',t=>{
   assert.equal(code,0);assert.deepEqual(JSON.parse(writes.join('')).groups,[]);
 });
 
-test('the CLI reads parallel.worktreeAll; the default gives every task before the last its own worktree',t=>{
+test('the CLI reads parallel.worktree_all; the default gives every task before the last its own worktree',t=>{
   const run=f=>{
     const writes=[];const original=process.stdout.write.bind(process.stdout);
     process.stdout.write=chunk=>{writes.push(String(chunk));return true;};
@@ -166,6 +166,6 @@ test('the CLI reads parallel.worktreeAll; the default gives every task before th
   };
   assert.deepEqual(run(project(t,diamond())),[['T-001'],['T-002','T-003']]);
   const legacyProject=project(t,diamond());
-  fs.writeFileSync(path.join(legacyProject.codeProject,'.cm-workflow.yml'),'version: 1\nparallel:\n  worktreeAll: false\n');
+  fs.writeFileSync(path.join(legacyProject.codeProject,'.cm-workflow.yml'),'version: 1\nparallel:\n  worktree_all: false\n');
   assert.deepEqual(run(legacyProject),[['T-002','T-003']]);
 });

@@ -202,8 +202,8 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    项目最后一个功能完成时照旧返回 `run_done`（或 `run_done_degraded`）。
    `batch` 时把 `config` 原样写成批次配置文件交给 `cm-ai-batch-host.mjs`（能并行的任务已分好组，不再手写 `parallel`）；
    `serial`（有任务没写范围、脚手架功能等）时照旧逐个任务用 `cm-ai-admission.mjs --print-run-definition` 加 `cm-ai-host.mjs`。
-   项目 `.cm-workflow.json` / `.cm-workflow.yml` 的 `parallel: {enabled, max, worktreeAll}` 控制开关、每组人数和「每个任务都进 worktree」
-   （不写=开启、每组最多 2、`worktreeAll: true`；`worktreeAll: false` 只保留 2 人及以上的组；
+   项目 `.cm-workflow.json` / `.cm-workflow.yml` 的 `parallel: {enabled, max, worktree_all}` 控制开关、每组人数和「每个任务都进 worktree」
+   （不写=开启、每组最多 2、`worktree_all: true`；`worktree_all: false` 只保留 2 人及以上的组；
    `enabled: false` 时只排串行批次，不建 worktree）。单代码根适用；多代码根仍按下文手写。
    任务列表只包含该运行计划内的任务；恢复必须使用原身份、配置和真实当前会话身份，
    单任务同会话恢复用 `--mode resume --host-context {当前真实会话ID}` 加创建时的同一组启动输入（`--review-config`、`--runtime`、`--workflow-config` 等）；换会话恢复再加 `--original-host-context {创建运行的会话ID}`；
@@ -222,7 +222,7 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
      提出合法的组而不是被拒后返工。
    - **同一 feature**，且排除该 feature 最后一个未 DROPPED 的任务（它承担合并后的统一 QA），也排除批次里该功能最后执行的任务。
    - **每组 1–4 个**：生成器按项目 `parallel.max`（默认 2）封顶；凑不成对的候选任务（满足上面除「两两」以外的全部条件）
-     默认单独成 1 人组，即在自己的 worktree 里开发、按任务顺序合回（`parallel.worktreeAll: false` 时不足 2 个不成组）。
+     默认单独成 1 人组，即在自己的 worktree 里开发、按任务顺序合回（`parallel.worktree_all: false` 时不足 2 个不成组）。
      1 人组和多人组规则相同：QA 延后到末任务、合并冲突停下、被阻断时改排主目录串行第二代。
    - **每个成员的前置任务都排在组内第一个成员之前**：整组在第一个成员处同时开工。功能最后一个任务已完成时不分组。
    能并行才并行，不为组而组（1 人组只是隔离开发，不算并行）；判定不确定时按串行处理。成员在各自 Git 工作树开发、串行合并回

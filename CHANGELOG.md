@@ -10,7 +10,7 @@
   - 进 worktree 的任务不再逐个跑 QA（记为 `parallel_member_deferred` 跳过），统一在功能最后一个任务跑整个功能的 QA。项目配置了关键路径（迁移、鉴权、支付、接口）或连续 5 个任务没跑 QA 时，以前会在中途那个任务立即跑 QA，现在也要等到功能末尾，问题会晚一些发现；功能末尾的 QA 照旧覆盖全部适用用例。
   - Git 历史变成「任务提交 + 合并提交」两条一组；成员分支和 worktree 合并后自动删除。被阻断的任务照旧保留 WIP 分支，改到主目录重做。
   - 每个进 worktree 的任务开工前各跑一次审查预检（结果按批次缓存）；主目录必须在一个分支上（不能是 detached HEAD），否则开工前的隔离检查会失败。
-  - 项目配置新增 `parallel.worktreeAll`（默认 `true`）。写 `parallel: {worktreeAll: false}` 恢复以前的做法（只有能并行的任务进 worktree）；`parallel: {enabled: false}` 仍然完全不建 worktree。
+  - 项目配置新增 `parallel.worktree_all`（默认 `true`）。写 `parallel: {worktree_all: false}` 恢复以前的做法（只有能并行的任务进 worktree）；`parallel: {enabled: false}` 仍然完全不建 worktree。
   - 升级前已开始的批次按原配置恢复，不受影响；新批次用 `cm-ai-batch-plan.mjs` 生成时才按新规则分组。
 
 - **重装或升级 CM 会顺带刷新技能提醒**：以前提醒实际运行的是 `~/.cm-workflow/skill-hints/` 里的一份副本，只有手动重跑 `enable` 才会更新，升级后一直用旧对照表。现在 `install.sh`、`install-codex.sh` 和 Windows 安装脚本会在你已开启提醒时（钩子已挂，或副本目录已在）刷新这份副本。

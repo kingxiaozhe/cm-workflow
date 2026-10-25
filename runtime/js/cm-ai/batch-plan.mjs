@@ -1,7 +1,7 @@
 // The batch configuration /cm-ai runs, computed from the approved tasks.md
 // instead of written by the session. One feature at a time (the one admission
 // selects). Tasks that can run together share a parallel group. With
-// `worktreeAll` (the default) every other task that could be a member gets a
+// `worktree_all` (the default) every other task that could be a member gets a
 // group of its own, so it is developed in its own worktree and merged back in
 // task order like any member; the excluded tasks below keep the batch's serial
 // order in the main checkout. The batch host validates the result again
@@ -21,15 +21,15 @@ import {approvedTaskGrammar} from '../spec-task-line.mjs';
 import {parseTaskScopes,scopesOverlap,BOOTSTRAP_FEATURE} from '../task-scope.mjs';
 import {need} from './effect-contract.mjs';
 
-// worktreeAll: every task that could be a group member runs in a worktree, alone
+// worktree_all: every task that could be a group member runs in a worktree, alone
 // when nothing pairs with it. false keeps only real groups (two or more members).
-export const PARALLEL_DEFAULTS=Object.freeze({enabled:true,max:2,worktreeAll:true});
-// The project's parallel settings ({enabled,max,worktreeAll}); absent keys take the defaults.
+export const PARALLEL_DEFAULTS=Object.freeze({enabled:true,max:2,worktree_all:true});
+// The project's parallel settings ({enabled,max,worktree_all}); absent keys take the defaults.
 export function parallelSettings(config){
   const value=config?.parallel??{};
   const settings={...PARALLEL_DEFAULTS,...value};
   need(typeof settings.enabled==='boolean'&&Number.isInteger(settings.max)&&settings.max>=1&&settings.max<=4
-    &&typeof settings.worktreeAll==='boolean','invalid_parallel_settings');
+    &&typeof settings.worktree_all==='boolean','invalid_parallel_settings');
   return Object.freeze(settings);
 }
 
@@ -63,8 +63,8 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   // collects the members' deferred QA); a completed last task leaves no such task.
   const lastDone=parsed.tasks.filter(task=>!task.dropped).at(-1)?.completed===true;
   const tasks=schedule.map(task=>({feature:selected,taskId:task.id,scope:[...scopes.tasks.get(task.id).scope],requirements:[]}));
-  const groups=settings.enabled&&(settings.max>=2||settings.worktreeAll)&&!lastDone
-    ?group(parsed,schedule,scopes,settings.max,settings.worktreeAll):[];
+  const groups=settings.enabled&&(settings.max>=2||settings.worktree_all)&&!lastDone
+    ?group(parsed,schedule,scopes,settings.max,settings.worktree_all):[];
   const key=taskId=>`${selected}/${taskId}`;
   const config={batch:{version:1,repositoryId,batchId,specsDir,codeProject,tasks,
     ...(groups.length?{parallel:groups.map(members=>members.map(key))}:{})},
@@ -84,7 +84,7 @@ function executionOrder(remaining,deps){
   return order;
 }
 
-function group(parsed,schedule,scopes,max,worktreeAll){
+function group(parsed,schedule,scopes,max,worktree_all){
   const deps=parsed.dependencies;
   const reaches=(from,target,seen=new Set())=>{
     if(seen.has(from))return false;seen.add(from);
@@ -99,9 +99,9 @@ function group(parsed,schedule,scopes,max,worktreeAll){
   // The whole group starts at its first member, so every member's prerequisites
   // still to run must come before that point.
   const readyBefore=(task,start)=>(deps.get(task.id)??[]).every(dep=>!order.has(dep)||order.get(dep)<start);
-  // A candidate nothing pairs with becomes a one-member group under worktreeAll.
+  // A candidate nothing pairs with becomes a one-member group under worktree_all.
   const groups=[];let current=[];
-  const close=()=>{if(current.length>=(worktreeAll?1:2))groups.push(current.map(task=>task.id));current=[];};
+  const close=()=>{if(current.length>=(worktree_all?1:2))groups.push(current.map(task=>task.id));current=[];};
   for(const task of schedule){
     if(!candidate(task)){close();continue;}
     const fits=current.length>0&&current.length<max&&readyBefore(task,order.get(current[0].id))
