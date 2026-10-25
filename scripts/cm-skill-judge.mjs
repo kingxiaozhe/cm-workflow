@@ -32,7 +32,13 @@ const KEY_NAME='TYPESAFE_API_KEY';
 // mentions a credential has no such gap. It costs little: such a message only falls back
 // to keywords, and none of the 50 exam phrasings mentions one. A credential pasted with
 // no recognisable shape and no credential word can still pass, which the docs say.
-const CREDENTIAL_WORD=/api[_ -]?key|secret|token|passw(?:or)?d|pwd|passcode|access[_ -]?key|private[_ -]?key|credential|密钥|秘钥|密码|口令|令牌|凭证|凭据/i;
+// Matched on a folded copy of the message: full-width forms made plain (NFKC),
+// lower case, and every space, underscore, hyphen, dot and other separator dropped, so
+// "API  key", "api_key", "ＡＰＩ ｋｅｙ" and "pass word" all read the same. Dropping
+// separators can join two words into a credential word by accident; that only costs
+// the Jev call.
+const CREDENTIAL_WORD=/apikey|secret|token|passwd|password|pwd|passcode|accesskey|privatekey|credential|密钥|秘钥|密码|口令|令牌|凭证|凭据/;
+const fold=text=>text.normalize('NFKC').toLowerCase().replace(/[\s_\-.·・‐-―]+/gu,'');
 const SECRET_PATTERNS=[
   /\bsk-[A-Za-z0-9_-]{16,}/,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/,
@@ -46,7 +52,7 @@ const SECRET_PATTERNS=[
 // A long run of letters and digits mixing cases and digits looks like a token; plain hex
 // (commit ids, hashes) does not.
 const tokenLike=word=>word.length>=32&&!/^[0-9a-f]+$/i.test(word)&&/[a-z]/.test(word)&&/[A-Z]/.test(word)&&/\d/.test(word);
-export const hasSecret=text=>CREDENTIAL_WORD.test(text)
+export const hasSecret=text=>CREDENTIAL_WORD.test(fold(text))
   ||SECRET_PATTERNS.some(pattern=>pattern.test(text))
   ||(text.match(/[A-Za-z0-9_+/=-]{32,}/g)??[]).some(tokenLike);
 

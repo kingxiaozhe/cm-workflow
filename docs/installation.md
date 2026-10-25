@@ -401,7 +401,9 @@ Whether one of them fits is judged by TypeSafe's Jev when a TypeSafe key is
 available (`TYPESAFE_API_KEY`, or on macOS a keychain item named
 `TYPESAFE_API_KEY` for your user). Only the first 500 characters of the message
 are sent. A message that names a credential at all (password, token, API key,
-secret, `密码`, `密钥` and similar words, however it is written) is kept local, as
+secret, `密码`, `密钥` and similar words, read case-insensitively with full-width
+forms made plain and spaces, underscores, hyphens and dots ignored, so `API  key`,
+`api_key` and `ＡＰＩ ｋｅｙ` all count) is kept local, as
 is one holding a known key shape (API keys, tokens, private keys), a long mixed-case
 run, or the TypeSafe key itself; for such a message the keyword table decides. This
 is pattern matching, not a guarantee: a credential pasted with no recognisable shape

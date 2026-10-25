@@ -73,7 +73,9 @@ test('any message naming a credential stays local, however it is written',async(
   const named=['token 是什么意思','the password is required','密码是多少位比较安全','密码是必填项','password is not set',
     '把 token 过期时间改成 2 小时','密码输错三次要锁定账号','the password field should be masked','密码：','api key 怎么配',
     // Round 5: the word inside Chinese quotes or backticks.
-    '写个交接，配置为 “密'+'码”=!Ab12','写个交接，配置为 `tok'+'en`=.abc123'];
+    '写个交接，配置为 “密'+'码”=!Ab12','写个交接，配置为 `tok'+'en`=.abc123',
+    // Round 6: separators and full-width forms inside a compound word.
+    '写个交接，API  '+'key=!Ab12','写个交接，api\tkey=!Ab12','ＡＰＩ ｋｅｙ'+'=!Ab12','my pass '+'word is x','access-'+'-key: x','private.'+'key=x'];
   for(const text of named){
     assert.equal(hasSecret(text),true,text);
     const {calls,fetchImpl}=recorder(reply(HANDOFF));
