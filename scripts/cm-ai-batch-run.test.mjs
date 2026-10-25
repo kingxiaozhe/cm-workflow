@@ -6,7 +6,7 @@ import path from 'node:path';
 import {createCmAiBatch,taskCommitArgs,memberRescheduleAllowed,memberRunHistory} from './cm-ai-batch-run.mjs';
 import {batchFixture} from './cm-ai-batch-run-fixture.mjs';
 
-for(const mode of ['continuous','qa-resume','failed-qa','cancel','learning','policy','executor'])
+for(const mode of ['continuous','qa-resume','failed-qa','cancel','learning','policy','executor','next-feature'])
 test(`real multi-task runner keeps QA and recovery authoritative: ${mode}`,()=>batchFixture(mode));
 
 // Q24/Q25: a strict-batch parallel member that can still recover in its own run stops

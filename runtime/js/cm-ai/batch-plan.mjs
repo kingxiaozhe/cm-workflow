@@ -29,12 +29,13 @@ export function parallelSettings(config){
 
 // {mode:'batch',feature,config,groups}, {mode:'serial',feature,reason} or
 // {mode:'complete'} when no task is left; any other admission state refuses with
-// the admission's own reason.
-export function planCmAiBatch({specsDir,codeProject,feature=null,repositoryId,batchId,settings=PARALLEL_DEFAULTS}){
-  const admission=inspectCmAiAdmission({specsDir,codeProject,...(feature===null?{}:{feature})});
-  if(admission.state==='complete'&&!admission.requestedFeatureComplete)return {mode:'complete'};
-  if(admission.state!=='ready'||admission.requestedFeatureComplete)throw Object.assign(new Error('batch_plan_not_ready'),
-    {code:'batch_plan_not_ready',reason:`admission ${admission.state}: ${admission.requestedFeatureComplete?'feature_tasks_terminal':admission.reason}`});
+// the admission's own reason. Always the feature admission selects: the batch
+// host admits each task through that same selection.
+export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,settings=PARALLEL_DEFAULTS}){
+  const admission=inspectCmAiAdmission({specsDir,codeProject});
+  if(admission.state==='complete')return {mode:'complete'};
+  if(admission.state!=='ready')throw Object.assign(new Error('batch_plan_not_ready'),
+    {code:'batch_plan_not_ready',reason:`admission ${admission.state}: ${admission.reason}`});
   const selected=admission.nextTask.feature;
   if(BOOTSTRAP_FEATURE.test(selected))return {mode:'serial',feature:selected,reason:'bootstrap_feature'};
   const grammar=approvedTaskGrammar(specsDir);
@@ -46,8 +47,16 @@ export function planCmAiBatch({specsDir,codeProject,feature=null,repositoryId,ba
   need(remaining.length>0,'batch_plan_not_ready');
   if(scopes.errors.some(item=>remaining.some(task=>task.id===item.taskId)))return {mode:'serial',feature:selected,reason:'scope_invalid'};
   if(!remaining.every(task=>scopes.tasks.has(task.id)))return {mode:'serial',feature:selected,reason:'scope_undeclared'};
-  const tasks=remaining.map(task=>({feature:selected,taskId:task.id,scope:[...scopes.tasks.get(task.id).scope],requirements:[]}));
-  const groups=settings.enabled&&settings.max>=2?group(parsed,remaining,scopes,settings.max):[];
+  // The batch runs its tasks in this order and the host admits each one when it is
+  // reached, so every task must come after its prerequisites still to run.
+  const schedule=executionOrder(remaining,parsed.dependencies);
+  if(schedule===null)return {mode:'serial',feature:selected,reason:'dependency_order'};
+  need(schedule[0].id===admission.nextTask.id,'batch_plan_order_mismatch');
+  // The host requires the feature's last task in every batch with a group (its QA
+  // collects the members' deferred QA); a completed last task leaves no such task.
+  const lastDone=parsed.tasks.filter(task=>!task.dropped).at(-1)?.completed===true;
+  const tasks=schedule.map(task=>({feature:selected,taskId:task.id,scope:[...scopes.tasks.get(task.id).scope],requirements:[]}));
+  const groups=settings.enabled&&settings.max>=2&&!lastDone?group(parsed,schedule,scopes,settings.max):[];
   const key=taskId=>`${selected}/${taskId}`;
   const config={batch:{version:1,repositoryId,batchId,specsDir,codeProject,tasks,
     ...(groups.length?{parallel:groups.map(members=>members.map(key))}:{})},
@@ -55,7 +64,19 @@ export function planCmAiBatch({specsDir,codeProject,feature=null,repositoryId,ba
   return {mode:'batch',feature:selected,config,groups};
 }
 
-function group(parsed,remaining,scopes,max){
+// tasks.md order, except that a task waits for its prerequisites still to run
+// (stable topological order). null when no order exists (a cycle).
+function executionOrder(remaining,deps){
+  const pending=new Set(remaining.map(task=>task.id)),placed=new Set(),order=[];
+  while(order.length<remaining.length){
+    const next=remaining.find(task=>!placed.has(task.id)&&(deps.get(task.id)??[]).every(dep=>!pending.has(dep)||placed.has(dep)));
+    if(!next)return null;
+    placed.add(next.id);order.push(next);
+  }
+  return order;
+}
+
+function group(parsed,schedule,scopes,max){
   const deps=parsed.dependencies;
   const reaches=(from,target,seen=new Set())=>{
     if(seen.has(from))return false;seen.add(from);
@@ -63,20 +84,19 @@ function group(parsed,remaining,scopes,max){
     return direct.includes(target)||direct.some(dep=>reaches(dep,target,seen));
   };
   const last=parsed.tasks.filter(task=>!task.dropped).at(-1)?.id;
-  const order=new Map(remaining.map((task,index)=>[task.id,index]));
+  const order=new Map(schedule.map((task,index)=>[task.id,index]));
   const candidate=task=>task.id!==last&&!scopes.tasks.get(task.id).device;
-  // A group starts at its first member, so that task's prerequisites still to run must
-  // come before it. A later member needs no separate check: any task between the
-  // group's start and it either joined (and the dependency check saw it) or closed
-  // the group.
+  // The whole group starts at its first member, so every member's prerequisites
+  // still to run must come before that point.
   const readyBefore=(task,start)=>(deps.get(task.id)??[]).every(dep=>!order.has(dep)||order.get(dep)<start);
   const groups=[];let current=[];
   const close=()=>{if(current.length>=2)groups.push(current.map(task=>task.id));current=[];};
-  for(const task of remaining){
+  for(const task of schedule){
     if(!candidate(task)){close();continue;}
-    const fits=current.length<max&&current.every(other=>!reaches(task.id,other.id)&&!reaches(other.id,task.id)
+    const fits=current.length>0&&current.length<max&&readyBefore(task,order.get(current[0].id))
+      &&current.every(other=>!reaches(task.id,other.id)&&!reaches(other.id,task.id)
         &&!scopesOverlap(scopes.tasks.get(other.id).scope,scopes.tasks.get(task.id).scope));
-    if(current.length&&fits){current.push(task);continue;}
+    if(fits){current.push(task);continue;}
     close();
     if(readyBefore(task,order.get(task.id)))current=[task];
   }

@@ -31,7 +31,14 @@ export async function batchFixture(mode,options={}){
     // Each task declares the same file the batch config gives it (file<index>.js).
     fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: first\n  - 范围: `file0.js`\n- [ ] T-002: second\n  - 范围: `file1.js`\n'
       +(parallel?'- [ ] T-003: final\n  - 范围: `file2.js`\n\n- T-003 依赖 T-001, T-002\n':''));
-    fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
+    // next-feature: a second approved feature waits after this batch's one.
+    if(mode==='next-feature'){
+      fs.mkdirSync(path.join(specsDir,'2.next'));
+      for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(specsDir,'2.next',name),'# Next\n');
+      fs.writeFileSync(path.join(specsDir,'2.next','tasks.md'),'- [ ] T-001: next feature\n  - 范围: `next.js`\n');
+    }
+    fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',
+      features:[feature,...(mode==='next-feature'?['2.next']:[])],specFiles:buildManifest(specsDir)}));
     fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
     const git=(cwd,args)=>{const result=spawnSync('git',['-C',cwd,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);return result.stdout.trim();};
     {git(codeProject,['init','-b','main']);git(codeProject,['config','user.name','Fixture']);git(codeProject,['config','user.email','fixture@example.invalid']);
@@ -50,7 +57,7 @@ export async function batchFixture(mode,options={}){
         worker:async({prompt},{signal})=>{
           const data=JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]),material=data.specification;
           assert.equal(material.task.id,definition.identity.taskId);
-          assert.deepEqual(material.sources,buildManifest(specsDir));
+          assert.deepEqual(material.sources,buildManifest(specsDir).filter(source=>source.path.startsWith(`${feature}/`)));
           if(recovery&&!parallelMember&&blockedIds.includes(definition.identity.taskId)){
             const key=`${feature}/${definition.identity.taskId}`;
             assert.equal(definition.codeProject,codeProject);
@@ -112,7 +119,7 @@ export async function batchFixture(mode,options={}){
       reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
         contexts:['review-1','review-2'],run:(request,{onEvent})=>{
           assert.equal(request.payload.reviewPackage.specification.task.id,definition.identity.taskId);
-          assert.deepEqual(request.payload.reviewPackage.specification.sources,buildManifest(specsDir));
+          assert.deepEqual(request.payload.reviewPackage.specification.sources,buildManifest(specsDir).filter(source=>source.path.startsWith(`${feature}/`)));
           if(mode==='learning'&&request.identity.taskId==='T-001')
             assert(request.payload.reviewPackage.changes.some(change=>change.path==='AGENTS.md'));
           // The reviewer started, then its process vanished without any terminal event: unknown.
@@ -190,6 +197,16 @@ export async function batchFixture(mode,options={}){
         }
       }return originalExists.call(fs,file,...args);
     };
+    // parallel-old-merge: stop once both members are ready and before any merge starts.
+    if(mode==='parallel-old-merge')fs.existsSync=function(file,...args){
+      if(!interrupted&&String(file).endsWith('state.json')){
+        const logfile=path.join(specsDir,'运行日志.jsonl');
+        const rows=originalExists(logfile)?originalRead(logfile,'utf8').split('\n').filter(Boolean).map(JSON.parse):[];
+        if(rows.filter(row=>row.phase==='batch_member_ready').length===2&&!rows.some(row=>row.phase==='batch_merge_started')){
+          interrupted=true;throw Object.assign(new Error('simulated interrupt'),{code:'simulated_interrupt'});
+        }
+      }return originalExists.call(fs,file,...args);
+    };
     const batch=open(),pending=batch.handle({operation:'advance',requestId:'advance-1'});
     if(mode==='cancel'){
       await began;await batch.handle({operation:'cancel',requestId:'cancel'});
@@ -198,7 +215,7 @@ export async function batchFixture(mode,options={}){
       assert.deepEqual(calls,['T-001']);return;
     }
     let result;
-    try{result=await pending;}catch(error){if(!(mode==='parallel-resume'||mode==='final-commit'||recovery&&options.crashAt)||error.code!=='simulated_interrupt')throw error;}finally{fs.existsSync=originalExists;}
+    try{result=await pending;}catch(error){if(!(mode==='parallel-resume'||mode==='parallel-old-merge'||mode==='final-commit'||recovery&&options.crashAt)||error.code!=='simulated_interrupt')throw error;}finally{fs.existsSync=originalExists;}
     if(mode==='final-commit'){
       assert(interrupted);
       const logfile=path.join(specsDir,'运行日志.jsonl');
@@ -355,6 +372,30 @@ export async function batchFixture(mode,options={}){
       }
       return;
     }
+    if(mode==='parallel-old-merge'){
+      // An earlier version merged in completion order: it logged T-002's merge intent,
+      // Git committed the merge, and the process died before the handoff. The new
+      // version must finish that merge before merging T-001 in task order.
+      assert(interrupted);
+      const logfile=path.join(specsDir,'运行日志.jsonl'),rows=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
+      const ready=rows.find(row=>row.phase==='batch_member_ready'&&row.from_key===`${feature}/T-002`);
+      git(ready.worktree,['add','-A']);if(git(ready.worktree,['status','--porcelain']))git(ready.worktree,['commit','-qm','T-002: second']);
+      const intent={from_key:ready.from_key,expected_old:git(codeProject,['rev-parse','HEAD']),member_commit:git(ready.worktree,['rev-parse','HEAD'])};
+      const writer=new URL('./cm-log-event.py',import.meta.url).pathname;
+      const logged=spawnSync('python3',[writer,'--workflow','cm-ai','--event','decision','--phase','batch_merge_started','--runtime',ready.runtime,
+        '--project-root',codeProject,'--specs-dir',specsDir,'--run-id',config.batchId,'--detail','batch_merge_started',
+        '--data-json',JSON.stringify({repository_id:config.repositoryId,plan_digest:ready.plan_digest,...intent})],
+      {encoding:'utf8',env:{...process.env,CM_WORKFLOW_LOG_HOME:path.join(root,'logs')}});
+      assert.equal(logged.status,0,logged.stderr);
+      git(codeProject,['merge','-q','--no-ff','--no-edit',intent.member_commit]);
+      result=await open().handle({operation:'advance',requestId:'resume-old-merge'});
+      const order=fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse).filter(row=>row.phase==='batch_handoff').map(row=>row.from_key);
+      assert.deepEqual(order.slice(0,2),[`${feature}/T-002`,`${feature}/T-001`],JSON.stringify(result));
+      assert.equal(result.code,'run_done',JSON.stringify(result));
+      assert.equal(fs.readFileSync(path.join(codeProject,'file0.js'),'utf8'),'implemented\n');
+      assert.equal(fs.readFileSync(path.join(codeProject,'file1.js'),'utf8'),'implemented\n');
+      return;
+    }
     if(mode==='parallel-resume'){assert(interrupted);const before=[...calls];result=await open().handle({operation:'advance',requestId:'resume-parallel'});assert.deepEqual(calls.slice(0,before.length),before);}
     if(mode==='parallel-conflict'){
       assert.equal(result.code,'merge_conflict',JSON.stringify(result));assert.equal(git(codeProject,['rev-parse','HEAD']),conflictHead);
@@ -368,7 +409,8 @@ export async function batchFixture(mode,options={}){
       for(const stop of [result,await open().handle({operation:'advance',requestId:'after-conflict'})]){
         assert.equal(stop.code,'merge_conflict');assert.deepEqual(stop.files,result.files);
         assert.equal(stop.guidance.recoveryOperation,null);assert.equal(stop.guidance.authorizationGranted,false);
-        assert.match(stop.guidance.nextStep,new RegExp(`git merge --no-ff cm/${segment}/work/T-00[12]`));
+        // T-001 conflicts; T-002 is ready, marked done in tasks.md and not merged: both are listed, in task order.
+        assert.match(stop.guidance.nextStep,new RegExp(`T-001：git merge --no-ff cm/${segment}/work/T-001（工作树 [^）]+）；1\\.work/T-002：git merge --no-ff cm/${segment}/work/T-002`));
         assert.match(stop.guidance.nextStep,/cm-ai-batch-plan\.mjs/);assert.match(stop.guidance.summary,/主目录未改动/);
       }
       for(const name of heads)git(codeProject,['check-ref-format','--branch',name]);
@@ -387,6 +429,14 @@ export async function batchFixture(mode,options={}){
       const changed=structuredClone(config);changed.tasks[1].scope=['other.js'];
       assert.throws(()=>createCmAiBatch({configuration:changed,executionFor,logHome:path.join(root,'logs')}),{code:'task_scope_mismatch'});
       qaReady=true;result=await open().handle({operation:'advance',requestId:'advance-2'});
+    }
+    if(mode==='next-feature'){
+      // The batch's feature is done and hands off to the next feature: complete, not batch_task_scope_required.
+      assert.equal(result.batchComplete,true,JSON.stringify(result));assert.equal(result.nextFeature,'2.next');
+      assert.match(result.task_commit,/^[a-f0-9]{40}$/);assert.match(result.guidance.nextStep,/cm-ai-batch-plan\.mjs/);
+      const again=await open().handle({operation:'advance',requestId:'after-feature'});
+      assert.equal(again.batchComplete,true);assert.equal(again.task_commit,result.task_commit);
+      return;
     }
     assert.equal(result.code,mode==='failed-qa'?'qa_failed':'run_done',JSON.stringify(result));
     if(mode==='resources-open'){

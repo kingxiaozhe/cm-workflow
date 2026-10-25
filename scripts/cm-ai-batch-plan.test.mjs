@@ -58,9 +58,26 @@ test('max bounds the group; a member needing a task still to run is not pulled a
   // The feature's last task never joins, even when nothing ties it to the others.
   const loose=`- [ ] T-001: a${scope('a.js')}\n- [ ] T-002: final${scope('b.js')}\n`;
   assert.deepEqual(project(t,loose).plan().groups,[]);
-  // A task waiting on a later task cannot open a group before it.
+  // A task waiting on a later task runs after it: the batch order is the one admission
+  // follows (its first task is admission's next task), and the host accepts it.
   const forward=`- [ ] T-001: a${scope('a.js')}\n- [ ] T-002: b${scope('b.js')}\n- [ ] T-003: c${scope('c.js')}\n- [ ] T-004: final${scope('d.js')}\n\n- T-001 依赖 T-003\n`;
-  assert.deepEqual(project(t,forward).plan({enabled:true,max:3}).groups,[['T-002','T-003']]);
+  const ahead=project(t,forward),forwardPlan=ahead.plan({enabled:true,max:3});
+  assert.deepEqual(forwardPlan.config.batch.tasks.map(task=>task.taskId),['T-002','T-003','T-001','T-004']);
+  assert.deepEqual(forwardPlan.groups,[['T-002','T-003']]);
+  assert.ok(createCmAiBatch({configuration:forwardPlan.config.batch,executionFor:async()=>({}),logHome:path.join(ahead.root,'log')}));
+  assert.deepEqual(project(t,forward).plan({enabled:false,max:2}).config.batch.tasks.map(task=>task.taskId),['T-002','T-003','T-001','T-004']);
+  // A member whose prerequisite runs later never joins an earlier group.
+  const later=`- [ ] T-001: a${scope('a.js')}\n- [ ] T-002: b${scope('b.js')}\n- [ ] T-003: c${scope('c.js')}\n- [ ] T-004: d${scope('d.js')}\n- [ ] T-005: final${scope('e.js')}\n\n- T-002 依赖 T-004\n`;
+  const laterPlan=project(t,later).plan({enabled:true,max:2});
+  assert.deepEqual(laterPlan.config.batch.tasks.map(task=>task.taskId),['T-001','T-003','T-004','T-002','T-005']);
+  assert.deepEqual(laterPlan.groups,[['T-001','T-003']]);
+  // A cycle has no order; admission already refuses it, and so does the plan.
+  assert.throws(()=>project(t,`- [ ] T-001: a${scope('a.js')}\n- [ ] T-002: b${scope('b.js')}\n- [ ] T-003: final${scope('c.js')}\n\n- T-001 依赖 T-002\n- T-002 依赖 T-001\n`).plan(),
+    {code:'batch_plan_not_ready'});
+  // The feature's last task already done: the host would refuse any group, so none is planned.
+  const lastDone=`- [ ] T-001: a${scope('a.js')}\n- [ ] T-002: b${scope('b.js')}\n- [ ] T-003: c${scope('c.js')}\n- [x] T-004: final${scope('d.js')}\n`;
+  const donePlan=project(t,lastDone).plan();
+  assert.equal(donePlan.mode,'batch');assert.deepEqual(donePlan.groups,[]);
   // Completed tasks are satisfied prerequisites, not batch members.
   const done=diamond().replace('- [ ] T-001','- [x] T-001');
   const plan=project(t,done).plan();

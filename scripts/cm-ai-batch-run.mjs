@@ -443,23 +443,17 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const pending=group.filter(key=>membership.has(key)&&!initial.ready.has(key)&&!initial.done.has(key));
     const results=await Promise.allSettled(pending.map(key=>driveMember(key,request)));
     if(cancelled)return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};
-    // Merge in task order, not completion order, so the resulting history is the
-    // same whichever member finished first.
-    for(const key of [...plans.keys()].filter(key=>group.includes(key))){
-      const row=progress().ready.get(key);
-      if(!row||progress().done.has(key))continue;
-      const result=await mergeMember(row);if(result)return result;
-    }
-    let waiting=null,rejected=null,recoverable=null,unresolved=null;const rescheduled=[];
-    for(const [index,result] of results.entries()){
-      if(result.status==='rejected'){rejected??=result.reason;continue;}
-      const status=result.value;if(!status)continue;
+    // Classify every member result before merging: a member rescheduled to a serial
+    // second generation is the only one a later member may merge ahead of.
+    const decisions=results.map((result,index)=>{
+      if(result.status==='rejected')return {kind:'rejected',reason:result.reason};
+      const status=result.value;if(!status)return {kind:'none'};
       // Retryable validation, review transport and completed-task QA stay on
       // their existing recovery path; a new run must not bypass those gates.
       const terminal=['blocked','failed','unknown'].includes(status.state)
         &&!developmentRetryable(status)&&!completionRetryable(status)
         ||status.state==='pending_review'&&status.code!==null&&!reviewRetryable(status);
-      if(!terminal){waiting??=status;continue;}
+      if(!terminal)return {kind:'waiting',status};
       const key=pending[index];
       // Q25: a member that can still be resolved in its own run (original-invocation
       // receipts, interrupted effect, a redo awaiting stop confirmation) keeps its
@@ -467,10 +461,33 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       // in its run with an explicit stop; only a raw checkpointed blocked terminal is
       // rescheduled serially. Ordinary batches follow the same rules (they used to
       // reschedule every terminal, unknown included, and develop gen 2 at once).
-      if(IN_RUN_ACTIONS.has(status.pendingAction)){recoverable??={key,status};continue;}
+      if(IN_RUN_ACTIONS.has(status.pendingAction))return {kind:'recoverable',key,status};
       const history=memberRunHistory(config.specsDir,plans.get(key).identity.runId);
-      if(!memberRescheduleAllowed(status,history)){
+      if(!memberRescheduleAllowed(status,history))return {kind:'unresolved',key,status,history};
+      return {kind:'reschedule',key,status};
+    });
+    const skipped=new Set([...progress().blocked.keys(),...decisions.filter(item=>item.kind==='reschedule').map(item=>item.key)]);
+    // A merge an earlier process started (its intent is logged, its handoff is
+    // not) is finished first: it may already be in Git. The rest merge in task
+    // order, not completion order: a later member waits while an earlier one is
+    // still unfinished (retrying, recovering, stopped), except one rescheduled to a
+    // serial second generation, which is redone on top of the merged result.
+    const unfinished=[...progress().merging.keys()].filter(key=>group.includes(key)&&!progress().done.has(key));
+    for(const key of [...unfinished,...[...plans.keys()].filter(key=>group.includes(key)&&!unfinished.includes(key))]){
+      if(progress().done.has(key))continue;
+      const row=progress().ready.get(key);
+      if(!row){if(skipped.has(key))continue;break;}
+      const result=await mergeMember(row);if(result)return result;
+    }
+    let waiting=null,rejected=null,recoverable=null,unresolved=null;const rescheduled=[];
+    for(const decision of decisions){
+      if(decision.kind==='rejected'){rejected??=decision.reason;continue;}
+      if(decision.kind==='waiting'){waiting??=decision.status;continue;}
+      if(decision.kind==='recoverable'){recoverable??={key:decision.key,status:decision.status};continue;}
+      if(decision.kind==='unresolved'){const {key,status,history}=decision;
         unresolved??={key,status,history,raw:history?.state?`${history.state.state}/${history.state.code??history.state.state}`:'unreadable'};continue;}
+      if(decision.kind!=='reschedule')continue;
+      const {key,status}=decision;
       rescheduled.push(key);
       record('batch_member_blocked',{from_key:key,code:status.code??status.state,
         reason:status.blockedReason??status.reason??status.code??status.state,...location(key),generation:2});
@@ -492,13 +509,19 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   // scope file, so this is a file outside every scope). The batch stays stopped; the
   // operator merges by hand and plans the rest as a new batch. Redoing the task
   // serially would mean reopening a completed, reviewed task, which is not automatic.
+  // Every member that finished and is not merged yet is listed, the conflicted one
+  // included, in task order: each is marked complete in tasks.md, so a new plan
+  // would skip it, and its code exists only on its branch.
   const mergeConflictGuidance=(key,files)=>{
-    const {worktree,branch}=location(key),listed=Array.isArray(files)&&files.length?files.join('、'):'（Git 未列出）';
+    const state=progress(),listed=Array.isArray(files)&&files.length?files.join('、'):'（Git 未列出）';
+    const pending=[...plans.keys()].filter(item=>state.ready.has(item)&&!state.done.has(item));
+    if(!pending.includes(key))pending.push(key);
+    const steps=pending.map(item=>{const {worktree,branch}=location(item);return `${item}：git merge --no-ff ${branch}（工作树 ${worktree}）`;});
     return stopGuidance(`并行成员 ${key} 的已审交付与已合并的结果在 ${listed} 上冲突；合并已撤销，主目录未改动，批次停止。`,
-      `在主目录手动合并分支 ${branch}（git merge --no-ff ${branch}），解决冲突后跑项目检查再提交；`
-        +`然后删除成员工作树 ${worktree} 与该分支；剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次继续。`,
-      ['该任务已审查通过并在 tasks.md 记为完成，合入的是它的已审代码','合并后的组合没有经过审查，提交前必须跑项目检查',
-        '原批次不会再推进，不要再对它 advance']);
+      `在主目录按任务顺序手动合并这些已完成未合并的成员分支：${steps.join('；')}；解决冲突后跑项目检查再提交；`
+        +`然后删除这些成员工作树与分支；剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次继续。`,
+      ['这些任务已审查通过并在 tasks.md 记为完成，合入的是它们的已审代码；新批次会跳过它们，漏合就会缺代码',
+        '合并后的组合没有经过审查，提交前必须跑项目检查','原批次不会再推进，不要再对它 advance']);
   };
   // reconcile_review exists only for external-model or execution-policy runs.
   const batchKind=strict=>strict?'外部模型或执行策略批次':'批次';
@@ -681,11 +704,19 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         const handoff=result.outcome==='refreshed'&&result.pendingAction==='start_next_task';
         if(request.operation!=='advance'||(!finished&&!handoff))return {...result,batchId:config.batchId};
         const next=handoff?`${result.nextTask.feature}/${result.nextTask.id}`:null;
-        if(handoff)need(plans.has(next),'batch_task_scope_required');
+        // A batch plans one feature (cm-ai-batch-plan.mjs). When its last task hands
+        // off to the next feature, this batch is done: the next feature is planned as
+        // a new batch. Anything else outside the plan is still refused.
+        const featureDone=handoff&&!plans.has(next)&&[...plans.keys()].at(-1)===liveKey
+          &&result.nextTask.feature!==plans.get(liveKey).feature;
+        if(handoff&&!featureDone)need(plans.has(next),'batch_task_scope_required');
         let task_commit=commitChanges(config.codeProject,taskCommitArgs(plans.get(liveKey).identity.taskId,taskDescription(config,plans.get(liveKey))));
         if(task_commit)record('batch_task_committed',{from_key:liveKey,task_commit});
         else task_commit=progress().rows.filter(row=>row.phase==='batch_task_committed'&&row.from_key===liveKey).at(-1)?.task_commit??null;
         if(finished)return {...result,batchId:config.batchId,task_commit};
+        if(featureDone)return {...result,batchId:config.batchId,task_commit,batchComplete:true,nextFeature:result.nextTask.feature,
+          guidance:stopGuidance(`本批次的功能 ${plans.get(liveKey).feature} 已全部完成。`,
+            `下一个功能是 ${result.nextTask.feature}：用 cm-ai-batch-plan.mjs 以新的批次 ID 生成它的批次再继续。`,[])};
         record('batch_handoff',{from_key:liveKey,to_key:next,checkpoint:active.checkpoint(),package_digest:result.packageDigest,task_commit});
         active.close();active=null;liveKey=next;
       }

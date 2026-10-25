@@ -14,10 +14,10 @@ import {fileURLToPath} from 'node:url';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {planCmAiBatch,parallelSettings} from '../runtime/js/cm-ai/batch-plan.mjs';
 
-const usage='usage: cm-ai-batch-plan.mjs --specs-dir PATH --code-project PATH --repository-id ID --batch-id ID [--feature N.slug]';
+const usage='usage: cm-ai-batch-plan.mjs --specs-dir PATH --code-project PATH --repository-id ID --batch-id ID';
 function parse(argv){
   const flags=new Map([['--specs-dir','specsDir'],['--code-project','codeProject'],['--repository-id','repositoryId'],
-    ['--batch-id','batchId'],['--feature','feature']]);
+    ['--batch-id','batchId']]);
   const input={};
   for(let index=0;index<argv.length;index+=2){
     const key=flags.get(argv[index]);
@@ -33,7 +33,7 @@ export function main(argv=process.argv.slice(2)){
   try{
     const specsDir=fs.realpathSync(path.resolve(input.specsDir)),codeProject=fs.realpathSync(path.resolve(input.codeProject));
     const settings=parallelSettings(loadConfig({projectRoot:codeProject}));
-    const plan=planCmAiBatch({specsDir,codeProject,feature:input.feature??null,repositoryId:input.repositoryId,batchId:input.batchId,settings});
+    const plan=planCmAiBatch({specsDir,codeProject,repositoryId:input.repositoryId,batchId:input.batchId,settings});
     process.stdout.write(JSON.stringify(plan)+'\n');return 0;
   }catch(error){
     process.stderr.write(JSON.stringify({error:{code:error.code??'batch_plan_failed',
