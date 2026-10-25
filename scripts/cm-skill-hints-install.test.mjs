@@ -109,7 +109,7 @@ test('install.sh --no-skill-hints wires nothing and makes no copy',
     const box = sandbox(t);
     const result = install('install.sh', box.env, ['--yes', '--no-skill-hints']);
     assert.equal(result.status, 0, output(result));
-    assert.match(output(result), /没给 Claude 挂钩子.*以后安装也不会自动挂/);
+    assert.match(output(result), /没给 Claude 挂钩子.*只管这一次/);
     assert.ok(!fs.existsSync(box.copy));
     assert.doesNotMatch(bytesOf(box.settings) ?? '', /cm-skill-hints/);
   });

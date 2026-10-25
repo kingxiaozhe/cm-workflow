@@ -112,12 +112,32 @@ export function normalizeRule(rule,user){
     reason:String(rule.reason??''),author:rule.author===true,fallback,keywords,patterns,user,invoke};
 }
 
-// User rules come first so they win a tie. A user rule with a CM rule's id replaces
-// it, and `disable` switches CM rules off by id. A broken local file is ignored (the
-// CM table still works) and reported by `status`.
-export function loadRules({env=process.env,rulesFile=defaultRulesPath()}={}){
+// The known fields of the user's local file and their types. One check, used by the hook,
+// by `status` and by the installers, so they never disagree about a file.
+export function localShapeError(value){
+  if(!value||typeof value!=='object'||Array.isArray(value))return '应为对象';
+  for(const key of ['enabled','judge'])if(value[key]!==undefined&&typeof value[key]!=='boolean')return `${key} 只能是 true 或 false`;
+  if(value.rules!==undefined&&!Array.isArray(value.rules))return 'rules 应为列表';
+  if(value.disable!==undefined&&!(Array.isArray(value.disable)&&value.disable.every(item=>typeof item==='string')))return 'disable 应为字符串列表';
+  return null;
+}
+// {settings} for a usable file (or none), else {settings:{}, error}: a read code such as
+// 'parse', or a shape reason.
+export function readLocal(env){
   const local=readJson(localPath(env),{allowEmpty:true});
-  const settings=local.value&&typeof local.value==='object'&&!Array.isArray(local.value)?local.value:{};
+  if(local.missing)return {settings:{},error:null,missing:true};
+  if(local.error)return {settings:{},error:local.error};
+  const shape=localShapeError(local.value);
+  return shape?{settings:{},error:`格式异常（${shape}）`,shape:true}:{settings:local.value,error:null};
+}
+
+// User rules come first so they win a tie. A user rule with a CM rule's id replaces
+// it, and `disable` switches CM rules off by id. A local file that cannot be read or has a
+// field of the wrong type is ignored as a whole (the CM table still works) and reported by
+// `status`; since it may be the user's attempt at "judge": false, nothing goes to Jev then.
+export function loadRules({env=process.env,rulesFile=defaultRulesPath()}={}){
+  const local=readLocal(env);
+  const settings=local.settings;
   if(settings.enabled===false)return {enabled:false,rules:[]};
   const defaults=readJson(rulesFile,{allowEmpty:true});
   const user=(Array.isArray(settings.rules)?settings.rules:[]).map(rule=>normalizeRule(rule,true)).filter(Boolean);
@@ -125,7 +145,7 @@ export function loadRules({env=process.env,rulesFile=defaultRulesPath()}={}){
   const replaced=new Set(user.map(rule=>rule.id));
   const cm=(Array.isArray(defaults.value?.rules)?defaults.value.rules:[])
     .map(rule=>normalizeRule(rule,false)).filter(rule=>rule&&!disabled.has(rule.id)&&!replaced.has(rule.id));
-  return {enabled:true,rules:[...user,...cm],judge:settings.judge!==false,localError:local.error??null,defaultsError:defaults.error??(defaults.missing?'missing':null),
+  return {enabled:true,rules:[...user,...cm],judge:!local.error&&settings.judge!==false,localError:local.error,defaultsError:defaults.error??(defaults.missing?'missing':null),
     userCount:user.length,disabledCount:disabled.size,cmCount:cm.length};
 }
 
@@ -453,8 +473,9 @@ const CODEX_TRUST='Codex 首次运行这条钩子时会请你确认信任；不�
 
 // ---- install-time default ----
 // Settled hosts are those whose install-time default has been applied: the hook was added
-// or found there, or an install was told not to add it (--no-skill-hints,
-// CM_SKILL_HINTS_INSTALL=off). A settled host without our hook is never wired by an install.
+// or found there. A settled host without our hook is one the user took it out of, and no
+// install adds it back. --no-skill-hints and CM_SKILL_HINTS_INSTALL=off cover one run only
+// and settle nothing.
 // The record is ~/.cm-workflow/skill-hints.auto.json, outside the copy directory, so
 // removing that directory to switch hints off is still respected. It is written before the
 // copy is made, so a copy without a record can only come from an `enable` older than the
@@ -479,12 +500,12 @@ const recordWarning=(env,reason)=>`⚠ 技能提醒：${autoPath(env)} 异常（
 // Adds hosts to the record. Read, check, merge and replace happen under the shared config
 // lock, and the bytes are compared again right before the rename. Never throws: a problem
 // comes back as one warning line.
-async function noteRecord(env,add,{lockWaitMs,beforeReplace}={}){
+async function noteRecord(env,add,{lockWaitMs,beforeReplace,lock}={}){
   const file=autoPath(env);
   try{
     const {withConfigLock,LockBusy}=await import('./cm-config-lock.mjs');
     try{
-      return withConfigLock(env,file,()=>{
+      return (lock??withConfigLock)(env,file,()=>{
         const record=readRecord(env);
         if(record.state==='invalid')return {warning:recordWarning(env,record.reason)};
         const base=record.state==='ok'?record.hosts:legacyHosts(env);
@@ -507,34 +528,29 @@ async function noteRecord(env,add,{lockWaitMs,beforeReplace}={}){
 const OFF_NOTE=env=>`关掉提醒：在 ${localPath(env)} 写 {"enabled": false}`;
 const TYPESAFE_NOTE='有 TypeSafe 密钥时，handoff、wayfinder、improve-codebase-architecture 三个作者技能会把消息前 500 字发给 TypeSafe 判断。';
 
-// Why an install must not add the hook now, or null. `optOut` is the user saying no to the
-// install default (settled); `pause` is something CM cannot read, so it does nothing.
+// Why an install must not add the hook now, or null. `optOut` is the user skipping this
+// run; `off` is "enabled": false; `pause` is a local file CM cannot use, so it does nothing.
 function installGate(env,skip){
   if(skip)return {optOut:'安装参数 --no-skill-hints'};
   if(env.CM_SKILL_HINTS_INSTALL==='off')return {optOut:'环境变量 CM_SKILL_HINTS_INSTALL=off'};
-  const local=readJson(localPath(env),{allowEmpty:true});
-  if(local.missing)return null;
-  const value=local.value;
-  if(local.error)return {pause:`${localPath(env)} 读取失败（${local.error}）`};
-  if(!plainObject(value)||(value.enabled!==undefined&&typeof value.enabled!=='boolean'))
-    return {pause:`${localPath(env)} 格式异常（应为对象，enabled 只能是 true 或 false）`};
-  if(value.enabled===false)return {off:`${localPath(env)} 里 enabled 为 false`};
+  const local=readLocal(env);
+  if(local.error)return {pause:`${localPath(env)} ${local.shape?local.error:`读取失败（${local.error}）`}`};
+  if(local.settings.enabled===false)return {off:`${localPath(env)} 里 enabled 为 false`};
   return null;
 }
 
 // Run by the installers for their own host. Adds the hook once, unless the user said no;
 // in every other case it only refreshes an existing copy. Never throws; 1 means a warning.
 export async function install({env=process.env,host,skip=false,node=process.execPath,write=text=>process.stdout.write(text),lockWaitMs,
-  beforeRecord,beforeRecordReplace,copyFiles}={}){
+  lockRecord,beforeRecordReplace,copyFiles}={}){
   try{
     const label=LABEL[host];
-    const note=async()=>{beforeRecord?.();const noted=await noteRecord(env,[host],{lockWaitMs,beforeReplace:beforeRecordReplace});if(noted.warning)write(noted.warning);return noted.warning?1:0;};
+    const note=async()=>{const noted=await noteRecord(env,[host],{lockWaitMs,beforeReplace:beforeRecordReplace,lock:lockRecord});if(noted.warning)write(noted.warning);return noted.warning?1:0;};
     const gate=installGate(env,skip);
     if(gate?.optOut){
-      write(`技能提醒：按${gate.optOut}，这次没给 ${label} 挂钩子，以后安装也不会自动挂；要挂上运行 ${enableCommand(host)}。`
+      write(`技能提醒：按${gate.optOut}，这次没给 ${label} 挂钩子（只管这一次，下次不带它安装照常挂）。`
         +`已挂着的钩子不受影响，要关掉提醒在 ${localPath(env)} 写 {"enabled": false}。\n`);
-      const code=refresh({env,write});
-      return Math.max(code,await note());
+      return refresh({env,write});
     }
     if(gate){
       write(gate.pause?`⚠ 技能提醒：${gate.pause}，这次没给 ${label} 挂钩子；改好后重装或运行 ${enableCommand(host)}。\n`
@@ -554,7 +570,7 @@ export async function install({env=process.env,host,skip=false,node=process.exec
     }
     if(settled.hosts.includes(host)){
       write(settled.state==='ok'
-        ?`技能提醒：${label} 的钩子之前挂过后被移除，或你让安装别挂；这次不自动挂，要挂上运行 ${enableCommand(host)}。\n`
+        ?`技能提醒：${label} 的钩子之前挂过后被移除，按你的选择不再自动挂回，要挂上运行 ${enableCommand(host)}。\n`
         :`技能提醒：你之前开启技能提醒时没给 ${label} 挂钩子（或后来移除了），这次不自动挂；要挂上运行 ${enableCommand(host)}。\n`);
       return refresh({env,write});
     }
@@ -603,8 +619,9 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   }
   if(loaded.enabled){
     lines.push(`  对照表：CM 自带 ${loaded.defaultsError?`读取失败（${loaded.defaultsError}）`:`${loaded.cmCount} 条`}；用户自加 ${loaded.userCount} 条；关掉自带 ${loaded.disabledCount} 条`);
-    if(loaded.localError)lines.push(`  ⚠ ${localPath(env)} 读取失败（${loaded.localError}），用户规则未生效`);
-    lines.push(loaded.judge?'  自动调用：有 TypeSafe 密钥（TYPESAFE_API_KEY 或钥匙串）时由 Jev 判断，否则用关键词'
+    if(loaded.localError)lines.push(`  ⚠ ${localPath(env)} ${/^格式异常/.test(loaded.localError)?loaded.localError:`读取失败（${loaded.localError}）`}，用户设置未生效`);
+    lines.push(loaded.localError?'  自动调用：本地文件异常，不发给 Jev，只用关键词'
+      :loaded.judge?'  自动调用：有 TypeSafe 密钥（TYPESAFE_API_KEY 或钥匙串）时由 Jev 判断，否则用关键词'
       :`  自动调用：已关 Jev（${localPath(env)} 里 judge 为 false），只用关键词`);
   }
   return lines.join('\n')+'\n';

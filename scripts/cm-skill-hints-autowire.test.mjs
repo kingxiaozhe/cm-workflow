@@ -7,9 +7,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {withConfigLock} from './cm-config-lock.mjs';
 import {
   install,enable,main,statusText,hasHintHook,hookCommand,settledHosts,
-  localPath,installDir,autoPath,claudeSettingsPath,codexHooksPath,SCRIPT_NAME,
+  loadRules,localPath,installDir,autoPath,claudeSettingsPath,codexHooksPath,SCRIPT_NAME,
 } from './cm-skill-hints.mjs';
 
 const NODE='/usr/bin/node';
@@ -75,8 +76,8 @@ test('a repeated install keeps one hook and leaves the config bytes alone',async
 });
 
 for(const [label,options,env,local,settles] of [
-  ['the --no-skill-hints flag',{skip:true},{},undefined,true],
-  ['CM_SKILL_HINTS_INSTALL=off',{},{CM_SKILL_HINTS_INSTALL:'off'},undefined,true],
+  ['the --no-skill-hints flag',{skip:true},{},undefined,false],
+  ['CM_SKILL_HINTS_INSTALL=off',{},{CM_SKILL_HINTS_INSTALL:'off'},undefined,false],
   ['"enabled": false in the local file',{},{},{enabled:false},false],
 ]){
   test(`${label} keeps a fresh install from wiring anything`,async t=>{
@@ -90,22 +91,23 @@ for(const [label,options,env,local,settles] of [
       assert.ok(!fs.existsSync(b.file(host)));
     }
     assert.ok(!fs.existsSync(installDir(b.env)));
-    // An opt-out by flag or variable settles the host: a later plain install does not wire it.
-    // "enabled": false is a lasting switch of its own and settles nothing.
+    // The flag and the variable are for this run only, and "enabled": false is a switch of
+    // its own: none of them settles a host.
     assert.deepEqual(settledHosts(b.env).hosts.sort(),settles?['claude','codex']:[]);
   });
 }
 
-test('after an opt-out by flag, a later plain install does not wire that host',async t=>{
+test('an opt-out by flag or variable covers that run only: a later plain install wires the host',async t=>{
   const b=box(t);
   const skipped=await b.run('claude',{skip:true});
-  assert.match(skipped.out,/以后安装也不会自动挂/);
-  assert.match(skipped.out,/enable --claude/);
+  assert.match(skipped.out,/只管这一次/);
+  assert.doesNotMatch(skipped.out,/以后安装也不会自动挂/);
+  const off=await install({env:{...b.env,CM_SKILL_HINTS_INSTALL:'off'},host:'claude',node:NODE,write:()=>{}});
+  assert.equal(off,0);
+  assert.ok(!fs.existsSync(b.file('claude')));
   const plain=await b.run('claude');
   assert.equal(plain.code,0,plain.out);
-  assert.ok(!fs.existsSync(b.file('claude')));
-  assert.equal((await b.run('codex')).code,0);
-  assert.ok(b.wired('codex'),'the other host is still wired by default');
+  assert.ok(b.wired('claude'));
 });
 
 test('an opt-out run keeps an existing hook and says how to really turn hints off',async t=>{
@@ -232,8 +234,13 @@ test('the record is re-read and merged under the lock: another installer\'s host
   await b.run('claude');
   fs.rmSync(autoPath(b.env));
   writeRecord(b,'{"version":1,"hosts":[]}\n');
-  // Claude is wired; while this install runs, the Codex installer records codex.
-  const result=await b.run('claude',{beforeRecord:()=>writeRecord(b,'{"version":1,"hosts":["codex"]}\n')});
+  // Claude is wired. The Codex installer records codex after anything this install could
+  // have read and right before this install gets the lock: only a read under the lock sees it.
+  const lockRecord=(env,file,fn,options)=>{
+    writeRecord(b,'{"version":1,"hosts":["codex"]}\n');
+    return withConfigLock(env,file,fn,options);
+  };
+  const result=await b.run('claude',{lockRecord});
   assert.equal(result.code,0,result.out);
   assert.deepEqual(settledHosts(b.env).hosts.sort(),['claude','codex']);
 });
@@ -274,7 +281,9 @@ for(const [label,text] of [
   });
 }
 
-for(const [label,text] of [['a list','[]'],['null','null'],['enabled as a string','{"enabled":"false"}']]){
+for(const [label,text] of [['a list','[]'],['null','null'],['enabled as a string','{"enabled":"false"}'],
+  ['judge as a string','{"judge":"false"}'],['rules as an object','{"rules":{}}'],['disable as a string','{"disable":"fix-bug"}'],
+  ['disable with a number','{"disable":["fix-bug",1]}']]){
   test(`a local file holding ${label} keeps the install from wiring, with a warning`,async t=>{
     const b=box(t);
     fs.mkdirSync(b.env.CM_WORKFLOW_HOME,{recursive:true});
@@ -310,6 +319,24 @@ test('an install that finds the hook wired warns when the record cannot be writt
   assert.match(result.out,/⚠.*未能记下/);
   assert.ok(!fs.existsSync(autoPath(b.env)));
   assert.ok(b.wired('claude'));
+});
+
+test('at run time a local file with a wrong field type is ignored as a whole and never sends to Jev',async t=>{
+  const b=box(t);
+  fs.mkdirSync(b.env.CM_WORKFLOW_HOME,{recursive:true});
+  for(const text of ['{"judge":"false"}','{"rules":{}}','{"disable":"fix-bug"}','{"enabled":"false"}','{oops']){
+    fs.writeFileSync(localPath(b.env),text);
+    const loaded=loadRules({env:b.env});
+    assert.equal(loaded.judge,false,text);
+    assert.ok(loaded.localError,text);
+    assert.equal(loaded.userCount,0,text);
+  }
+  fs.writeFileSync(localPath(b.env),'{"judge":"false"}');
+  assert.match(statusText({env:b.env}),/⚠ .*格式异常（judge 只能是 true 或 false）.*用户设置未生效/);
+  assert.match(statusText({env:b.env}),/自动调用：.*本地文件异常.*只用关键词/);
+  fs.writeFileSync(localPath(b.env),'{"judge":true,"enabled":true,"rules":[],"disable":["x"]}');
+  assert.equal(loadRules({env:b.env}).judge,true);
+  assert.equal(loadRules({env:b.env}).localError,null);
 });
 
 test('a local file that cannot be read pauses the install default in status',async t=>{
