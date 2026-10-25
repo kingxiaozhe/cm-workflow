@@ -1440,8 +1440,8 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 `tasks.md` 记为完成，它的提交留在成员分支和工作树里。停止结果（以及之后每次 advance）带
 `files` 与 `guidance`。同组其他已完成未合并的成员也已在 `tasks.md` 记为完成；停下前宿主核对它们的已审交付
 并提交到各自分支，指引按任务顺序把它们连同冲突成员一起列出（分支与工作树）。
-旧版本或崩溃留下的停止，由之后的 advance 补提交；`status` 只读，不补提交，但会用 `unsealed` 点名还没确认提交的成员，
-指引要求先 advance 补提交再合并；v2 宿主取不到这时的控制目标时保留冲突结果，另给 `controlTargetUnavailable`。某个成员核对失败（工作树缺失、
+旧版本或崩溃留下的停止，由之后的 advance 补提交；`status` 只读，不补提交也不核对，`unsealed` 把所有未合并成员列为
+`batch_seal_unverified`，指引要求先 advance 一次，以 advance 返回的指引为准再合并；v2 宿主取不到这时的控制目标时保留冲突结果，另给 `controlTargetUnavailable`。某个成员核对失败（工作树缺失、
 检查点不符等）时仍返回冲突，结果的 `unsealed` 与指引会点名它：它的分支可能没有代码，先在其工作树核对再合。恢复步骤是：
 
 1. 在主目录按任务顺序逐个手动 `git merge --no-ff {成员分支}`，解决列出的冲突文件；

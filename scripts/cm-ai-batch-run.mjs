@@ -397,16 +397,10 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     }
     return unsealed;
   }
-  // Read-only counterpart for status: a member whose worktree is missing or still
-  // has uncommitted changes is not proven sealed and is named, nothing is written.
-  const unsealedReadOnly=()=>readyUnmerged().flatMap(key=>{
-    const {worktree}=location(key);
-    if(!fs.existsSync(worktree))return [{taskKey:key,code:'batch_worktree_missing'}];
-    const options=gitOptions(),excluded=config.externalModels||config.executionPolicy?['--','.',':!.cm-external-models-v1.json',':!.cm-model-config.lock']:[];
-    const result=spawnSync('git',['-C',worktree,'status','--porcelain',...excluded],{...options,env:{...options.env,GIT_OPTIONAL_LOCKS:'0'}});
-    if(result.error||result.status!==0)return [{taskKey:key,code:'batch_seal_unverified'}];
-    return result.stdout.trim()?[{taskKey:key,code:'batch_seal_pending'}]:[];
-  });
+  // status checks nothing and runs nothing: an empty Git status does not prove a
+  // reviewed delivery is on its branch, and Git may run configured programs. Every
+  // unmerged member is reported unverified; advance seals them and answers again.
+  const unsealedReadOnly=()=>readyUnmerged().map(key=>({taskKey:key,code:'batch_seal_unverified'}));
   async function mergeMember(row){
     const key=row.from_key,{worktree,branch}=location(key);
     let intent=progress().merging.get(key);

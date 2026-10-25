@@ -414,12 +414,12 @@ export async function batchFixture(mode,options={}){
       const read=await open().handle({operation:'status',requestId:'status-after-conflict'});
       assert.equal(read.code,'merge_conflict');assert.deepEqual(read.files,result.files);assert.match(read.guidance.nextStep,/T-002/);
       // ...but names the member not proven committed, and asks for advance before any merge.
-      assert.deepEqual(read.unsealed,[{taskKey:`${feature}/T-002`,code:'batch_seal_pending'}]);
+      assert.deepEqual(read.unsealed,['T-001','T-002'].map(id=>({taskKey:`${feature}/${id}`,code:'batch_seal_unverified'})));
       assert.match(read.guidance.prerequisites[0],/尚未确认提交到分支.*1\.work\/T-002.*advance 一次/);
       assert.throws(()=>git(codeProject,['show',`${t2}:file1.js`]));
       // A member that cannot be checked is named, and the conflict is still returned.
       fs.renameSync(t2tree,t2tree+'.away');
-      assert.deepEqual((await open().handle({operation:'status',requestId:'status-missing'})).unsealed,[{taskKey:`${feature}/T-002`,code:'batch_worktree_missing'}]);
+      assert.deepEqual((await open().handle({operation:'status',requestId:'status-missing'})).unsealed.map(item=>item.code),['batch_seal_unverified','batch_seal_unverified']);
       const unchecked=await open().handle({operation:'advance',requestId:'unsealed-after-conflict'});
       fs.renameSync(t2tree+'.away',t2tree);
       assert.equal(unchecked.code,'merge_conflict');assert.deepEqual(unchecked.files,result.files);
