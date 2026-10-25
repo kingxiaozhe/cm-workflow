@@ -12,8 +12,11 @@
 // and no tokens are spent; the CM table ships here, the user's own table lives in
 // ~/.cm-workflow/skill-hints.local.json and wins; the log keeps rule ids and times,
 // never message text. Any error exits quietly so a message is never held up.
-// Wiring is opt-in: `enable` adds the hook, the installer does not (yet); for users who
-// turned it on, the installer runs `refresh` so an upgrade reaches the copy the hook runs.
+// Wiring is on by default (decided 2026-10-25): each installer runs `install --host <its
+// host>`, which adds the hook once per host and otherwise only refreshes the copy the hook
+// runs. It never wires against the user's choice: --no-skill-hints,
+// CM_SKILL_HINTS_INSTALL=off, "enabled": false, or a hook the user removed after it was
+// there (see "settled hosts" below). `enable` still adds the hook by hand.
 //
 // Auto-invoke, decided 2026-10-25 (方案-技能自动调用): author skills the model cannot
 // start itself (`disable-model-invocation`) get a rule with `invoke`. When one fits, the
@@ -32,6 +35,7 @@ import {fileURLToPath} from 'node:url';
 export const SCRIPT_NAME='cm-skill-hints.mjs';
 export const RULES_NAME='cm-skill-hints.json';
 export const LOCAL_NAME='skill-hints.local.json';
+export const AUTO_NAME='skill-hints.auto.json';
 // Copied together into ~/.cm-workflow/skill-hints so the hook runs without the CM tree.
 // They are written before the script itself, so a failed copy leaves the old script.
 const COMPANIONS=['cm-matt-skills.mjs','cm-config-lock.mjs','cm-skill-judge.mjs',RULES_NAME];
@@ -50,6 +54,7 @@ export const cmHome=env=>path.resolve(env.CM_WORKFLOW_HOME||path.join(homeOf(env
 export const logFile=env=>path.join(path.resolve(env.CM_WORKFLOW_LOG_HOME||path.join(cmHome(env),'logs')),'skill-hints.jsonl');
 export const localPath=env=>path.join(cmHome(env),LOCAL_NAME);
 export const installDir=env=>path.join(cmHome(env),'skill-hints');
+export const autoPath=env=>path.join(cmHome(env),AUTO_NAME);
 export const claudeSettingsPath=env=>path.join(path.resolve(env.CLAUDE_HOME||path.join(homeOf(env),'.claude')),'settings.json');
 export const codexHooksPath=env=>path.join(path.resolve(env.CODEX_HOME||path.join(homeOf(env),'.codex')),'hooks.json');
 const here=path.dirname(fileURLToPath(import.meta.url));
@@ -393,11 +398,14 @@ class Drift extends Error{}
 // Read, merge and replace happen under the lock CM's other config writers share.
 // Programs outside CM do not take it, so the bytes are compared once more right
 // before the rename; if they changed, nothing is written.
-export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,write=text=>process.stdout.write(text),beforeReplace,lockWaitMs}={}){
+export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,write=text=>process.stdout.write(text),beforeReplace,lockWaitMs,notes=true}={}){
   const {withConfigLock,LockBusy}=await import('./cm-config-lock.mjs');
+  // Read before the copy exists: a copy made by this run must not look like an old enable.
+  const settled=settledHosts(env);
   try{copyInstall(env);}
   catch(error){write(`✗ 复制提醒脚本到 ${installDir(env)} 失败：${error.message}\n`);return 1;}
   let failed=0;
+  const done=[];
   for(const host of hosts){
     const file=configFile(host,env);
     let outcome;
@@ -409,12 +417,13 @@ export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,
         const shape=shapeError(read.value);
         if(shape)return `✗ ${LABEL[host]}：${file} 格式异常（${shape}），未改动。\n`;
         const config=read.value??{};
-        if(hasHintHook(config,env,host))return `${LABEL[host]}：提醒钩子已挂，未改动。\n`;
+        if(hasHintHook(config,env,host)){done.push(host);return `${LABEL[host]}：提醒钩子已挂，未改动。\n`;}
         writeAtomic(file,JSON.stringify(withHintHook(config,hookCommand(env,host,node)),null,2)+'\n',{before:()=>{
           beforeReplace?.(file);
           const now=readJson(file);
           if(read.missing?!now.missing:now.text!==read.text)throw new Drift();
         }});
+        done.push(host);
         return `${LABEL[host]}：已挂提醒钩子（${file}）。\n`;
       },lockWaitMs===undefined?{}:{waitMs:lockWaitMs});
     }catch(error){
@@ -425,10 +434,84 @@ export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,
     if(outcome.startsWith('✗'))failed++;
     write(outcome);
   }
-  if(hosts.includes('codex'))write('Codex 首次运行这条钩子时会请你确认信任；不确认它就不会运行。\n');
+  // Written even when nothing was wired, so a host that failed here is retried next install
+  // instead of being taken for an old enable's choice. Losing it costs only that retry.
+  try{settle(env,[...settled.hosts,...done],settled);}
+  catch(error){write(`⚠ 未能记下已挂的端（${autoPath(env)}）：${error.message}\n`);}
+  if(!notes)return failed?1:0;
+  if(hosts.includes('codex'))write(CODEX_TRUST);
   write(`关闭：在 ${localPath(env)} 写 {"enabled": false}。\n`);
   return failed?1:0;
 }
+const CODEX_TRUST='Codex 首次运行这条钩子时会请你确认信任；不确认它就不会运行。\n';
+
+// ---- install-time default ----
+// Settled hosts are those whose install-time default has been applied: the hook was added
+// or found there. A settled host without our hook is one the user took it out of, and no
+// install adds it back. The record is ~/.cm-workflow/skill-hints.auto.json, outside the
+// copy directory, so removing that directory to switch hints off is still respected.
+// Before the record existed, only `enable` made the copy directory: a copy without a record
+// means the user already chose their hosts, so both count as settled. A record CM cannot
+// read is treated the same way: when unsure, nothing is added.
+export function settledHosts(env){
+  const read=readJson(autoPath(env),{allowEmpty:true});
+  if(!read.missing){
+    if(read.error||!plainObject(read.value))return {hosts:[...HOSTS],recorded:false};
+    return {hosts:HOSTS.filter(host=>strings(read.value.hosts).includes(host)),recorded:true};
+  }
+  return {hosts:copyDirKind(env)==='dir'?[...HOSTS]:[],recorded:false};
+}
+function settle(env,hosts,before){
+  const next=HOSTS.filter(host=>hosts.includes(host));
+  if(before.recorded&&next.length===before.hosts.length)return;
+  writeAtomic(autoPath(env),JSON.stringify({version:1,hosts:next})+'\n');
+}
+const CLOSE_NOTE=env=>`关闭：在 ${localPath(env)} 写 {"enabled": false}，或重装时加 --no-skill-hints（Windows 用 -NoSkillHints）。`;
+const TYPESAFE_NOTE='有 TypeSafe 密钥时，handoff、wayfinder、improve-codebase-architecture 三个作者技能会把消息前 500 字发给 TypeSafe 判断。';
+const offReason=(env,skip)=>skip?'安装参数 --no-skill-hints'
+  :env.CM_SKILL_HINTS_INSTALL==='off'?'环境变量 CM_SKILL_HINTS_INSTALL=off':null;
+
+// Run by the installers for their own host. Adds the hook once, unless the user said no;
+// in every other case it only refreshes an existing copy. Never throws; 1 means a warning.
+export async function install({env=process.env,host,skip=false,node=process.execPath,write=text=>process.stdout.write(text),lockWaitMs}={}){
+  try{
+    const label=LABEL[host];
+    const local=readJson(localPath(env),{allowEmpty:true});
+    const off=offReason(env,skip);
+    if(off||local.error||local.value?.enabled===false){
+      write(off?`技能提醒：按${off}，未给 ${label} 挂钩子。\n`
+        :local.error?`⚠ 技能提醒：${localPath(env)} 读取失败（${local.error}），未给 ${label} 挂钩子；改好后重装或运行 enable。\n`
+        :`技能提醒：${localPath(env)} 里 enabled 为 false，未给 ${label} 挂钩子。\n`);
+      return refresh({env,write});
+    }
+    const file=configFile(host,env);
+    const read=readJson(file);
+    if(!read.error&&!shapeError(read.value)&&hasHintHook(read.value,env,host)){
+      const before=settledHosts(env);
+      const code=refresh({env,write});
+      try{settle(env,[...before.hosts,host],before);}catch{/* 下次安装再记 */}
+      return code;
+    }
+    const settled=settledHosts(env);
+    if(settled.hosts.includes(host)){
+      write(settled.recorded
+        ?`技能提醒：${label} 的钩子之前挂过、后来被移除，按你的选择不再自动挂回；要恢复运行 ${enableCommand(host)}。\n`
+        :`技能提醒：你之前开启技能提醒时没给 ${label} 挂钩子（或后来移除了），这次不自动挂；要挂上运行 ${enableCommand(host)}。\n`);
+      return refresh({env,write});
+    }
+    const code=await enable({env,hosts:[host],node,write,lockWaitMs,notes:false});
+    const now=readJson(file);
+    if(!now.error&&hasHintHook(now.value,env,host)){
+      write(`技能提醒：已给 ${label} 挂上技能提醒钩子，消息里有合适的技能时会提示你。${CLOSE_NOTE(env)}${TYPESAFE_NOTE}\n`);
+      if(host==='codex')write(CODEX_TRUST);
+    }
+    return code;
+  }catch(error){
+    write(`⚠ 技能提醒钩子未处理：${error.message}\n`);
+    return 1;
+  }
+}
+const enableCommand=host=>`node ${shellWord(fileURLToPath(import.meta.url))} enable --${host}`;
 
 export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   const lines=[];
@@ -440,6 +523,11 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   });
   const loaded=loadRules({env,rulesFile});
   lines.push(`skill hints: ${wired.join('，')}；开关 ${loaded.enabled?'开':`关（${localPath(env)} 里 enabled 为 false）`}`);
+  const off=offReason(env,false);
+  const settled=settledHosts(env).hosts;
+  lines.push(off?`  安装时自动挂：已关闭（${off.replace('环境变量 ','')}）`
+    :!loaded.enabled?`  安装时自动挂：已关闭（${localPath(env)} 里 enabled 为 false）`
+    :`  安装时自动挂：开；已处理过：${settled.length?`${settled.map(host=>LABEL[host]).join('、')}（删掉的钩子不会被自动挂回）`:'无'}`);
   if(!hintsInstalled(env))lines.push('  运行副本：未建（还没开启）');
   else if(runningFromCopy(env))lines.push('  ⚠ 这是从运行副本本身查的，无法核验它与已装版本是否一致；请用已装 CM 里的 cm-skill-hints.mjs status');
   else{
@@ -459,7 +547,7 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   return lines.join('\n')+'\n';
 }
 
-const USAGE='用法: cm-skill-hints.mjs hook --host claude|codex | status | refresh | enable [--claude] [--codex]\n';
+const USAGE='用法: cm-skill-hints.mjs hook --host claude|codex | status | refresh | enable [--claude] [--codex] | install --host claude|codex [--no-skill-hints]\n';
 
 export async function main(argv=process.argv.slice(2),{env=process.env,readInput=()=>fs.readFileSync(0,'utf8'),
   write=text=>process.stdout.write(text),error=text=>process.stderr.write(text)}={}){
@@ -479,6 +567,12 @@ export async function main(argv=process.argv.slice(2),{env=process.env,readInput
     const hosts=rest.length?rest.map(flag=>flag.replace(/^--/,'')):HOSTS;
     if(hosts.some(host=>!HOSTS.includes(host))){error(USAGE);return 2;}
     return enable({env,hosts});
+  }
+  if(command==='install'){
+    const [flag,host,...extra]=rest;
+    const skip=extra.length===1&&extra[0]==='--no-skill-hints';
+    if(flag!=='--host'||!HOSTS.includes(host)||(extra.length&&!skip)){error(USAGE);return 2;}
+    return install({env,host,skip,write});
   }
   error(USAGE);
   return 2;
