@@ -62,17 +62,24 @@ test('a message that looks like it holds a credential is never sent to Jev',asyn
 
 test('commit ids, hashes and ordinary text are not taken for credentials',()=>{
   for(const text of ['回滚到 0ddd39e5c3a1b2f4e6d8a0b1c2d3e4f5a6b7c8d9','sha256 是 e0a0932e42188fde6a8a93314616ca3ede14c6ddf029e98c10cb2c8b9fb6a425',
-    '上下文快满了，写个交接吧','把 token 过期时间改成 2 小时','密码输错三次要锁定账号','the password field should be masked',
-    '密码：','api key 怎么配'])
+    '上下文快满了，写个交接吧','这个仓库越写越乱了，帮我看看架构哪里值得改'])
     assert.equal(hasSecret(text),false,text);
 });
 
-// Decided 2026-10-25 after review round 3: no "this is only a description" exceptions
-// after a credential word and "is"/"是"/"=", because every such list let a real value
-// through. These stay local and fall back to keywords; nothing is blocked.
-test('a credential word followed by "is", "是" or "=" stays local, descriptions included',()=>{
-  for(const text of ['token 是什么意思','the password is required','密码是多少位比较安全','密码是必填项','password is not set'])
+// Decided 2026-10-25 after review round 5: a message that names a credential at all
+// stays local, descriptions included, because telling a labelled value from a
+// description kept leaking. These only fall back to keywords; nothing is blocked.
+test('any message naming a credential stays local, however it is written',async()=>{
+  const named=['token 是什么意思','the password is required','密码是多少位比较安全','密码是必填项','password is not set',
+    '把 token 过期时间改成 2 小时','密码输错三次要锁定账号','the password field should be masked','密码：','api key 怎么配',
+    // Round 5: the word inside Chinese quotes or backticks.
+    '写个交接，配置为 “密'+'码”=!Ab12','写个交接，配置为 `tok'+'en`=.abc123'];
+  for(const text of named){
     assert.equal(hasSecret(text),true,text);
+    const {calls,fetchImpl}=recorder(reply(HANDOFF));
+    assert.deepEqual(await judge({prompt:text,choices:CHOICES,key:'k',fetchImpl}),{error:'secret'},text);
+    assert.equal(calls.length,0,text);
+  }
 });
 
 test('only the first 500 characters are sent, counted by character not byte',async()=>{

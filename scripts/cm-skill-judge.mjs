@@ -23,11 +23,16 @@ export const THRESHOLD=0.5;
 export const NONE='none';
 const KEY_NAME='TYPESAFE_API_KEY';
 
-// Shapes of credentials people paste by accident. A false alarm only costs the Jev
-// call (keywords still run), so these lean towards catching too much. It is a
-// heuristic: a credential with no recognisable shape and no credential word nearby
-// can still pass, which the docs say.
-const CREDENTIAL_WORD='(?:api[_ -]?key|secret|token|passw(?:or)?d|pwd|passcode|access[_ -]?key|private[_ -]?key|credential|密钥|秘钥|密码|口令|令牌|凭证|凭据)';
+// What stays local (decided 2026-10-25 after five review rounds): any message that
+// names a credential at all (password, token, key, 密码, 密钥 …), whatever follows it,
+// and any message holding a known key shape or a long mixed-case run. Earlier versions
+// tried to tell a labelled value ("密码是 x") from a description ("token 是什么"); every
+// round found another way to write a value that slipped through (a value starting like
+// a description, punctuation, quotes around the word). Not sending any message that
+// mentions a credential has no such gap. It costs little: such a message only falls back
+// to keywords, and none of the 50 exam phrasings mentions one. A credential pasted with
+// no recognisable shape and no credential word can still pass, which the docs say.
+const CREDENTIAL_WORD=/api[_ -]?key|secret|token|passw(?:or)?d|pwd|passcode|access[_ -]?key|private[_ -]?key|credential|密钥|秘钥|密码|口令|令牌|凭证|凭据/i;
 const SECRET_PATTERNS=[
   /\bsk-[A-Za-z0-9_-]{16,}/,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/,
@@ -37,24 +42,13 @@ const SECRET_PATTERNS=[
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
   /\bBearer\s+[A-Za-z0-9._~+/-]{16,}/i,
-  // A credential word followed by an assignment or "is"/"是" and then any non-space
-  // character at all (a quote or punctuation included, so "token=.abc" counts):
-  // "密码：x", "api_key = x", "密钥是 x", "my password is x", however short. This also
-  // keeps descriptions such as "token 是什么" or "the password is required" local; that
-  // is on purpose (decided 2026-10-25 after three review rounds kept finding values
-  // that a list of "not a value" words let through): such a message only falls back to
-  // keywords, and a rule with no exceptions cannot be slipped past by a value that
-  // happens to start like a description.
-  new RegExp(`${CREDENTIAL_WORD}s?["'\\s]*(?:[:=：]|是|为|\\bis\\b|\\bwas\\b|=>)\\s*\\S`,'i'),
 ];
-const CREDENTIAL_NEAR=new RegExp(CREDENTIAL_WORD,'i');
 // A long run of letters and digits mixing cases and digits looks like a token; plain hex
 // (commit ids, hashes) does not.
 const tokenLike=word=>word.length>=32&&!/^[0-9a-f]+$/i.test(word)&&/[a-z]/.test(word)&&/[A-Z]/.test(word)&&/\d/.test(word);
-// With a credential word anywhere in the message, any long run counts, hex included.
-export const hasSecret=text=>SECRET_PATTERNS.some(pattern=>pattern.test(text))
-  ||(text.match(/[A-Za-z0-9_+/=-]{32,}/g)??[]).some(tokenLike)
-  ||(CREDENTIAL_NEAR.test(text)&&/[A-Za-z0-9_+/=-]{24,}/.test(text));
+export const hasSecret=text=>CREDENTIAL_WORD.test(text)
+  ||SECRET_PATTERNS.some(pattern=>pattern.test(text))
+  ||(text.match(/[A-Za-z0-9_+/=-]{32,}/g)??[]).some(tokenLike);
 
 // The key comes from TYPESAFE_API_KEY, else (macOS only) the login keychain, the same
 // place jev-mcp reads. Empty when neither has it.
