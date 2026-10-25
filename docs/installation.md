@@ -429,25 +429,35 @@ decided, never the message or the key.
 
 Installers turn it on by default. `install.sh` and `install.ps1` add the hook to
 `~/.claude/settings.json`, and `install-codex.sh` adds it to `~/.codex/hooks.json`,
-once per host; the output says so in one line, with how to turn it off and the
+once per host; the output says so in one line, with how to turn hints off and the
 TypeSafe note above. Codex asks you to trust the new hook the first time it runs;
-CM does not trust it for you. A later install does not add it again. An install does
-not wire the hook when:
+CM does not trust it for you. A later install does not add it again.
+
+To turn hints off, write `"enabled": false` in
+`~/.cm-workflow/skill-hints.local.json`: the hook stays in place but does nothing
+and sends nothing. `--no-skill-hints` does not turn anything off; it only stops
+installs from adding the hook. An install does not wire the hook when:
 
 - you pass `--no-skill-hints` (`-NoSkillHints` for `install.ps1`) or set
-  `CM_SKILL_HINTS_INSTALL=off` (this also works for `cm-workflow install`); this
-  applies to that run only;
-- `~/.cm-workflow/skill-hints.local.json` has `"enabled": false`, or cannot be read;
-- the hook was there for that host before and you removed it. CM keeps the hosts it
-  has wired or found wired in `~/.cm-workflow/skill-hints.auto.json`; a host listed
-  there without the hook is never wired again. If `~/.cm-workflow/skill-hints/` exists
-  but that file does not (you ran `enable` before installers did this), both hosts
-  count as already chosen, and nothing is added;
+  `CM_SKILL_HINTS_INSTALL=off` (this also works for `cm-workflow install`). The host
+  is then recorded as settled, so later installs without the flag do not wire it
+  either; a hook already there is kept;
+- `~/.cm-workflow/skill-hints.local.json` has `"enabled": false`; or it cannot be
+  read, or is not an object, or its `enabled` is not `true`/`false` (with a warning;
+  nothing is changed until you fix it);
+- that host is settled: the hook was there before and you removed it, or an earlier
+  install was told not to add it. CM keeps settled hosts in
+  `~/.cm-workflow/skill-hints.auto.json` (`{"version": 1, "hosts": [...]}`), written
+  under the same lock as its other config writes and before any copy is made. If
+  `~/.cm-workflow/skill-hints/` exists but that file does not (you ran `enable`
+  before installers did this), both hosts count as settled, and nothing is added;
+- `skill-hints.auto.json` cannot be read or has another shape: it is kept as it is,
+  with a warning, and no install adds the hook until you fix or delete it;
 - the host config cannot be read or has the wrong shape: it is left untouched and
   reported in one line, and the next install tries again.
 
 In every case the install itself still succeeds; a problem here is a warning. To add
-the hook by hand (for example after removing it):
+the hook by hand (for example to a settled host):
 
 ```bash
 node ~/.claude/scripts/cm-skill-hints.mjs enable

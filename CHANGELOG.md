@@ -6,11 +6,12 @@
 ## 未发布
 
 - **安装时默认挂上技能提醒钩子**：以前要自己跑 `cm-skill-hints.mjs enable` 才有技能提醒（包括 `grill-me` 这些作者技能的提醒和自动调用）；现在 `install.sh`、Windows 安装脚本默认给 Claude 挂上，`install-codex.sh` 默认给 Codex 挂上，每端只挂一次。
-  - 装完会打一行说明：已挂上、怎么关（本地文件写 `"enabled": false`，或重装时加 `--no-skill-hints`，Windows 用 `-NoSkillHints`），以及有 TypeSafe 密钥时三个作者技能会把消息前 500 字发给 TypeSafe 判断。Codex 首次运行这条钩子会请你确认信任，CM 不替你点。
-  - 这几种情况不挂：加了 `--no-skill-hints` 或设了 `CM_SKILL_HINTS_INSTALL=off`（只管这一次安装）；本地文件写了 `"enabled": false` 或读不了；你以前挂过、后来自己删了。
-  - 「删过」靠 `~/.cm-workflow/skill-hints.auto.json` 记：里面列着已经挂过（或发现已挂）的端，列过又没钩子就当是你删的，不再挂回。升级前就手动开过提醒的（副本目录在、没有这个文件），两端都当你已经选好，不会多挂。
-  - 配置文件读不了或格式不对：不改，报一行，下次安装再试；任何问题都只警告，不影响安装。
-  - `/cm-check`（`cm-skill-hints.mjs status`）多一行：安装时自动挂是开还是关、哪些端已经处理过。
+  - 装完会打一行说明：已挂上；想关掉提醒就在本地文件写 `"enabled": false`（钩子还在，但什么都不做、不外发）；以及有 TypeSafe 密钥时三个作者技能会把消息前 500 字发给 TypeSafe 判断。Codex 首次运行这条钩子会请你确认信任，CM 不替你点。
+  - 不想让安装自动挂：加 `--no-skill-hints`（Windows 用 `-NoSkillHints`）或设 `CM_SKILL_HINTS_INSTALL=off`。这一端会被记成「已处理」，以后不带参数重装也不会挂；它不会摘掉已经挂着的钩子，关提醒仍要写 `"enabled": false`。
+  - 这几种情况也不挂：本地文件写了 `"enabled": false`；本地文件读不了、不是对象或 `enabled` 不是 true/false（会警告）；你以前挂过、后来自己删了。
+  - 「已处理」记在 `~/.cm-workflow/skill-hints.auto.json`，格式固定为 `{"version": 1, "hosts": [...]}`。读、合并、写都在 CM 共用的配置锁里做，写之前再比一次内容，两个安装同时跑也不会互相盖掉。它在复制副本之前就写好，所以首次复制中途失败，下次安装照样会补挂。这个文件坏了或格式不对就原样保留、打警告，修好或删掉之前不自动挂。升级前就手动开过提醒的（副本目录在、没有这个文件），两端都当你已经选好，不会多挂。
+  - 配置文件读不了或格式不对：不改，报一行，下次安装再试；记录写不进去也打警告；任何问题都不影响安装。
+  - `/cm-check`（`cm-skill-hints.mjs status`）多一行：安装时自动挂是开、关还是暂停（本地文件或记录文件异常时），以及哪些端已经处理过。
 
 - **作者的三个手动技能按场景自动调起**：技能提醒钩子原来对所有技能都只显示一行提醒；现在 `handoff`、`wayfinder`、`improve-codebase-architecture` 三个（作者设为模型不能自己调用）在装了作者原版时改为自动调起。
   - `handoff`：钩子往模型上下文塞一句「先读这个技能的 `SKILL.md` 再照做」，同时给你显示「🤖 技能自动调用：已让模型用 /handoff」。
