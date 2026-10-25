@@ -5,23 +5,52 @@
       "id": "grill-plan",
       "skill": "grill-me",
       "author": true,
-      "keywords": ["设计一个方案", "帮我设计方案", "出个方案", "帮我想个方案", "这个方案行不行", "方案靠谱吗", "grill me", "stress-test my plan"],
+      "keywords": [],
       "reason": "先把方案逐题问透，再动手，少来回返工",
+      "fallback": {"skill": "cm-challenge", "reason": "先对方案做几轮追问和挑战，再动手"},
+      "patterns": ["^(?![\\s\\S]*(技术方案|技术选型|架构方案|数据模型|表结构|术语表|决策记录|\\badr\\b|glossary|代码库|仓库|codebase|\\brepo\\b|technical design|tech design|grill with docs))[\\s\\S]*(设计一个方案|帮我设计方案|出个方案|帮我想个方案|这个方案行不行|方案靠谱吗|还没想清楚|没想清楚怎么|逼问我|追问我|拷问我|帮我理清方案|把方案理清|理清思路|grill me|stress[- ]test (my|this|the) (plan|idea)|poke holes in (my|this|the) (plan|idea)|haven'?t thought (it|this) through|help me think (it|this) through)", "^(?![\\s\\S]*(技术方案|技术选型|架构方案|数据模型|表结构|术语表|决策记录|\\badr\\b|glossary|代码库|仓库|codebase|\\brepo\\b|technical design|tech design|grill with docs))(?![\\s\\S]*(jmeter|locust|\\bwrk\\b|\\bk6\\b|吞吐|qps|tps|p9\\d|并发|延迟|响应时间|性能|压测|负载|接口|load test))[\\s\\S]*(压力测试(一下|下)(这个|我的|这套)?(方案|想法|思路|计划)|压力测试(这个|我的|这套)(方案|想法|思路|计划)|给(这个|我的)?(方案|想法|思路|计划)做(个|一下|一轮)?压力测试)"]
+    },
+    {
+      "id": "grill-repo-plan",
+      "skill": "grill-with-docs",
+      "author": true,
+      "keywords": [],
+      "patterns": ["^(?=[\\s\\S]*(技术方案|技术选型|架构方案|数据模型|表结构|术语表|决策记录|\\badr\\b|glossary|代码库|仓库|codebase|\\brepo\\b|technical design|tech design|grill with docs))[\\s\\S]*(设计一个方案|帮我设计方案|出个方案|帮我想个方案|这个方案行不行|方案靠谱吗|还没想清楚|没想清楚怎么|逼问我|追问我|拷问我|帮我理清方案|把方案理清|理清思路|grill me|stress[- ]test (my|this|the) (plan|idea)|poke holes in (my|this|the) (plan|idea)|haven'?t thought (it|this) through|help me think (it|this) through)", "^(?=[\\s\\S]*(技术方案|技术选型|架构方案|数据模型|表结构|术语表|决策记录|\\badr\\b|glossary|代码库|仓库|codebase|\\brepo\\b|technical design|tech design|grill with docs))(?![\\s\\S]*(jmeter|locust|\\bwrk\\b|\\bk6\\b|吞吐|qps|tps|p9\\d|并发|延迟|响应时间|性能|压测|负载|接口|load test))[\\s\\S]*(压力测试(一下|下)(这个|我的|这套)?(方案|想法|思路|计划)|压力测试(这个|我的|这套)(方案|想法|思路|计划)|给(这个|我的)?(方案|想法|思路|计划)做(个|一下|一轮)?压力测试)", "^[\\s\\S]*(?:(定|敲定|设计)(一下|一个)?技术方案|技术方案(怎么定|怎么选|行不行|靠谱吗)|技术选型怎么定|grill with docs|nail down the (technical|tech) design)"],
+      "reason": "在仓库里把技术方案问透，结论记进术语表和决策记录",
       "fallback": {"skill": "cm-challenge", "reason": "先对方案做几轮追问和挑战，再动手"}
     },
     {
       "id": "long-session",
       "skill": "handoff",
       "author": true,
-      "keywords": ["会话太长", "上下文太长", "上下文快满", "换个会话", "开个新会话", "新开一个会话", "context is getting long", "start a new session"],
-      "reason": "先写交接摘要，再换新会话接着做"
+      "keywords": ["会话太长", "上下文太长", "上下文快满", "换个会话", "开个新会话", "新开一个会话", "context is getting long", "start a new session", "上下文不够了", "上下文要满了", "上下文快爆了", "上下文快用完", "下个会话接着做", "新会话接着做", "hand off to a new session", "running out of context", "context window is almost full", "continue in a new session"],
+      "reason": "先写交接摘要，再换新会话接着做",
+      "patterns": ["^(?=[\\s\\S]*(新会话|新的会话|下个会话|下一个会话|换(个|一个)?会话|开(个|一个)?新会话|(上下文|会话)((快|要)(满|爆|用完)|不够|满了|爆了|用完了|太长)))[\\s\\S]*交接"]
     },
     {
       "id": "multi-session-work",
       "skill": "wayfinder",
       "author": true,
-      "keywords": ["好几个会话", "多个会话", "分几个会话", "一个会话做不完", "大改造", "spans several sessions"],
-      "reason": "把大活拆成决策票，一张张推进"
+      "keywords": ["好几个会话", "多个会话", "分几个会话", "一个会话做不完", "大改造", "spans several sessions", "拆成几个会话", "跨好几个会话", "好几天才能做完", "分阶段推进", "拆成决策票", "too big for one session", "across several sessions", "multi-session"],
+      "reason": "把大活拆成决策票，一张张推进",
+      "fallback": {"skill": "cm-prd", "reason": "先把大活拆成规格和任务，再分批开发"}
+    },
+    {
+      "id": "improve-architecture",
+      "skill": "improve-codebase-architecture",
+      "author": true,
+      "keywords": [],
+      "patterns": ["^(?![\\s\\S]*(只整理结构|不改变行为|不改行为|重构一下|refactor without changing behavior))[\\s\\S]*(接口太碎|模块太碎|拆得太碎|架构(太|很|好)?乱|代码(太|很)乱|不知道从哪(里|儿)?(开始|下手)?重构|从哪(里|儿)?(开始|下手)重构|想整理(一下)?代码结构|改善(一下)?架构|优化(一下)?架构|架构(该)?怎么改|耦合太(重|严重|紧)|模块边界不清|越写越乱|improve (the )?(codebase )?architecture|architecture is a mess|codebase is a mess|where to start refactoring|too many shallow modules)"],
+      "reason": "先找出值得重构的地方，出一份报告再动手",
+      "fallback": {"skill": "cm-refactor", "reason": "按边界分批重构，用行为判官保证行为不变"}
+    },
+    {
+      "id": "throwaway-prototype",
+      "skill": "prototype",
+      "author": true,
+      "keywords": [],
+      "patterns": ["^[\\s\\S]*(?:做(个|一个|几个|一版|几版)[^，。！？,.!?\\n]{0,12}原型(?!链|继承|对象|方法|属性|模式)|原型(?!链|继承|对象|方法|属性|模式)(让我|给我)?(看看|瞧瞧|试试)|出(个|一个|几版)原型(?!链|继承|对象|方法|属性|模式)|用完就扔的原型(?!链|继承|对象|方法|属性|模式)|做几版[^，。！？,.!?\\n]{0,8}(界面|页面)|(界面|页面)该长什么样|mock up (a few|some|several) (versions|variants)|clickable mock-?up)"],
+      "reason": "做个用完就扔的原型，先看手感再定方案"
     },
     {
       "id": "raw-idea",
@@ -38,7 +67,7 @@
     {
       "id": "start-build",
       "skill": "cm-ai",
-      "keywords": ["规格已确认", "按规格开发", "按 specs 开发", "开始实现这个规格"],
+      "keywords": ["规格已确认", "按规格开发", "按 specs 开发", "开始实现这个规格", "spec is approved", "implement the approved spec"],
       "reason": "按已审批的规格开发，带独立审查和测试"
     },
     {
@@ -50,7 +79,7 @@
     {
       "id": "test-existing",
       "skill": "cm-test",
-      "keywords": ["测一下已有功能", "补单测", "补齐单测", "覆盖率", "走查一下页面", "回归测试", "test coverage"],
+      "keywords": ["测一下已有功能", "补单测", "补齐单测", "走查一下页面", "回归测试", "test coverage", "看看覆盖率", "测一下覆盖率", "覆盖率不够", "覆盖率太低", "提高覆盖率"],
       "reason": "按改动范围分析回归重点，补测试或走查"
     },
     {
@@ -68,19 +97,19 @@
     {
       "id": "install-check",
       "skill": "cm-check",
-      "keywords": ["找不到 cm 命令", "cm 装好了吗", "cm 装对了吗", "检查工作流安装", "cm 自检"],
+      "keywords": ["找不到 cm 命令", "cm 装好了吗", "cm 装对了吗", "检查工作流安装", "cm 自检", "cm command not found", "check the cm install"],
       "reason": "核对 CM 安装和版本"
     },
     {
       "id": "adopt-project",
       "skill": "cm-init",
-      "keywords": ["接管这个项目", "第一次接手这个仓库", "生成项目规则", "分析仓库生成规则"],
+      "keywords": ["接管这个项目", "第一次接手这个仓库", "生成项目规则", "分析仓库生成规则", "take over this repo", "generate project rules"],
       "reason": "分析已有代码，生成项目规则"
     },
     {
       "id": "notify-channel",
       "skill": "cm-notify",
-      "keywords": ["卡住提醒", "推送到手机", "换成 bark", "换成 pushplus", "提醒推到哪"],
+      "keywords": ["卡住提醒", "推送到手机", "换成 bark", "换成 pushplus", "提醒推到哪", "switch notifications to bark", "where do cm alerts go"],
       "reason": "查看或切换 CM 卡住提醒的推送渠道"
     }
   ]
