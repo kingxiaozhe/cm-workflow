@@ -28,7 +28,6 @@ const KEY_NAME='TYPESAFE_API_KEY';
 // heuristic: a credential with no recognisable shape and no credential word nearby
 // can still pass, which the docs say.
 const CREDENTIAL_WORD='(?:api[_ -]?key|secret|token|passw(?:or)?d|pwd|passcode|access[_ -]?key|private[_ -]?key|credential|密钥|秘钥|密码|口令|令牌|凭证|凭据)';
-const NOT_A_VALUE='(?:什么|多少|怎么|怎样|如何|哪|多长|几位|必填|必须|错误|错的|不对|正确|对的|空的|过期|required|optional|wrong|incorrect|invalid|correct|empty|missing|expired|not\\b|the\\b|a\\b|an\\b|too\\b|set\\b|stored\\b|hashed\\b)';
 const SECRET_PATTERNS=[
   /\bsk-[A-Za-z0-9_-]{16,}/,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/,
@@ -38,10 +37,14 @@ const SECRET_PATTERNS=[
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
   /\bBearer\s+[A-Za-z0-9._~+/-]{16,}/i,
-  // "密码：x", "api_key = x", and in words: "密钥是 x", "my password is x". A labelled
-  // value counts however short ("密码是 1234"); a question or description after the
-  // label ("token 是什么", "password is required") does not.
-  new RegExp(`${CREDENTIAL_WORD}["'\\s]*(?:[:=：]|是|为|is|was|=>)\\s*["'“]?(?!${NOT_A_VALUE})[^\\s"'”，。,.?？!！]{3,}`,'i'),
+  // A credential word followed by an assignment or "is"/"是" and then anything at all:
+  // "密码：x", "api_key = x", "密钥是 x", "my password is x", however short. This also
+  // keeps descriptions such as "token 是什么" or "the password is required" local; that
+  // is on purpose (decided 2026-10-25 after three review rounds kept finding values
+  // that a list of "not a value" words let through): such a message only falls back to
+  // keywords, and a rule with no exceptions cannot be slipped past by a value that
+  // happens to start like a description.
+  new RegExp(`${CREDENTIAL_WORD}s?["'\\s]*(?:[:=：]|是|为|\\bis\\b|\\bwas\\b|=>)\\s*["'“]?[^\\s"'”，。,.?？!！]`,'i'),
 ];
 const CREDENTIAL_NEAR=new RegExp(CREDENTIAL_WORD,'i');
 // A long run of letters and digits mixing cases and digits looks like a token; plain hex

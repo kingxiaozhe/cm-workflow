@@ -40,6 +40,11 @@ const fake={
   shortWords:'密码'+'是 1234',
   shortEnglish:'my pass'+'word is abcde',
   shortAssign:'token'+'=xyz',
+  // Round 3: a value that starts like a description, and one or two characters.
+  descriptionPrefix:'my pass'+'word is correct123',
+  requiredPrefix:'token'+'=required123',
+  twoChars:'密码'+'是 12',
+  oneChar:'密码'+'是1',
 };
 
 test('a message that looks like it holds a credential is never sent to Jev',async()=>{
@@ -53,9 +58,17 @@ test('a message that looks like it holds a credential is never sent to Jev',asyn
 
 test('commit ids, hashes and ordinary text are not taken for credentials',()=>{
   for(const text of ['回滚到 0ddd39e5c3a1b2f4e6d8a0b1c2d3e4f5a6b7c8d9','sha256 是 e0a0932e42188fde6a8a93314616ca3ede14c6ddf029e98c10cb2c8b9fb6a425',
-    '上下文快满了，写个交接吧','把 token 过期时间改成 2 小时','密码输错三次要锁定账号','the password field should be masked','token 是什么意思',
-    'the password is required','密码是多少位比较安全','密码是必填项','password is not set'])
+    '上下文快满了，写个交接吧','把 token 过期时间改成 2 小时','密码输错三次要锁定账号','the password field should be masked',
+    '密码：','api key 怎么配'])
     assert.equal(hasSecret(text),false,text);
+});
+
+// Decided 2026-10-25 after review round 3: no "this is only a description" exceptions
+// after a credential word and "is"/"是"/"=", because every such list let a real value
+// through. These stay local and fall back to keywords; nothing is blocked.
+test('a credential word followed by "is", "是" or "=" stays local, descriptions included',()=>{
+  for(const text of ['token 是什么意思','the password is required','密码是多少位比较安全','密码是必填项','password is not set'])
+    assert.equal(hasSecret(text),true,text);
 });
 
 test('only the first 500 characters are sent, counted by character not byte',async()=>{
