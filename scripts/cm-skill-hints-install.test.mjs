@@ -109,7 +109,7 @@ test('install.sh --no-skill-hints wires nothing and makes no copy',
     const box = sandbox(t);
     const result = install('install.sh', box.env, ['--yes', '--no-skill-hints']);
     assert.equal(result.status, 0, output(result));
-    assert.match(output(result), /未给 Claude 挂钩子/);
+    assert.match(output(result), /没给 Claude 挂钩子.*以后安装也不会自动挂/);
     assert.ok(!fs.existsSync(box.copy));
     assert.doesNotMatch(bytesOf(box.settings) ?? '', /cm-skill-hints/);
   });
@@ -138,7 +138,7 @@ test('install.sh does not add back a hook the user removed',
     const result = install('install.sh', box.env);
     assert.equal(result.status, 0, output(result));
     assert.equal(bytesOf(box.settings), '{"hooks":{"UserPromptSubmit":[]}}\n');
-    assert.match(output(result), /后来被移除/);
+    assert.match(output(result), /之前挂过后被移除/);
   });
 
 const pwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0;

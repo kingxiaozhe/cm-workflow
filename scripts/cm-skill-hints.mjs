@@ -398,11 +398,17 @@ class Drift extends Error{}
 // Read, merge and replace happen under the lock CM's other config writers share.
 // Programs outside CM do not take it, so the bytes are compared once more right
 // before the rename; if they changed, nothing is written.
-export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,write=text=>process.stdout.write(text),beforeReplace,lockWaitMs,notes=true}={}){
+export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,write=text=>process.stdout.write(text),beforeReplace,lockWaitMs,
+  notes=true,requireRecord=false,copyFiles=copyInstall}={}){
   const {withConfigLock,LockBusy}=await import('./cm-config-lock.mjs');
-  // Read before the copy exists: a copy made by this run must not look like an old enable.
-  const settled=settledHosts(env);
-  try{copyInstall(env);}
+  // The record is written before the copy, so a copy this run leaves half made is never
+  // taken for an old enable's (see settledHosts). Only the installer insists on it.
+  const noted=await noteRecord(env,[],{lockWaitMs});
+  if(noted.warning){
+    write(noted.warning);
+    if(requireRecord)return 1;
+  }
+  try{copyFiles(env);}
   catch(error){write(`✗ 复制提醒脚本到 ${installDir(env)} 失败：${error.message}\n`);return 1;}
   let failed=0;
   const done=[];
@@ -434,75 +440,129 @@ export async function enable({env=process.env,hosts=HOSTS,node=process.execPath,
     if(outcome.startsWith('✗'))failed++;
     write(outcome);
   }
-  // Written even when nothing was wired, so a host that failed here is retried next install
-  // instead of being taken for an old enable's choice. Losing it costs only that retry.
-  try{settle(env,[...settled.hosts,...done],settled);}
-  catch(error){write(`⚠ 未能记下已挂的端（${autoPath(env)}）：${error.message}\n`);}
+  if(done.length&&!noted.warning){
+    const after=await noteRecord(env,done,{lockWaitMs});
+    if(after.warning){write(after.warning);failed++;}
+  }
   if(!notes)return failed?1:0;
   if(hosts.includes('codex'))write(CODEX_TRUST);
-  write(`关闭：在 ${localPath(env)} 写 {"enabled": false}。\n`);
+  write(`关掉提醒：在 ${localPath(env)} 写 {"enabled": false}。\n`);
   return failed?1:0;
 }
 const CODEX_TRUST='Codex 首次运行这条钩子时会请你确认信任；不确认它就不会运行。\n';
 
 // ---- install-time default ----
 // Settled hosts are those whose install-time default has been applied: the hook was added
-// or found there. A settled host without our hook is one the user took it out of, and no
-// install adds it back. The record is ~/.cm-workflow/skill-hints.auto.json, outside the
-// copy directory, so removing that directory to switch hints off is still respected.
-// Before the record existed, only `enable` made the copy directory: a copy without a record
-// means the user already chose their hosts, so both count as settled. A record CM cannot
-// read is treated the same way: when unsure, nothing is added.
+// or found there, or an install was told not to add it (--no-skill-hints,
+// CM_SKILL_HINTS_INSTALL=off). A settled host without our hook is never wired by an install.
+// The record is ~/.cm-workflow/skill-hints.auto.json, outside the copy directory, so
+// removing that directory to switch hints off is still respected. It is written before the
+// copy is made, so a copy without a record can only come from an `enable` older than the
+// record: that user already chose their hosts, and both count as settled.
+// A record CM cannot read or whose shape is unknown is kept as is, and no install adds a
+// hook while it is there.
+function readRecord(env){
+  const read=readJson(autoPath(env));
+  if(read.missing)return {state:'missing',read};
+  const value=read.value;
+  if(read.error||!plainObject(value)||value.version!==1||!Array.isArray(value.hosts)||!value.hosts.every(host=>HOSTS.includes(host)))
+    return {state:'invalid',read,reason:read.error??'格式异常'};
+  return {state:'ok',read,hosts:HOSTS.filter(host=>value.hosts.includes(host))};
+}
+const legacyHosts=env=>copyDirKind(env)==='dir'?[...HOSTS]:[];
 export function settledHosts(env){
-  const read=readJson(autoPath(env),{allowEmpty:true});
-  if(!read.missing){
-    if(read.error||!plainObject(read.value))return {hosts:[...HOSTS],recorded:false};
-    return {hosts:HOSTS.filter(host=>strings(read.value.hosts).includes(host)),recorded:true};
-  }
-  return {hosts:copyDirKind(env)==='dir'?[...HOSTS]:[],recorded:false};
+  const record=readRecord(env);
+  return {state:record.state,reason:record.reason,
+    hosts:record.state==='ok'?record.hosts:record.state==='missing'?legacyHosts(env):[...HOSTS]};
 }
-function settle(env,hosts,before){
-  const next=HOSTS.filter(host=>hosts.includes(host));
-  if(before.recorded&&next.length===before.hosts.length)return;
-  writeAtomic(autoPath(env),JSON.stringify({version:1,hosts:next})+'\n');
+const recordWarning=(env,reason)=>`⚠ 技能提醒：${autoPath(env)} 异常（${reason}），已保留原样；修好或删掉它之前，安装不会自动挂钩子。\n`;
+// Adds hosts to the record. Read, check, merge and replace happen under the shared config
+// lock, and the bytes are compared again right before the rename. Never throws: a problem
+// comes back as one warning line.
+async function noteRecord(env,add,{lockWaitMs,beforeReplace}={}){
+  const file=autoPath(env);
+  try{
+    const {withConfigLock,LockBusy}=await import('./cm-config-lock.mjs');
+    try{
+      return withConfigLock(env,file,()=>{
+        const record=readRecord(env);
+        if(record.state==='invalid')return {warning:recordWarning(env,record.reason)};
+        const base=record.state==='ok'?record.hosts:legacyHosts(env);
+        const next=HOSTS.filter(host=>base.includes(host)||add.includes(host));
+        if(record.state==='ok'&&next.length===base.length)return {hosts:next};
+        writeAtomic(file,JSON.stringify({version:1,hosts:next})+'\n',{before:()=>{
+          beforeReplace?.();
+          const now=readJson(file);
+          if(record.read.missing?!now.missing:now.text!==record.read.text)throw new Drift();
+        }});
+        return {hosts:next};
+      },lockWaitMs===undefined?{}:{waitMs:lockWaitMs});
+    }catch(error){
+      const why=error instanceof Drift?'刚被其他程序改动':error instanceof LockBusy?'另一个 CM 程序正在改它':error.message;
+      return {warning:`⚠ 技能提醒：未能记下已处理的端（${file}：${why}）；不影响本次安装，下次安装再记。\n`};
+    }
+  }catch(error){return {warning:`⚠ 技能提醒：未能记下已处理的端（${file}：${error.message}）。\n`};}
 }
-const CLOSE_NOTE=env=>`关闭：在 ${localPath(env)} 写 {"enabled": false}，或重装时加 --no-skill-hints（Windows 用 -NoSkillHints）。`;
+
+const OFF_NOTE=env=>`关掉提醒：在 ${localPath(env)} 写 {"enabled": false}`;
 const TYPESAFE_NOTE='有 TypeSafe 密钥时，handoff、wayfinder、improve-codebase-architecture 三个作者技能会把消息前 500 字发给 TypeSafe 判断。';
-const offReason=(env,skip)=>skip?'安装参数 --no-skill-hints'
-  :env.CM_SKILL_HINTS_INSTALL==='off'?'环境变量 CM_SKILL_HINTS_INSTALL=off':null;
+
+// Why an install must not add the hook now, or null. `optOut` is the user saying no to the
+// install default (settled); `pause` is something CM cannot read, so it does nothing.
+function installGate(env,skip){
+  if(skip)return {optOut:'安装参数 --no-skill-hints'};
+  if(env.CM_SKILL_HINTS_INSTALL==='off')return {optOut:'环境变量 CM_SKILL_HINTS_INSTALL=off'};
+  const local=readJson(localPath(env),{allowEmpty:true});
+  if(local.missing)return null;
+  const value=local.value;
+  if(local.error)return {pause:`${localPath(env)} 读取失败（${local.error}）`};
+  if(!plainObject(value)||(value.enabled!==undefined&&typeof value.enabled!=='boolean'))
+    return {pause:`${localPath(env)} 格式异常（应为对象，enabled 只能是 true 或 false）`};
+  if(value.enabled===false)return {off:`${localPath(env)} 里 enabled 为 false`};
+  return null;
+}
 
 // Run by the installers for their own host. Adds the hook once, unless the user said no;
 // in every other case it only refreshes an existing copy. Never throws; 1 means a warning.
-export async function install({env=process.env,host,skip=false,node=process.execPath,write=text=>process.stdout.write(text),lockWaitMs}={}){
+export async function install({env=process.env,host,skip=false,node=process.execPath,write=text=>process.stdout.write(text),lockWaitMs,
+  beforeRecord,beforeRecordReplace,copyFiles}={}){
   try{
     const label=LABEL[host];
-    const local=readJson(localPath(env),{allowEmpty:true});
-    const off=offReason(env,skip);
-    if(off||local.error||local.value?.enabled===false){
-      write(off?`技能提醒：按${off}，未给 ${label} 挂钩子。\n`
-        :local.error?`⚠ 技能提醒：${localPath(env)} 读取失败（${local.error}），未给 ${label} 挂钩子；改好后重装或运行 enable。\n`
-        :`技能提醒：${localPath(env)} 里 enabled 为 false，未给 ${label} 挂钩子。\n`);
+    const note=async()=>{beforeRecord?.();const noted=await noteRecord(env,[host],{lockWaitMs,beforeReplace:beforeRecordReplace});if(noted.warning)write(noted.warning);return noted.warning?1:0;};
+    const gate=installGate(env,skip);
+    if(gate?.optOut){
+      write(`技能提醒：按${gate.optOut}，这次没给 ${label} 挂钩子，以后安装也不会自动挂；要挂上运行 ${enableCommand(host)}。`
+        +`已挂着的钩子不受影响，要关掉提醒在 ${localPath(env)} 写 {"enabled": false}。\n`);
+      const code=refresh({env,write});
+      return Math.max(code,await note());
+    }
+    if(gate){
+      write(gate.pause?`⚠ 技能提醒：${gate.pause}，这次没给 ${label} 挂钩子；改好后重装或运行 ${enableCommand(host)}。\n`
+        :`技能提醒：${gate.off}，没给 ${label} 挂钩子。\n`);
       return refresh({env,write});
     }
     const file=configFile(host,env);
     const read=readJson(file);
     if(!read.error&&!shapeError(read.value)&&hasHintHook(read.value,env,host)){
-      const before=settledHosts(env);
       const code=refresh({env,write});
-      try{settle(env,[...before.hosts,host],before);}catch{/* 下次安装再记 */}
-      return code;
+      return Math.max(code,await note());
     }
     const settled=settledHosts(env);
+    if(settled.state==='invalid'){
+      write(recordWarning(env,settled.reason).replace(/\n$/,`这次没给 ${label} 挂钩子。\n`));
+      return Math.max(refresh({env,write}),1);
+    }
     if(settled.hosts.includes(host)){
-      write(settled.recorded
-        ?`技能提醒：${label} 的钩子之前挂过、后来被移除，按你的选择不再自动挂回；要恢复运行 ${enableCommand(host)}。\n`
+      write(settled.state==='ok'
+        ?`技能提醒：${label} 的钩子之前挂过后被移除，或你让安装别挂；这次不自动挂，要挂上运行 ${enableCommand(host)}。\n`
         :`技能提醒：你之前开启技能提醒时没给 ${label} 挂钩子（或后来移除了），这次不自动挂；要挂上运行 ${enableCommand(host)}。\n`);
       return refresh({env,write});
     }
-    const code=await enable({env,hosts:[host],node,write,lockWaitMs,notes:false});
+    const code=await enable({env,hosts:[host],node,write,lockWaitMs,notes:false,requireRecord:true,...(copyFiles?{copyFiles}:{})});
     const now=readJson(file);
     if(!now.error&&hasHintHook(now.value,env,host)){
-      write(`技能提醒：已给 ${label} 挂上技能提醒钩子，消息里有合适的技能时会提示你。${CLOSE_NOTE(env)}${TYPESAFE_NOTE}\n`);
+      write(`技能提醒：已给 ${label} 挂上技能提醒钩子，消息里有合适的技能时会提示你。${OFF_NOTE(env)}`
+        +`（重装加 --no-skill-hints 只是不自动挂，不会摘掉已挂的钩子）。${TYPESAFE_NOTE}\n`);
       if(host==='codex')write(CODEX_TRUST);
     }
     return code;
@@ -523,11 +583,14 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   });
   const loaded=loadRules({env,rulesFile});
   lines.push(`skill hints: ${wired.join('，')}；开关 ${loaded.enabled?'开':`关（${localPath(env)} 里 enabled 为 false）`}`);
-  const off=offReason(env,false);
-  const settled=settledHosts(env).hosts;
-  lines.push(off?`  安装时自动挂：已关闭（${off.replace('环境变量 ','')}）`
-    :!loaded.enabled?`  安装时自动挂：已关闭（${localPath(env)} 里 enabled 为 false）`
-    :`  安装时自动挂：开；已处理过：${settled.length?`${settled.map(host=>LABEL[host]).join('、')}（删掉的钩子不会被自动挂回）`:'无'}`);
+  // Same gate and record as `install`, so status never says "on" where an install would not wire.
+  const gate=installGate(env,false);
+  const settled=settledHosts(env);
+  lines.push(gate?.optOut?`  安装时自动挂：已关闭（${gate.optOut.replace('环境变量 ','')}）`
+    :gate?.off?`  安装时自动挂：已关闭（${gate.off}）`
+    :gate?.pause?`  安装时自动挂：暂停（${gate.pause}）`
+    :settled.state==='invalid'?`  安装时自动挂：暂停（${autoPath(env)} 异常：${settled.reason}）`
+    :`  安装时自动挂：开；已处理过：${settled.hosts.length?`${settled.hosts.map(host=>LABEL[host]).join('、')}（这些端不会再被自动挂上）`:'无'}`);
   if(!hintsInstalled(env))lines.push('  运行副本：未建（还没开启）');
   else if(runningFromCopy(env))lines.push('  ⚠ 这是从运行副本本身查的，无法核验它与已装版本是否一致；请用已装 CM 里的 cm-skill-hints.mjs status');
   else{
