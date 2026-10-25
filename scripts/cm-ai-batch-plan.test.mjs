@@ -78,6 +78,13 @@ test('max bounds the group; a member needing a task still to run is not pulled a
   const lastDone=`- [ ] T-001: a${scope('a.js')}\n- [ ] T-002: b${scope('b.js')}\n- [ ] T-003: c${scope('c.js')}\n- [x] T-004: final${scope('d.js')}\n`;
   const donePlan=project(t,lastDone).plan();
   assert.equal(donePlan.mode,'batch');assert.deepEqual(donePlan.groups,[]);
+  // T-003 runs first, so T-002 runs last: it collects the deferred QA and cannot be a
+  // member, and the host refuses a hand-written tail group for a new batch.
+  const tail=`- [ ] T-001: a${scope('a.js')}\n- [ ] T-002: b${scope('b.js')}\n- [ ] T-003: c${scope('c.js')}\n\n- T-001 依赖 T-003\n- T-002 依赖 T-003\n`;
+  const tailProject=project(t,tail),tailPlan=tailProject.plan({enabled:true,max:3});
+  assert.deepEqual(tailPlan.config.batch.tasks.map(task=>task.taskId),['T-003','T-001','T-002']);assert.deepEqual(tailPlan.groups,[]);
+  assert.throws(()=>createCmAiBatch({configuration:{...tailPlan.config.batch,parallel:[['1.work/T-001','1.work/T-002']]},
+    executionFor:async()=>({}),logHome:path.join(tailProject.root,'log')}),{code:'parallel_final_task_excluded'});
   // Completed tasks are satisfied prerequisites, not batch members.
   const done=diamond().replace('- [ ] T-001','- [x] T-001');
   const plan=project(t,done).plan();

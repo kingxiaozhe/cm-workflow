@@ -368,9 +368,13 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       return null;
     }finally{members.delete(key);run.close();}
   }
-  async function mergeMember(row){
+  // Verify a ready member's completed, QA-deferred delivery and commit it on its
+  // branch. Idempotent: an already committed worktree gets no new commit.
+  async function sealMember(row,commit=true){
     const key=row.from_key,{worktree,branch}=location(key);
     need(row.worktree===worktree&&row.branch===branch,'batch_worktree_mismatch');
+    // A stopped batch replays without preparing its group: bind the member root here.
+    if(plans.get(key).codeProject!==worktree)bindWorktree(key);
     // Reopen the unchanged member root to verify its actual completion and QA.
     const run=await open(key);
     try{
@@ -380,10 +384,18 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       need(findCmAiQaDecision({specsDir:config.specsDir,feature:plans.get(key).feature,
         identity:row.identity,packageDigest:row.package_digest})?.status==='skipped','batch_qa_not_ready');
     }finally{run.close();}
+    if(!commit)return;
+    batchGit(worktree,['add','-A']);
+    if(batchGit(worktree,['status','--porcelain']))batchGit(worktree,['commit',...taskCommitArgs(plans.get(key).identity.taskId,taskDescription(config,plans.get(key)))]);
+  }
+  // Every member that finished and is not merged yet, in task order.
+  const readyUnmerged=()=>{const state=progress();return [...plans.keys()].filter(key=>state.ready.has(key)&&!state.done.has(key));};
+  async function mergeMember(row){
+    const key=row.from_key,{worktree,branch}=location(key);
     let intent=progress().merging.get(key);
+    // A logged merge intent already names the member commit.
+    await sealMember(row,!intent);
     if(!intent){
-      batchGit(worktree,['add','-A']);
-      if(batchGit(worktree,['status','--porcelain']))batchGit(worktree,['commit',...taskCommitArgs(plans.get(key).identity.taskId,taskDescription(config,plans.get(key)))]);
       need(batchGit(config.codeProject,['status','--porcelain'])==='','batch_main_dirty');
       intent={from_key:key,expected_old:batchGit(config.codeProject,['rev-parse','HEAD']),member_commit:batchGit(worktree,['rev-parse','HEAD'])};
       record('batch_merge_started',intent);
@@ -399,6 +411,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         batchGit(config.codeProject,['merge','--abort'],'batch_merge_abort_failed');
         need(batchGit(config.codeProject,['rev-parse','HEAD'])===intent.expected_old,'batch_merge_history_changed');
         record('batch_merge_conflict',{from_key:key,code:'merge_conflict',files,expected_old:intent.expected_old});
+        // The guidance has the operator merge every unmerged member's branch: commit
+        // each reviewed delivery there first, or its branch would merge as up to date.
+        for(const other of readyUnmerged())await sealMember(progress().ready.get(other));
         return {outcome:'blocked',code:'merge_conflict',batchId:config.batchId,files,guidance:mergeConflictGuidance(key,files)};
       }
     }else{
@@ -511,10 +526,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   // serially would mean reopening a completed, reviewed task, which is not automatic.
   // Every member that finished and is not merged yet is listed, the conflicted one
   // included, in task order: each is marked complete in tasks.md, so a new plan
-  // would skip it, and its code exists only on its branch.
+  // would skip it, and its code exists only on its branch (committed there before
+  // the guidance is given).
   const mergeConflictGuidance=(key,files)=>{
-    const state=progress(),listed=Array.isArray(files)&&files.length?files.join('、'):'（Git 未列出）';
-    const pending=[...plans.keys()].filter(item=>state.ready.has(item)&&!state.done.has(item));
+    const listed=Array.isArray(files)&&files.length?files.join('、'):'（Git 未列出）';
+    const pending=readyUnmerged();
     if(!pending.includes(key))pending.push(key);
     const steps=pending.map(item=>{const {worktree,branch}=location(item);return `${item}：git merge --no-ff ${branch}（工作树 ${worktree}）`;});
     return stopGuidance(`并行成员 ${key} 的已审交付与已合并的结果在 ${listed} 上冲突；合并已撤销，主目录未改动，批次停止。`,
@@ -654,6 +670,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       }
       if(initial.stopped){
         const conflict=initial.code==='merge_conflict'?initial.rows.findLast(row=>row.phase==='batch_merge_conflict'):null;
+        // A stop logged before its members were sealed (a crash, or an older version).
+        if(conflict)for(const other of readyUnmerged())await sealMember(initial.ready.get(other));
         return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId,
           ...(conflict?{files:conflict.files,guidance:mergeConflictGuidance(conflict.from_key,conflict.files)}:{})};
       }
@@ -784,6 +802,10 @@ function validateGroups(config,plans,{declared=false}={}){
     need([...ids].every(id=>[...ids].every(other=>other===id||!reaches(id,other))),'parallel_dependency_conflict');
     const ordered=parsed.tasks.filter(task=>!task.dropped),last=ordered.at(-1);
     need(last&&!ids.has(last.id)&&plans.has(`${feature}/${last.id}`),'parallel_final_task_excluded');
+    // The batch runs in plan order: the feature's last planned task collects the
+    // members' deferred QA, so it cannot be a member either (new batches).
+    if(declared)need(!ids.has(plans.get([...plans.keys()].filter(key=>plans.get(key).feature===feature).at(-1)).identity.taskId),
+      'parallel_final_task_excluded');
     const paths=new Set();
     for(const key of group)for(const file of plans.get(key).scope){
       need(!paths.has(file),'parallel_scope_overlap');paths.add(file);

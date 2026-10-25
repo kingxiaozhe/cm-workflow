@@ -415,6 +415,15 @@ export async function batchFixture(mode,options={}){
       }
       for(const name of heads)git(codeProject,['check-ref-format','--branch',name]);
       for(const task of ['T-001','T-002'])assert.throws(()=>git(codeProject,['rev-parse','--verify',`refs/heads/cm/work/${task}`]));
+      // Follow the guidance: merge each listed branch in order, resolving the conflict.
+      // Both reviewed deliveries reach the main checkout, T-002's included.
+      const branches=[...result.guidance.nextStep.matchAll(/git merge --no-ff (\S+)（工作树/g)].map(match=>match[1]);
+      assert.deepEqual(branches,[`cm/${segment}/work/T-001`,`cm/${segment}/work/T-002`]);
+      for(const branch of branches){
+        const merged=spawnSync('git',['-C',codeProject,'merge','--no-ff','--no-edit',branch],{encoding:'utf8'});
+        if(merged.status!==0){git(codeProject,['checkout','--theirs','file0.js']);git(codeProject,['add','file0.js']);git(codeProject,['commit','--no-edit']);}
+      }
+      for(const file of ['file0.js','file1.js'])assert.equal(fs.readFileSync(path.join(codeProject,file),'utf8'),'implemented\n',file);
       return;
     }
     if(mode.endsWith('review-provider-retry')){

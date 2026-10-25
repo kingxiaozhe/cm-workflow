@@ -83,9 +83,11 @@ function group(parsed,schedule,scopes,max){
     const direct=deps.get(from)??[];
     return direct.includes(target)||direct.some(dep=>reaches(dep,target,seen));
   };
-  const last=parsed.tasks.filter(task=>!task.dropped).at(-1)?.id;
+  // Neither the feature's last task nor the last one to run can be a member: the
+  // task that runs last collects the members' deferred QA serially.
+  const last=parsed.tasks.filter(task=>!task.dropped).at(-1)?.id,lastRun=schedule.at(-1)?.id;
   const order=new Map(schedule.map((task,index)=>[task.id,index]));
-  const candidate=task=>task.id!==last&&!scopes.tasks.get(task.id).device;
+  const candidate=task=>task.id!==last&&task.id!==lastRun&&!scopes.tasks.get(task.id).device;
   // The whole group starts at its first member, so every member's prerequisites
   // still to run must come before that point.
   const readyBefore=(task,start)=>(deps.get(task.id)??[]).every(dep=>!order.has(dep)||order.get(dep)<start);
