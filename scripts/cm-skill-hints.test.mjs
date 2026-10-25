@@ -10,10 +10,11 @@ import {
   localPath,logFile,installDir,claudeSettingsPath,codexHooksPath,defaultRulesPath,
   MAX_PROMPT,ADOPT_WINDOW,LOG_LIMIT,SCRIPT_NAME,RULES_NAME,patternMatches,typed,readJson,loadAuthorCheck,
 } from './cm-skill-hints.mjs';
+import {SKILLS} from './cm-matt-skills.mjs';
 
 const NOW=Date.parse('2026-10-24T08:00:00Z');
 
-function fixture(t,{rules,local,authorSkills=[]}={}){
+function fixture(t,{rules,local,authorSkills=[],authorNames=['grill-me','handoff']}={}){
   const home=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-skill-hints-')));
   t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
   const env={HOME:home,CLAUDE_HOME:path.join(home,'.claude'),CODEX_HOME:path.join(home,'.codex'),
@@ -32,7 +33,7 @@ function fixture(t,{rules,local,authorSkills=[]}={}){
   }
   // Pinned "author versions" for the test: exact SKILL.md + LICENSE bytes, checked by hash.
   const sha=text=>crypto.createHash('sha256').update(text).digest('hex');
-  const authorOptions={license:sha('MIT'),skills:['grill-me','handoff'].map(name=>({name,files:{'SKILL.md':sha(`author ${name}`)}}))};
+  const authorOptions={license:sha('MIT'),skills:authorNames.map(name=>({name,files:{'SKILL.md':sha(`author ${name}`)}}))};
   // The real checker, fed the test's pinned list instead of the upstream one.
   const loadAuthor=async()=>({...(await loadAuthorCheck()),skills:authorOptions.skills,license:authorOptions.license});
   for(const [root,name,content=`author ${name}`] of authorSkills){
@@ -180,7 +181,7 @@ test('the shipped table loads cleanly and every rule resolves to a CM skill or a
   const table=JSON.parse(fs.readFileSync(defaultRulesPath(),'utf8'));
   const loaded=loadRules({env:{HOME:'/nonexistent',CM_WORKFLOW_HOME:'/nonexistent/.cm'}});
   assert.equal(loaded.cmCount,table.rules.length);
-  assert.ok(table.rules.length>=10&&table.rules.length<=15);
+  assert.ok(table.rules.length>=10&&table.rules.length<=20);
   assert.equal(new Set(table.rules.map(rule=>rule.id)).size,table.rules.length);
   const skills=new Set(fs.readdirSync(path.join(path.dirname(defaultRulesPath()),'..','skills')));
   for(const rule of table.rules){
@@ -188,6 +189,92 @@ test('the shipped table loads cleanly and every rule resolves to a CM skill or a
     assert.ok(skills.has(rule.skill),`${rule.id} 指向不存在的 CM 技能 ${rule.skill}`);
   }
   for(const rule of table.rules.filter(rule=>rule.fallback))assert.ok(skills.has(rule.fallback.skill));
+  // A message naming the skill is never hinted, so such a keyword could never fire.
+  // Anchored patterns scan the message once, which keeps the shared regex budget.
+  for(const rule of table.rules)for(const source of rule.patterns??[])assert.ok(source.startsWith('^'),`${rule.id} 有未锚定的正则`);
+  for(const rule of table.rules)for(const word of rule.keywords)assert.ok(!word.toLowerCase().includes(rule.skill),`${rule.id} 的关键词「${word}」含技能名，永远不会触发`);
+  // Installed-or-not is decided by the pinned fingerprint, so an author rule must name a pinned skill.
+  const pinned=new Set(SKILLS.map(skill=>skill.name));
+  for(const rule of table.rules.filter(rule=>rule.author))assert.ok(pinned.has(rule.skill),`${rule.id} 的 ${rule.skill} 不在固定清单里`);
+});
+
+// The shipped table against real phrasings (from the 2026-10-24 trial of the author
+// skills) and everyday chatter. Every prompt gets its own session.
+const SHIPPED_AUTHORS=['grill-me','grill-with-docs','handoff','wayfinder','improve-codebase-architecture','prototype'];
+function shipped(t,{installed=true,authorSkills}={}){
+  const f=fixture(t,{rules:JSON.parse(fs.readFileSync(defaultRulesPath(),'utf8')),authorNames:SHIPPED_AUTHORS,
+    authorSkills:authorSkills??(installed?SHIPPED_AUTHORS.map(name=>['.claude/skills',name]):[])});
+  let n=0;
+  return {...f,hints:async prompt=>[...(await f.send(prompt,{session:`p${n++}`})).matchAll(/可以试 \/([\w.:-]+)/g)].map(m=>m[1])};
+}
+const PHRASES=[
+  ['我想给这个记账工具加一个预算提醒功能，但还没想清楚，你逼问我几轮把方案理清。','grill-me','cm-challenge'],
+  ['帮我压力测试一下这个方案：每天凌晨跑定时任务汇总消费，超预算就推送手机通知。','grill-me','cm-challenge'],
+  ['Grill me on this plan before I start','grill-me','cm-challenge'],
+  ['在这个仓库里加多币种，逼问我把技术方案理清','grill-with-docs','cm-challenge'],
+  ['帮我定一下技术方案，存储用 SQLite 还是 JSON','grill-with-docs','cm-challenge'],
+  ['help me think this through for the codebase','grill-with-docs','cm-challenge'],
+  ['src/storage 下面拆了五个小文件，接口太碎了。帮我想想怎么设计一个更深的模块接口。','improve-codebase-architecture','cm-refactor'],
+  ['代码太乱了，不知道从哪重构','improve-codebase-architecture','cm-refactor'],
+  ['the architecture is a mess, where to start refactoring?','improve-codebase-architecture','cm-refactor'],
+  ['我拿不准预算状态机对不对，做个能点着玩的原型让我看看。','prototype',null],
+  ['预算页面该长什么样我没想法，给我做几版差别很大的界面对比看看。','prototype',null],
+  ['mock up a few versions of the budget page','prototype',null],
+  ['做个预算页面的可点击原型，数据先用 Object.create(null) 模拟。','prototype',null],
+  ['做几版界面对比看看，文案里要讲清楚 JavaScript 原型继承。','prototype',null],
+  ['不要讲原型链，给我做个预算页面原型。','prototype',null],
+  ['上下文快用完了，写个交接吧','handoff',null],
+  ['写个交接，下个会话接着做','handoff',null],
+  ['这个会话快满了，写个交接。','handoff',null],
+  ["we're running out of context, let's continue in a new session",'handoff',null],
+  ['这个改造一个会话做不完，拆成几个会话推进','wayfinder','cm-prd'],
+  ['this is too big for one session','wayfinder','cm-prd'],
+];
+const CHATTER=['今天天气怎么样','把这行改成中文','帮我看看这个报错是什么意思','提交一下代码','这个函数是做什么的',
+  'JS 的原型链怎么理解','用 jmeter 给登录接口做压力测试','这个方案我已经想清楚了，直接写吧','右键的上下文菜单点不开','帮我把按钮颜色改成蓝色',
+  '帮我写个压力测试方案','做个原型链的例子','我明天要和同事交接，帮我写一份交接文档。',
+  '用 JavaScript 做个原型继承的例子。','帮我写同事离职交接文档，需要补充项目上下文。','修好右键上下文菜单后，写一份给同事的交接文档。',
+  '帮我写同事离职交接文档，附上项目上下文快照。','交接文档里的项目上下文要怎么整理？','做一个用完就扔的原型对象，演示原型继承。','做一个原型对象，演示 Object.create 怎么继承属性。',
+  '用 JMeter 压力测试一下这个方案的登录接口，记录吞吐量和 P99。','这个方案上线前要压力测试一下并发','what is the weather today','rename this variable'];
+
+test('shipped table: real phrasings hint the author skill when it is installed',async t=>{
+  const f=shipped(t);
+  for(const [prompt,skill] of PHRASES)assert.deepEqual(await f.hints(prompt),[skill],prompt);
+});
+
+test('shipped table: without the author skill it falls back to the CM counterpart, or stays quiet',async t=>{
+  const f=shipped(t,{installed:false});
+  for(const [prompt,,fallback] of PHRASES)assert.deepEqual(await f.hints(prompt),fallback?[fallback]:[],prompt);
+});
+
+test('shipped table: everyday chatter never triggers',async t=>{
+  const f=shipped(t);
+  for(const prompt of CHATTER)assert.deepEqual(await f.hints(prompt),[],prompt);
+});
+
+test('shipped table: a long message of repeated cue words stays within the pattern budget',async t=>{
+  const f=shipped(t);
+  const prompt='压力测试'.repeat(498)+'仓库。原型看看';
+  assert.ok(prompt.length<MAX_PROMPT);
+  assert.deepEqual(await f.hints(prompt),['prototype']);
+});
+
+test('shipped table: grill-me and grill-with-docs are never hinted together',async t=>{
+  const f=shipped(t);
+  for(const prompt of ['逼问我这个方案，顺便看看仓库里的数据模型','压力测试一下这个方案，记进决策记录','grill me on the repo layout',
+    'Grill with docs: help me think this through.','grill with docs，帮我理清方案']){
+    assert.deepEqual(await f.hints(prompt),['grill-with-docs'],prompt);
+  }
+});
+
+test('shipped table: a third-party prototype skill is never hinted',async t=>{
+  const f=shipped(t,{authorSkills:[['.claude/skills','prototype','someone else\'s prototype']]});
+  assert.deepEqual(await f.hints('做个能点着玩的原型让我看看'),[]);
+});
+
+test('shipped table: "refactor it now" wording goes to cm-refactor alone, not the architecture report too',async t=>{
+  const f=shipped(t);
+  assert.deepEqual(await f.hints('代码太乱了，重构一下'),['cm-refactor']);
 });
 
 test('enable copies a stable script and merges one hook into each host config',async t=>{

@@ -416,7 +416,8 @@ overwrites. They take precedence over CM's table:
 `"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
 user rule with the same `id` as a CM rule replaces it. `patterns` (regular
 expressions) share a 200 ms budget per message; past it they count as no match. An
-author skill (`grill-me`, `handoff`, `wayfinder`) is only hinted when its pinned
+author skill (`grill-me`, `grill-with-docs`, `handoff`, `wayfinder`,
+`improve-codebase-architecture`, `prototype`) is only hinted when its pinned
 author version (see above) is installed for that host; otherwise its CM
 counterpart is hinted, if there is one. Per-session state (a few hundred bytes
 each, under `~/.cm-workflow/skill-hints/state/`) is never removed, so a session
