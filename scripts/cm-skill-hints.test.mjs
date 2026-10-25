@@ -219,13 +219,16 @@ const PHRASES=[
   ['预算页面该长什么样我没想法，给我做几版差别很大的界面对比看看。','prototype',null],
   ['mock up a few versions of the budget page','prototype',null],
   ['上下文快用完了，写个交接吧','handoff',null],
+  ['写个交接，下个会话接着做','handoff',null],
   ["we're running out of context, let's continue in a new session",'handoff',null],
   ['这个改造一个会话做不完，拆成几个会话推进','wayfinder','cm-prd'],
   ['this is too big for one session','wayfinder','cm-prd'],
 ];
 const CHATTER=['今天天气怎么样','把这行改成中文','帮我看看这个报错是什么意思','提交一下代码','这个函数是做什么的',
   'JS 的原型链怎么理解','用 jmeter 给登录接口做压力测试','这个方案我已经想清楚了，直接写吧','右键的上下文菜单点不开','帮我把按钮颜色改成蓝色',
-  '帮我写个压力测试方案','做个原型链的例子','what is the weather today','rename this variable'];
+  '帮我写个压力测试方案','做个原型链的例子','我明天要和同事交接，帮我写一份交接文档。',
+  '用 JavaScript 做个原型继承的例子。','做一个原型对象，演示 Object.create 怎么继承属性。',
+  '用 JMeter 压力测试一下这个方案的登录接口，记录吞吐量和 P99。','这个方案上线前要压力测试一下并发','what is the weather today','rename this variable'];
 
 test('shipped table: real phrasings hint the author skill when it is installed',async t=>{
   const f=shipped(t);
@@ -244,7 +247,8 @@ test('shipped table: everyday chatter never triggers',async t=>{
 
 test('shipped table: grill-me and grill-with-docs are never hinted together',async t=>{
   const f=shipped(t);
-  for(const prompt of ['逼问我这个方案，顺便看看仓库里的数据模型','压力测试一下这个方案，记进决策记录','grill me on the repo layout']){
+  for(const prompt of ['逼问我这个方案，顺便看看仓库里的数据模型','压力测试一下这个方案，记进决策记录','grill me on the repo layout',
+    'Grill with docs: help me think this through.','grill with docs，帮我理清方案']){
     assert.deepEqual(await f.hints(prompt),['grill-with-docs'],prompt);
   }
 });
