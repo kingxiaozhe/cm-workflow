@@ -405,6 +405,11 @@ export async function batchFixture(mode,options={}){
       const segment=batchSegment(config.batchId);
       const heads=git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']).split('\n').filter(Boolean);
       assert.deepEqual(heads.sort(),[`cm/${segment}/work/T-001`,`cm/${segment}/work/T-002`]);
+      // T-002's reviewed delivery is committed on its branch when the stop is given.
+      const t2=`cm/${segment}/work/T-002`,t2tree=path.join(root,'.cm-worktrees',segment,'T-002');
+      assert.equal(git(codeProject,['show',`${t2}:file1.js`]),'implemented');
+      // A stop an older version logged left it uncommitted: the replay commits it.
+      git(t2tree,['reset','-q','--soft','HEAD~1']);assert.throws(()=>git(codeProject,['show',`${t2}:file1.js`]));
       // The stop names the conflicted member's branch and worktree and the way on, then and on every later advance.
       for(const stop of [result,await open().handle({operation:'advance',requestId:'after-conflict'})]){
         assert.equal(stop.code,'merge_conflict');assert.deepEqual(stop.files,result.files);
