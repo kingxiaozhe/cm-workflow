@@ -23,6 +23,7 @@
       "id": "long-session",
       "skill": "handoff",
       "author": true,
+      "invoke": {"mode": "direct", "when": "要结束或切换当前会话：请求写交接文档、交接摘要或接手说明，把当前进度和上下文留给新会话、新窗口或另一个 agent 接着做"},
       "keywords": ["会话太长", "上下文太长", "上下文快满", "换个会话", "开个新会话", "新开一个会话", "context is getting long", "start a new session", "上下文不够了", "上下文要满了", "上下文快爆了", "上下文快用完", "下个会话接着做", "新会话接着做", "hand off to a new session", "running out of context", "context window is almost full", "continue in a new session"],
       "reason": "先写交接摘要，再换新会话接着做",
       "patterns": ["^(?=[\\s\\S]*(新会话|新的会话|下个会话|下一个会话|换(个|一个)?会话|开(个|一个)?新会话|(上下文|会话)((快|要)(满|爆|用完)|不够|满了|爆了|用完了|太长)))[\\s\\S]*交接"]
@@ -31,6 +32,7 @@
       "id": "multi-session-work",
       "skill": "wayfinder",
       "author": true,
+      "invoke": {"mode": "ask", "when": "一件大活一个会话做不完：请求把大型改造或迁移拆成决策票或多个阶段，规划跨多个会话的推进路线"},
       "keywords": ["好几个会话", "多个会话", "分几个会话", "一个会话做不完", "大改造", "spans several sessions", "拆成几个会话", "跨好几个会话", "好几天才能做完", "分阶段推进", "拆成决策票", "too big for one session", "across several sessions", "multi-session"],
       "reason": "把大活拆成决策票，一张张推进",
       "fallback": {"skill": "cm-prd", "reason": "先把大活拆成规格和任务，再分批开发"}
@@ -39,6 +41,7 @@
       "id": "improve-architecture",
       "skill": "improve-codebase-architecture",
       "author": true,
+      "invoke": {"mode": "ask", "when": "请求对整个代码库做一次架构体检：找出全局哪些地方值得重构或加深、出一份架构改进报告", "near": "只针对某一个模块、目录或文件，讨论它的接口怎么设计、怎么拆分或怎么测试；或者只是让解释现有架构"},
       "keywords": [],
       "patterns": ["^(?![\\s\\S]*(只整理结构|不改变行为|不改行为|重构一下|refactor without changing behavior))[\\s\\S]*(接口太碎|模块太碎|拆得太碎|架构(太|很|好)?乱|代码(太|很)乱|不知道从哪(里|儿)?(开始|下手)?重构|从哪(里|儿)?(开始|下手)重构|想整理(一下)?代码结构|改善(一下)?架构|优化(一下)?架构|架构(该)?怎么改|耦合太(重|严重|紧)|模块边界不清|越写越乱|improve (the )?(codebase )?architecture|architecture is a mess|codebase is a mess|where to start refactoring|too many shallow modules)"],
       "reason": "先找出值得重构的地方，出一份报告再动手",
