@@ -427,7 +427,27 @@ left to the host. `"judge": false` in your local file keeps it to keywords even
 with a key. The log records which skill was started and whether Jev or keywords
 decided, never the message or the key.
 
-The installer does not enable it yet. To try it:
+Installers turn it on by default. `install.sh` and `install.ps1` add the hook to
+`~/.claude/settings.json`, and `install-codex.sh` adds it to `~/.codex/hooks.json`,
+once per host; the output says so in one line, with how to turn it off and the
+TypeSafe note above. Codex asks you to trust the new hook the first time it runs;
+CM does not trust it for you. A later install does not add it again. An install does
+not wire the hook when:
+
+- you pass `--no-skill-hints` (`-NoSkillHints` for `install.ps1`) or set
+  `CM_SKILL_HINTS_INSTALL=off` (this also works for `cm-workflow install`); this
+  applies to that run only;
+- `~/.cm-workflow/skill-hints.local.json` has `"enabled": false`, or cannot be read;
+- the hook was there for that host before and you removed it. CM keeps the hosts it
+  has wired or found wired in `~/.cm-workflow/skill-hints.auto.json`; a host listed
+  there without the hook is never wired again. If `~/.cm-workflow/skill-hints/` exists
+  but that file does not (you ran `enable` before installers did this), both hosts
+  count as already chosen, and nothing is added;
+- the host config cannot be read or has the wrong shape: it is left untouched and
+  reported in one line, and the next install tries again.
+
+In every case the install itself still succeeds; a problem here is a warning. To add
+the hook by hand (for example after removing it):
 
 ```bash
 node ~/.claude/scripts/cm-skill-hints.mjs enable
@@ -438,16 +458,16 @@ This copies the script, CM's table, the author-skill checker
 `~/.cm-workflow/skill-hints/` and adds
 one `UserPromptSubmit` hook to `~/.claude/settings.json` and `~/.codex/hooks.json`
 (`--claude` or `--codex` for one side), keeping every other setting and hook. A
-file it cannot parse is left untouched. Codex asks you to trust the new hook the
-first time it runs; CM does not trust it for you. If the file changes while
+file it cannot parse is left untouched. If the file changes while
 `enable` is writing it, nothing is written and you are asked to run it again.
 
 Once hints are on (the hook is wired, or `~/.cm-workflow/skill-hints/` exists),
 every run of `install.sh`, `install-codex.sh` or `install.ps1` refreshes that copy
 (`node ~/.claude/scripts/cm-skill-hints.mjs refresh` does the same by hand). It
-replaces only the script, the table and the three helper scripts; host configs, Codex
-trust, session state and logs are left alone, and nothing is created for users who
-never enabled hints. A failed refresh is a warning, not an install failure.
+replaces only the script, the table and the three helper scripts; Codex
+trust, session state and logs are left alone, and a host config is only written
+when the hook is added as described above. A failed refresh is a warning, not an
+install failure.
 
 Your own rules live in `~/.cm-workflow/skill-hints.local.json`, which CM never
 overwrites. They take precedence over CM's table:
@@ -475,8 +495,9 @@ resumed later does not repeat a hint.
 `~/.cm-workflow/logs/skill-hints.jsonl` records rule id, skill, host and time of
 each hint and of each adoption (you typed the skill within the next five
 messages), never message text; it drops its older half past 1 MB. `/cm-check`
-reports whether the hook is wired, the switch, the rule counts and whether the
-copy matches the installed version (with the `refresh` command when it does not).
+reports whether the hook is wired, the switch, whether installs wire it and which
+hosts are already settled, the rule counts and whether the copy matches the
+installed version (with the `refresh` command when it does not).
 
 ## Uninstall
 

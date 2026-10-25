@@ -5,6 +5,13 @@
 
 ## 未发布
 
+- **安装时默认挂上技能提醒钩子**：以前要自己跑 `cm-skill-hints.mjs enable` 才有技能提醒（包括 `grill-me` 这些作者技能的提醒和自动调用）；现在 `install.sh`、Windows 安装脚本默认给 Claude 挂上，`install-codex.sh` 默认给 Codex 挂上，每端只挂一次。
+  - 装完会打一行说明：已挂上、怎么关（本地文件写 `"enabled": false`，或重装时加 `--no-skill-hints`，Windows 用 `-NoSkillHints`），以及有 TypeSafe 密钥时三个作者技能会把消息前 500 字发给 TypeSafe 判断。Codex 首次运行这条钩子会请你确认信任，CM 不替你点。
+  - 这几种情况不挂：加了 `--no-skill-hints` 或设了 `CM_SKILL_HINTS_INSTALL=off`（只管这一次安装）；本地文件写了 `"enabled": false` 或读不了；你以前挂过、后来自己删了。
+  - 「删过」靠 `~/.cm-workflow/skill-hints.auto.json` 记：里面列着已经挂过（或发现已挂）的端，列过又没钩子就当是你删的，不再挂回。升级前就手动开过提醒的（副本目录在、没有这个文件），两端都当你已经选好，不会多挂。
+  - 配置文件读不了或格式不对：不改，报一行，下次安装再试；任何问题都只警告，不影响安装。
+  - `/cm-check`（`cm-skill-hints.mjs status`）多一行：安装时自动挂是开还是关、哪些端已经处理过。
+
 - **作者的三个手动技能按场景自动调起**：技能提醒钩子原来对所有技能都只显示一行提醒；现在 `handoff`、`wayfinder`、`improve-codebase-architecture` 三个（作者设为模型不能自己调用）在装了作者原版时改为自动调起。
   - `handoff`：钩子往模型上下文塞一句「先读这个技能的 `SKILL.md` 再照做」，同时给你显示「🤖 技能自动调用：已让模型用 /handoff」。
   - `wayfinder`、`improve-codebase-architecture` 动静大，让模型先问你一句，你同意后才读技能照做。
@@ -14,7 +21,7 @@
 
 - **重装或升级 CM 会顺带刷新技能提醒**：以前提醒实际运行的是 `~/.cm-workflow/skill-hints/` 里的一份副本，只有手动重跑 `enable` 才会更新，升级后一直用旧对照表。现在 `install.sh`、`install-codex.sh` 和 Windows 安装脚本会在你已开启提醒时（钩子已挂，或副本目录已在）刷新这份副本。
   - 只换脚本、对照表和两个配套脚本四个文件；不改 `settings.json`、`hooks.json` 和 Codex 的信任记录，不动会话记录和试用统计。
-  - 没开启的不会多出副本或钩子。刷新失败只打一行警告，不影响安装。
+  - 刷新本身不建副本、不挂钩子（安装时是否挂上见上一条）。刷新失败只打一行警告，不影响安装。
   - `/cm-check`（或 `node ~/.claude/scripts/cm-skill-hints.mjs status`）会报告副本与已装版本是否一致；不一致时给出 `refresh` 命令。
 
 - **`/cm-ai` 默认按 tasks.md 自动分组、用 worktree 并行开发**：并行开发第 4 期。
