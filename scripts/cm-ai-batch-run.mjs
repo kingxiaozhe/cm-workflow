@@ -144,6 +144,16 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   const actionGrants=new Map(Object.keys(BATCH_MEMBER_ACTIONS).map(name=>[name,new Set(memberActions[name]??[])]));
   const groups=validateGroups(config,plans,{declared:!batchStarted({specsDir:config.specsDir,batchId:config.batchId})}),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
   const originalMembership=new Map(membership),originalPlans=new Map(plans);
+  // A one-member group (batch-plan.mjs worktree_all) is a task developed alone in its
+  // own worktree. Unlike members developed alongside others it keeps the fixed N6
+  // checkpoints: its QA may run in the worktree and must pass before it is merged.
+  const soloMember=key=>originalMembership.get(key)?.length===1;
+  // A member is ready to merge once its QA is deferred (skipped) or, for a one-member
+  // group, skipped by the ordinary decision or triggered and passed.
+  const memberQaSettled=(key,binding)=>{
+    const qa=findCmAiQaDecision(binding);
+    return qa?.status==='skipped'||soloMember(key)&&qa?.status==='triggered'&&latestCmAiQaRun(binding)?.status==='passed';
+  };
   const first=plans.keys().next().value,planDigest=digest(config),log=path.join(config.specsDir,'运行日志.jsonl');
   const batchControlTarget=async(taskKey,state=progress())=>{
     const definition=plans.get(taskKey);need(definition,'batch_member_action_unavailable');
@@ -176,7 +186,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   let releaseLock=null,completeTail=Promise.resolve();
   async function executionForKey(taskKey){
     if(!executions.has(taskKey)){
-      const execution=await executionFor(json(plans.get(taskKey)),{parallelMember:membership.has(taskKey)});
+      const execution=await executionFor(json(plans.get(taskKey)),{parallelMember:membership.has(taskKey),
+        ...(membership.has(taskKey)&&soloMember(taskKey)?{soloMember:true}:{})});
       need(execution!==null&&typeof execution==='object','execution_adapter_required');
       // Preserve fixed protected-factory provenance; never clone protected callbacks.
       if(Object.isFrozen(execution)){
@@ -295,7 +306,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const {revision,...body}=state;
     need(revision===row.checkpoint&&digest(body)===revision,'batch_checkpoint_mismatch');
     const binding={specsDir:config.specsDir,feature:definition.feature,identity:row.identity,packageDigest:row.package_digest};
-    need(findCmAiQaDecision(binding)?.status==='skipped'&&inspectRunClosure(log,definition.identity.runId).closed,'batch_qa_not_ready');
+    need(memberQaSettled(row.from_key,binding)&&inspectRunClosure(log,definition.identity.runId).closed,'batch_qa_not_ready');
     batchGit(config.codeProject,['merge-base','--is-ancestor',row.merge_commit,'HEAD'],'batch_merge_history_changed');
   }
   function prepareGroup(group){
@@ -342,7 +353,12 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
           ...(['decision','complete','qa','context_refresh'].includes(operation)?{packageDigest:status.packageDigest}:{}),...extra});
         return status;
       };
-      for(let round=status.identity.attempt;round<=2;round++){
+      // A one-member group runs the whole task lifecycle like a serial task, in its
+      // worktree: N6 decides with the fixed checkpoints and a triggered QA runs (and
+      // must pass) here, before the member is sealed and merged. A failed or blocked
+      // QA leaves the member unready, so the batch stops without merging it.
+      if(soloMember(key))status=await call('advance');
+      else for(let round=status.identity.attempt;round<=2;round++){
         if(status.code===null&&['ready','changes_requested'].includes(status.state)
           ||developmentRetryable(status))await call('start');
         if(['reported','advanced'].includes(status.outcome)&&(status.code===null&&status.state==='awaiting_review'
@@ -355,7 +371,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         }
         break;
       }
-      if(status.state==='fixture_completed'&&status.code===null){
+      if(!soloMember(key)&&status.state==='fixture_completed'&&status.code===null){
         await call('qa');
         if(status.code==='qa_skipped')await call('context_refresh',{testRunId:null});
       }
@@ -379,8 +395,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       need(!run.blocked&&run.checkpoint()===row.checkpoint,'batch_checkpoint_mismatch');
       const status=await run.host.handle({version:1,operation:'status',requestId:'batch-merge-status',identity:row.identity});
       need(status.state==='fixture_completed'&&status.code===null&&status.packageDigest===row.package_digest,'batch_checkpoint_mismatch');
-      need(findCmAiQaDecision({specsDir:config.specsDir,feature:plans.get(key).feature,
-        identity:row.identity,packageDigest:row.package_digest})?.status==='skipped','batch_qa_not_ready');
+      need(memberQaSettled(key,{specsDir:config.specsDir,feature:plans.get(key).feature,
+        identity:row.identity,packageDigest:row.package_digest}),'batch_qa_not_ready');
     }finally{run.close();}
     if(!commit)return;
     batchGit(worktree,['add','-A']);

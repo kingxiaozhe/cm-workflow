@@ -304,13 +304,13 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const driver=createCmAiBatch({configuration:{...batch,...(controlPolicy?{controlPolicy}:{}),...(externalModels?{externalModels}:{}),...(executionPolicy?{executionPolicy}:{})},logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
       runtime:runtime??'codex',checkCommands:(providerConfig??protection)?.checkCommands??null,checkTimeoutMs:(providerConfig??protection)?.timeoutMs??60000,
       rerunUnknownQa,rerunBlockedQa,qaEnvironmentFailure,memberActions,holdRevisions:[...holds],bootstrapKeys:Object.keys(bootstraps??{}),
-      executionFor:async(definition,{parallelMember=false}={})=>{
+      executionFor:async(definition,{parallelMember=false,soloMember=false}={})=>{
         await freezeBatchExecutionPolicy(batch,executionPolicy);
         freezeBatchExternalModels(batch,externalModels);
         const key=`${definition.feature}/${definition.identity.taskId}`;
         const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,externalModels?routes.reviewerRuntime:runtime??'codex',externalModels?.providers[routes.reviewerRuntime]??null,!reconciling,Boolean(executionPolicy)):review;
         const execution=createConversationExecution(definition,hostContextId,parallelMember?memberBridge:bridge,memberReview,null,workflows[key],allowQa,runtime??'codex',
-          {parallelMember,...(controlPolicy?{controlPolicy}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),batchWorkflowsDigest:digest(executionPolicy?{workflows,bootstraps,externalModels,executionPolicy}:externalModels?{workflows,bootstraps,externalModels}:bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
+          {parallelMember,...(soloMember?{soloMember}:{}),...(controlPolicy?{controlPolicy}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),batchWorkflowsDigest:digest(executionPolicy?{workflows,bootstraps,externalModels,executionPolicy}:externalModels?{workflows,bootstraps,externalModels}:bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
             // A protected CLI config also protects unauthorized tasks: they stay on the
             // current-session transport but with the same sandbox checks (protected-text edits).
             ...(protection?{protection}:providerConfig?{protection:{checkCommands:providerConfig.checkCommands,timeoutMs:providerConfig.timeoutMs}}:{}),

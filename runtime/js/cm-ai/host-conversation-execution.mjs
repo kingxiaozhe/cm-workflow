@@ -101,11 +101,16 @@ export const REVIEW_BOUND_MARGIN_MS=60000;
 export const reviewRaceTimeout=(outerTimeoutMs,reviewTimeoutMs)=>Math.max(outerTimeoutMs,reviewTimeoutMs+REVIEW_BOUND_MARGIN_MS);
 export function createConversationExecution(definition,hostContextId,bridge,review=null,reservedReviewAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','verificationPrecheck','executionPolicy','controlPolicy'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','soloMember','verificationPrecheck','executionPolicy','controlPolicy'].filter(key=>Object.hasOwn(options,key))]);
   const controlPolicy=options.controlPolicy?readControlPolicy(options.controlPolicy):null;
   need(!Object.hasOwn(options,'verificationPrecheck')||typeof options.verificationPrecheck==='boolean','invalid_input');
   const executionPolicy=options.executionPolicy?readExecutionPolicy(options.executionPolicy):null;
   const parallelMember=options.parallelMember??false;need(typeof parallelMember==='boolean','invalid_input');
+  // soloMember: a worktree member alone in its group (batch-plan.mjs worktree_all). It
+  // keeps the worktree review and bridge of a member but not the deferred QA: only a
+  // member developed alongside others defers its N6 to the feature's final task.
+  const soloMember=options.soloMember??false;need(typeof soloMember==='boolean'&&(!soloMember||parallelMember),'invalid_input');
+  const deferMemberQa=parallelMember&&!soloMember;
   const provider=options.providerDevelopment??null;
   if(controlPolicy){
     need((controlPolicy.development==='provider')===Boolean(provider),'invalid_arguments');
@@ -159,7 +164,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   // Keep the unverified native permissions boundary intact for this first host
   // slice too. A transport is not physical protection of nested specs.
   need(protection||!definition.specsDir.startsWith(definition.codeProject+path.sep),'nested_specs_protection_required');
-  const configuration={kind:'cm-current-conversation-v1',...(parallelMember?{parallelMember}:{}),definitionDigest:digest(definition),hostContextId:durableHostContextId,
+  const configuration={kind:'cm-current-conversation-v1',...(parallelMember?{parallelMember}:{}),...(soloMember?{soloMember}:{}),definitionDigest:digest(definition),hostContextId:durableHostContextId,
     ...(controlPolicy?{controlPolicy}:{}),
     ...(runtime==='claude'?{runtime}:{}),
     ...(options.reviewRuntime===undefined?{}:{reviewRuntime:options.reviewRuntime}),
@@ -261,8 +266,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     ...(verificationGate?{verificationGate:(request,control)=>progress(request,control,'verifying',()=>verificationGate(request,control))}:{}),
     ...(bootstrap?{bootstrap}:{}),
     ...(provider&&!controlPolicy?{developmentAttempt:provider.attempt}:{}),
-    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember,controlPolicy})
-      :controlPolicy?createImplicitQaDecision({definition,bridge,parallelMember,controlPolicy}):{}),
+    ...(workflow?createHostWorkflowCapabilities({definition,configuration:workflow,bridge,allowQa,runtime,protectedExecution:protection!==null,bootstrap,parallelMember:deferMemberQa,controlPolicy})
+      :controlPolicy?createImplicitQaDecision({definition,bridge,parallelMember:deferMemberQa,controlPolicy}):{}),
     ...(options.qaLogHome?{qaLogHome:options.qaLogHome}:{}),
     developer:{provider:coderRuntime,requestedModel:provider?.model??'current-session',contextId:author,run:async(request,control)=>{
       const bound=(coderRuntime==='codex'?readCodexDeveloperRequest:readClaudeDeveloperRequest)(request);

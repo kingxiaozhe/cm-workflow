@@ -158,3 +158,31 @@ test('N6 registered critical paths use existing workflow QA seam and fingerprint
   await opens(f,'resume',conversation(f,syntax,registry));
   await assert.rejects(opens(f,'resume',conversation(f,syntax,{payment:['src/billing/**']})),{code:'fingerprint_mismatch'});
 });
+
+test('N6 a one-member worktree group keeps the fixed checkpoints; only a member alongside others defers',async()=>{
+  const f=fixture();userRuntimes('codex-codes');
+  fs.writeFileSync(path.join(f.specsDir,f.feature,'tasks.md'),'- [x] T-002: fixture\n');
+  const member=options=>createConversationExecution(f.definition,'host-session-1',
+    {call:async name=>{assert.equal(name,'qa_assess');return {confirmed:true};}},null,null,
+    {qa:{commands:syntax,environment,criticalPaths:{authentication:['a.mjs']}},documentationPaths:[],applicableAgentFiles:[]},true,'claude',options);
+  const binding={specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,identity,packageDigest:'a'.repeat(64),
+    changedFiles:{paths:['a.mjs'],source:'review_package'}};
+  const decide=execution=>execution.qaDecisionProvider.decide(binding,new AbortController().signal);
+  // Members developed together: unchanged configuration and the deferred decision.
+  const shared=member({parallelMember:true});
+  assert.equal(shared.configuration.parallelMember,true);assert.equal(Object.hasOwn(shared.configuration,'soloMember'),false);
+  assert.deepEqual([(await decide(shared)).status,(await decide(shared)).reason],['skipped','parallel_member_deferred']);
+  // Alone in its worktree: the ordinary decision, here a registered authentication path.
+  const solo=member({parallelMember:true,soloMember:true});
+  assert.equal(solo.configuration.soloMember,true);
+  const decision=await decide(solo);
+  assert.equal(decision.status,'triggered');assert.match(decision.reason,/authentication/);
+  assert.throws(()=>member({soloMember:true}),{code:'invalid_input'});
+  // The flag is part of the run fingerprint: a run cannot switch between the two on resume.
+  const g=fixture(),run=options=>createConversationExecution(g.definition,'host-session-1',{call:async()=>{throw new Error('not dispatched');}},
+    null,null,{qa:{commands:syntax,environment},documentationPaths:[],applicableAgentFiles:[]},true,'claude',options);
+  const selection={parallelSelection:{version:1,group:['T-002']}};
+  await opens(g,'create',run({parallelMember:true,soloMember:true}),selection);
+  await opens(g,'resume',run({parallelMember:true,soloMember:true}),selection);
+  await assert.rejects(opens(g,'resume',run({parallelMember:true}),selection),{code:'fingerprint_mismatch'});
+});
