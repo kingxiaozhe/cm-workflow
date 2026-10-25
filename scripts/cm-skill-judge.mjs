@@ -37,14 +37,15 @@ const SECRET_PATTERNS=[
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
   /\bBearer\s+[A-Za-z0-9._~+/-]{16,}/i,
-  // A credential word followed by an assignment or "is"/"是" and then anything at all:
+  // A credential word followed by an assignment or "is"/"是" and then any non-space
+  // character at all (a quote or punctuation included, so "token=.abc" counts):
   // "密码：x", "api_key = x", "密钥是 x", "my password is x", however short. This also
   // keeps descriptions such as "token 是什么" or "the password is required" local; that
   // is on purpose (decided 2026-10-25 after three review rounds kept finding values
   // that a list of "not a value" words let through): such a message only falls back to
   // keywords, and a rule with no exceptions cannot be slipped past by a value that
   // happens to start like a description.
-  new RegExp(`${CREDENTIAL_WORD}s?["'\\s]*(?:[:=：]|是|为|\\bis\\b|\\bwas\\b|=>)\\s*["'“]?[^\\s"'”，。,.?？!！]`,'i'),
+  new RegExp(`${CREDENTIAL_WORD}s?["'\\s]*(?:[:=：]|是|为|\\bis\\b|\\bwas\\b|=>)\\s*\\S`,'i'),
 ];
 const CREDENTIAL_NEAR=new RegExp(CREDENTIAL_WORD,'i');
 // A long run of letters and digits mixing cases and digits looks like a token; plain hex

@@ -45,6 +45,10 @@ const fake={
   requiredPrefix:'token'+'=required123',
   twoChars:'密码'+'是 12',
   oneChar:'密码'+'是1',
+  // Round 4: a value that starts with punctuation or a quote.
+  bang:'密码'+'是 !Ab12',
+  quotedBang:'pass'+'word = "!Ab12"',
+  dot:'token'+'=.abc123',
 };
 
 test('a message that looks like it holds a credential is never sent to Jev',async()=>{
