@@ -1405,7 +1405,7 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 
 | 约束 | 失败码 |
 | --- | --- |
-| 每组 2–4 个任务，成员不重复、不跨组复用 | `invalid_parallel_group` |
+| 每组 1–4 个任务，成员不重复、不跨组复用（1 个成员即该任务单独在自己的工作树开发） | `invalid_parallel_group` |
 | 组内全部任务属于同一 feature | `parallel_feature_mismatch` |
 | 组内任意两任务之间不存在依赖路径（按 `tasks.md` 依赖图的传递闭包判定） | `parallel_dependency_conflict` |
 | 组内各任务 `scope` 两两不含相同路径 | `parallel_scope_overlap` |
@@ -1418,6 +1418,12 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 升级前已开始的批次按原规则恢复。
 
 末任务被排除，是因为成员 QA 会延后到它那里统一执行。
+
+**1 人组。** `cm-ai-batch-plan.mjs` 默认（项目配置 `parallel.worktreeAll`，默认 `true`）让凑不成对、但满足上表其余
+约束的任务单独成组，例如 `[["1.work/T-001"],["1.work/T-002","1.work/T-003"]]`。它与多人组走同一套流程：
+在自己的工作树开发、QA 延后、按任务顺序合回、合并冲突停下、被阻断时改排为主目录串行第二代。功能最后一个任务、
+批次最后执行的任务和设备任务仍在主目录串行。`worktreeAll: false` 只保留 2 人及以上的组；升级前已开始的批次配置里
+没有 1 人组，恢复不受影响。
 
 **执行方式。** 每个成员分到一个 Git 工作树与独立分支，由调度器创建：
 
@@ -1459,9 +1465,10 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 与各自的独立审查进程，**不是写代码本身**；使用者不应据此预期成倍提速。要让编码真正并发，
 需要为成员配置各自的 provider 开发派发，而不是依赖当前会话。
 
-**前置条件。** 并行成员会在各自工作树里单独跑一次 review preflight，因此 `--review-config`
+**前置条件。** 并行成员（含 1 人组）会在各自工作树里单独跑一次 review preflight，因此 `--review-config`
 是并行的硬前置：缺它整批立即以 `review_preflight_failed` 停止，一行代码都不会开发。
-串行批次没有这个要求。
+串行批次没有这个要求。组里只剩一个未合并成员时（1 人组从一开始就是），`check-parallel-write`
+会把主目录作为第二个分配一起检查，主目录必须在一个分支上（不是 detached HEAD）。
 
 **提议方。** 由 N1 决定哪些任务成组，规则见 `skills/cm-ai/references/js-host.md` 第 3.1 条。
 组不起来就省略该字段，正常串行；不为组而组。
