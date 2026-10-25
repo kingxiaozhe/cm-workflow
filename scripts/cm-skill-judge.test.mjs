@@ -36,6 +36,10 @@ const fake={
   hex:'API key'+': '+'0f'.repeat(16),
   // No separator and plain hex: only the credential word nearby gives it away.
   near:'这是 TypeSafe 的 api key '+'0f'.repeat(16)+' 帮我配上',
+  // A labelled value counts however short.
+  shortWords:'密码'+'是 1234',
+  shortEnglish:'my pass'+'word is abcde',
+  shortAssign:'token'+'=xyz',
 };
 
 test('a message that looks like it holds a credential is never sent to Jev',async()=>{
@@ -49,7 +53,8 @@ test('a message that looks like it holds a credential is never sent to Jev',asyn
 
 test('commit ids, hashes and ordinary text are not taken for credentials',()=>{
   for(const text of ['回滚到 0ddd39e5c3a1b2f4e6d8a0b1c2d3e4f5a6b7c8d9','sha256 是 e0a0932e42188fde6a8a93314616ca3ede14c6ddf029e98c10cb2c8b9fb6a425',
-    '上下文快满了，写个交接吧','把 token 过期时间改成 2 小时','密码输错三次要锁定账号','the password field should be masked','token 是什么意思'])
+    '上下文快满了，写个交接吧','把 token 过期时间改成 2 小时','密码输错三次要锁定账号','the password field should be masked','token 是什么意思',
+    'the password is required','密码是多少位比较安全','密码是必填项','password is not set'])
     assert.equal(hasSecret(text),false,text);
 });
 
