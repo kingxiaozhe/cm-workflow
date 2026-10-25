@@ -11,7 +11,8 @@
 // and no tokens are spent; the CM table ships here, the user's own table lives in
 // ~/.cm-workflow/skill-hints.local.json and wins; the log keeps rule ids and times,
 // never message text. Any error exits quietly so a message is never held up.
-// Wiring is opt-in: `enable` adds the hook, the installer does not (yet).
+// Wiring is opt-in: `enable` adds the hook, the installer does not (yet); for users who
+// turned it on, the installer runs `refresh` so an upgrade reaches the copy the hook runs.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -252,13 +253,39 @@ export function withHintHook(config,command){
   return next;
 }
 
+const sourceOf=name=>name===SCRIPT_NAME?fileURLToPath(import.meta.url):path.join(here,name);
 function copyInstall(env){
   const dir=installDir(env);
-  for(const name of COMPANIONS)writeAtomic(path.join(dir,name),fs.readFileSync(path.join(here,name),'utf8'));
-  writeAtomic(path.join(dir,SCRIPT_NAME),fs.readFileSync(fileURLToPath(import.meta.url),'utf8'));
+  for(const name of [...COMPANIONS,SCRIPT_NAME])writeAtomic(path.join(dir,name),fs.readFileSync(sourceOf(name),'utf8'));
 }
 
 const configFile=(host,env)=>host==='codex'?codexHooksPath(env):claudeSettingsPath(env);
+
+// Turned on = our hook is in a host config, or the copy directory exists (enable writes
+// it before the hook, and the hook keeps its state there). A link at that path does not
+// count. Read-only: nothing is created to find out.
+export function hintsInstalled(env){
+  try{if(fs.lstatSync(installDir(env)).isDirectory())return true;}catch{/* 没有副本目录 */}
+  return HOSTS.some(host=>{try{return hasHintHook(readJson(configFile(host,env)).value,env,host);}catch{return false;}});
+}
+// Copied files that differ from this version's (a missing one counts as different).
+export function staleCopies(env){
+  return [...COMPANIONS,SCRIPT_NAME].filter(name=>{
+    try{return !fs.readFileSync(path.join(installDir(env),name)).equals(fs.readFileSync(sourceOf(name)));}catch{return true;}
+  });
+}
+const refreshCommand=()=>`node ${shellWord(fileURLToPath(import.meta.url))} refresh`;
+
+// Run by the installers: bring an enabled user's copy to this version. Only the four
+// copied files are replaced; host configs, Codex trust, session state and logs are not
+// touched, and a user who never enabled hints gets nothing. Failure is a warning.
+export function refresh({env=process.env,write=text=>process.stdout.write(text)}={}){
+  if(!hintsInstalled(env))return 0;
+  try{copyInstall(env);}
+  catch(error){write(`⚠ 技能提醒运行副本未刷新（${installDir(env)}）：${error.message}；可稍后运行 ${refreshCommand()}\n`);return 1;}
+  write(`技能提醒：运行副本已刷新（${installDir(env)}）。\n`);
+  return 0;
+}
 const LABEL={claude:'Claude',codex:'Codex'};
 class Drift extends Error{}
 
@@ -308,6 +335,15 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   });
   const loaded=loadRules({env,rulesFile});
   lines.push(`skill hints: ${wired.join('，')}；开关 ${loaded.enabled?'开':`关（${localPath(env)} 里 enabled 为 false）`}`);
+  if(!hintsInstalled(env))lines.push('  运行副本：未建（还没开启）');
+  else{
+    const stale=staleCopies(env);
+    let dir;
+    try{dir=fs.lstatSync(installDir(env)).isDirectory();}catch{dir=false;}
+    lines.push(!dir?`  ⚠ 运行副本缺失（${installDir(env)}），钩子跑不起来；运行 ${refreshCommand()} 补上`
+      :stale.length?`  ⚠ 运行副本与已装版本不一致（${stale.join('、')}）；运行 ${refreshCommand()} 刷新`
+      :'  运行副本：与已装版本一致');
+  }
   if(loaded.enabled){
     lines.push(`  对照表：CM 自带 ${loaded.defaultsError?`读取失败（${loaded.defaultsError}）`:`${loaded.cmCount} 条`}；用户自加 ${loaded.userCount} 条；关掉自带 ${loaded.disabledCount} 条`);
     if(loaded.localError)lines.push(`  ⚠ ${localPath(env)} 读取失败（${loaded.localError}），用户规则未生效`);
@@ -315,7 +351,7 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   return lines.join('\n')+'\n';
 }
 
-const USAGE='用法: cm-skill-hints.mjs hook --host claude|codex | status | enable [--claude] [--codex]\n';
+const USAGE='用法: cm-skill-hints.mjs hook --host claude|codex | status | refresh | enable [--claude] [--codex]\n';
 
 export async function main(argv=process.argv.slice(2),{env=process.env,readInput=()=>fs.readFileSync(0,'utf8'),
   write=text=>process.stdout.write(text),error=text=>process.stderr.write(text)}={}){
@@ -330,6 +366,7 @@ export async function main(argv=process.argv.slice(2),{env=process.env,readInput
     return 0;
   }
   if(command==='status'&&!rest.length){write(statusText({env}));return 0;}
+  if(command==='refresh'&&!rest.length)return refresh({env,write});
   if(command==='enable'){
     const hosts=rest.length?rest.map(flag=>flag.replace(/^--/,'')):HOSTS;
     if(hosts.some(host=>!HOSTS.includes(host))){error(USAGE);return 2;}

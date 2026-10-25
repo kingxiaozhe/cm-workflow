@@ -546,6 +546,10 @@ else
   echo "自动更新器未自动启用；按 docs/installation.md 手工配置 SessionStart hook。"
 fi
 echo "后台自动升级仍需另行开启，见 docs/installation.md。"
+# Skill hints: the hook runs a copy under ~/.cm-workflow/skill-hints; refresh it only for
+# users who turned hints on (never creates it, never touches settings). Failure only warns.
+node "$DEST/scripts/cm-skill-hints.mjs" refresh </dev/null ||
+  echo "⚠ 技能提醒运行副本刷新未完成（不影响本次安装）" >&2
 # Optional Matt Pocock companion skills: print what is missing and one command; never download.
 echo
 node "$DEST/scripts/cm-matt-skills.mjs" hint </dev/null || true

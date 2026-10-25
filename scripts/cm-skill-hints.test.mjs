@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {
-  hook,main,enable,statusText,loadRules,stripCode,hookCommand,hasHintHook,
+  hook,main,enable,refresh,statusText,loadRules,stripCode,hookCommand,hasHintHook,
   localPath,logFile,installDir,claudeSettingsPath,codexHooksPath,defaultRulesPath,
   MAX_PROMPT,ADOPT_WINDOW,LOG_LIMIT,SCRIPT_NAME,RULES_NAME,patternMatches,typed,readJson,loadAuthorCheck,
 } from './cm-skill-hints.mjs';
@@ -522,4 +522,93 @@ test('a skill name after a CJK path segment is not an adoption',async t=>{
   await f.send('修这个 bug');
   await f.send('参考 文档/cm-fix 那页');
   assert.deepEqual(f.log().map(entry=>entry.event),['hint']);
+});
+
+// ---- refresh: an install or upgrade brings an enabled copy up to the installed version ----
+
+const COPIED=[SCRIPT_NAME,RULES_NAME,'cm-matt-skills.mjs','cm-config-lock.mjs'];
+const shippedFile=name=>fs.readFileSync(path.join(path.dirname(defaultRulesPath()),name),'utf8');
+const bytesOf=file=>fs.existsSync(file)?fs.readFileSync(file,'utf8'):null;
+
+test('refresh brings an enabled copy up to date and leaves configs, trust, session state and logs alone',async t=>{
+  const f=fixture(t);
+  await enable({env:f.env,node:'/usr/bin/node',write:()=>{}});
+  const dir=installDir(f.env);
+  for(const name of COPIED)fs.writeFileSync(path.join(dir,name),'// old version\n');
+  const state=path.join(dir,'state','0123456789abcdef.json');
+  fs.mkdirSync(path.dirname(state),{recursive:true});
+  fs.writeFileSync(state,'{"hinted":["cm-fix"],"pending":[]}');
+  fs.mkdirSync(path.dirname(logFile(f.env)),{recursive:true});
+  fs.writeFileSync(logFile(f.env),'{"event":"hint"}\n');
+  const trust=path.join(f.env.CODEX_HOME,'config.toml');
+  fs.writeFileSync(trust,'[hooks.state]\nx = "trusted"\n');
+  const before=[claudeSettingsPath(f.env),codexHooksPath(f.env),trust,state,logFile(f.env)].map(bytesOf);
+  let out='';
+  assert.equal(await refresh({env:f.env,write:text=>{out+=text;}}),0);
+  for(const name of COPIED)assert.ok(fs.readFileSync(path.join(dir,name),'utf8')===shippedFile(name),name);
+  assert.deepEqual([claudeSettingsPath(f.env),codexHooksPath(f.env),trust,state,logFile(f.env)].map(bytesOf),before);
+  assert.match(out,/已刷新/);
+});
+
+test('refresh never creates the copy or touches any config for a user who did not enable hints',async t=>{
+  const f=fixture(t);
+  let out='';
+  assert.equal(await refresh({env:f.env,write:text=>{out+=text;}}),0);
+  assert.equal(out,'');
+  assert.ok(!fs.existsSync(f.env.CM_WORKFLOW_HOME));
+  assert.ok(!fs.existsSync(claudeSettingsPath(f.env)));
+  assert.ok(!fs.existsSync(codexHooksPath(f.env)));
+});
+
+test('refresh counts a wired hook as enabled even when the copy is gone',async t=>{
+  const f=fixture(t);
+  fs.mkdirSync(path.dirname(codexHooksPath(f.env)),{recursive:true});
+  const wired=JSON.stringify({hooks:{UserPromptSubmit:[{hooks:[{type:'command',command:hookCommand(f.env,'codex','/usr/bin/node')}]}]}});
+  fs.writeFileSync(codexHooksPath(f.env),wired);
+  assert.equal(await refresh({env:f.env,write:()=>{}}),0);
+  for(const name of COPIED)assert.ok(fs.readFileSync(path.join(installDir(f.env),name),'utf8')===shippedFile(name),name);
+  assert.equal(fs.readFileSync(codexHooksPath(f.env),'utf8'),wired);
+  assert.ok(!fs.existsSync(claudeSettingsPath(f.env)));
+});
+
+test('refresh does not take a link at the copy path as an enabled install',async t=>{
+  const f=fixture(t);
+  const elsewhere=path.join(f.home,'elsewhere');
+  fs.mkdirSync(elsewhere);
+  fs.mkdirSync(f.env.CM_WORKFLOW_HOME,{recursive:true});
+  fs.symlinkSync(elsewhere,installDir(f.env));
+  assert.equal(await refresh({env:f.env,write:()=>{}}),0);
+  assert.deepEqual(fs.readdirSync(elsewhere),[]);
+});
+
+test('a failed refresh warns, exits non-zero and keeps the previous script',async t=>{
+  const f=fixture(t);
+  const dir=installDir(f.env);
+  fs.mkdirSync(path.join(dir,'cm-config-lock.mjs','blocker'),{recursive:true});
+  fs.writeFileSync(path.join(dir,SCRIPT_NAME),'// previous working copy\n');
+  let out='';
+  assert.equal(await refresh({env:f.env,write:text=>{out+=text;}}),1);
+  assert.equal(fs.readFileSync(path.join(dir,SCRIPT_NAME),'utf8'),'// previous working copy\n');
+  assert.match(out,/⚠.*未刷新/);
+});
+
+test('status says whether the copy matches the installed version and how to refresh it',async t=>{
+  const f=fixture(t);
+  assert.match(statusText({env:f.env,rulesFile:f.rulesFile}),/运行副本：未建/);
+  await enable({env:f.env,node:'/usr/bin/node',write:()=>{}});
+  assert.match(statusText({env:f.env,rulesFile:f.rulesFile}),/运行副本：与已装版本一致/);
+  fs.writeFileSync(path.join(installDir(f.env),RULES_NAME),'{"rules":[]}');
+  const text=statusText({env:f.env,rulesFile:f.rulesFile});
+  assert.match(text,new RegExp(`运行副本与已装版本不一致（${RULES_NAME}）`));
+  assert.match(text,/cm-skill-hints\.mjs'? refresh/);
+  fs.rmSync(installDir(f.env),{recursive:true});
+  assert.match(statusText({env:f.env,rulesFile:f.rulesFile}),/运行副本缺失.*refresh/);
+});
+
+test('main refresh is wired and reports its own exit code',async t=>{
+  const f=fixture(t);
+  let out='';
+  assert.equal(await main(['refresh'],{env:f.env,write:text=>{out+=text;}}),0);
+  assert.ok(!fs.existsSync(installDir(f.env)));
+  assert.equal(await main(['refresh','extra'],{env:f.env,write:()=>{},error:()=>{}}),2);
 });
