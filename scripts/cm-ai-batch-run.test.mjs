@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createCmAiBatch,taskCommitArgs,memberRescheduleAllowed,memberRunHistory} from './cm-ai-batch-run.mjs';
+import {createCmAiBatch,taskCommitArgs,memberRescheduleAllowed,memberRunHistory,manualCleanupCommands} from './cm-ai-batch-run.mjs';
+import {execFileSync} from 'node:child_process';
 import {batchFixture} from './cm-ai-batch-run-fixture.mjs';
 
 for(const mode of ['continuous','qa-resume','failed-qa','cancel','learning','policy','executor','next-feature'])
@@ -80,4 +81,21 @@ test('task commit subjects are single-line and bounded while bodies preserve des
     if(expected!==null)assert.equal(args[1],expected);else assert(args[1].endsWith('…'));
     assert.deepEqual(taskCommitArgs('T-001',description,'failed'),['-m','WIP T-001: blocked (failed)','-m',description]);
   }
+});
+
+// Review r7: the cleanup commands a diverged one-member worktree prints must work when
+// pasted into a shell, also for a project path with spaces and a single quote.
+test('manual cleanup commands for a kept worktree run as printed, spaces and quotes included',()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),"cm cleanup it's ")));
+  try{
+    const repo=path.join(root,'my project'),worktree=path.join(root,'.cm-worktrees','seg x','T-001'),branch='cm/seg/feature/T-001';
+    fs.mkdirSync(repo,{recursive:true});
+    const git=(...args)=>execFileSync('git',['-C',repo,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']});
+    git('init','-q');fs.writeFileSync(path.join(repo,'a.txt'),'a\n');git('add','-A');
+    git('-c','user.email=t@t','-c','user.name=t','commit','-qm','init');
+    fs.mkdirSync(path.dirname(worktree),{recursive:true});git('worktree','add','-q','-b',branch,worktree,'HEAD');
+    for(const command of manualCleanupCommands({repo,worktree,branch}))execFileSync('/bin/sh',['-c',command],{cwd:os.tmpdir(),stdio:'pipe'});
+    assert.equal(fs.existsSync(worktree),false);
+    assert.equal(git('branch','--list',branch).trim(),'');
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

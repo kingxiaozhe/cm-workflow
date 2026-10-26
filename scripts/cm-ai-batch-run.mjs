@@ -360,7 +360,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       // proves the directory holds nothing to keep; the operator cleans up by hand. While
       // the worktree stays, every advance reuses it and compares again.
       const {worktree,branch}=location(key);
-      const cleanup=`确认 worktree ${worktree} 里没有要保留的内容后手动清理：git worktree remove ${worktree}；git branch -d ${branch}（不要加 --force 或 -D，Git 拒绝时说明还有改动或独有提交，先处理）`;
+      const cleanup=`确认 worktree ${worktree} 里没有要保留的内容后手动清理：${manualCleanupCommands({repo:config.codeProject,worktree,branch}).join('；')}（不要加 --force 或 -D，Git 拒绝时说明还有改动或独有提交，先处理）`;
       const nextStep=`${cleanup}；然后让主目录与 worktree 加载出同一份项目配置（取消改写配置的 Git 检出过滤器、删掉多余的配置文件并提交、去掉藏起本地改动的 skip-worktree/assume-unchanged），再对本批次 advance；`
         +`或在项目配置里设 parallel.worktree_all: false，剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次`;
       return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_member_config_diverged',batchId:config.batchId,currentTask:key,
@@ -870,6 +870,12 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }});
 }
 
+// Review r7: the manual cleanup commands are copied into a shell, so every path and the
+// branch are quoted; they run against the main checkout from any directory.
+const shellWord=word=>/^[\w@%+=:,./-]+$/.test(word)?word:`'${word.replace(/'/g,`'\\''`)}'`;
+export function manualCleanupCommands({repo,worktree,branch}){
+  return [`git -C ${shellWord(repo)} worktree remove ${shellWord(worktree)}`,`git -C ${shellWord(repo)} branch -d ${shellWord(branch)}`];
+}
 function gitOptions(){return {encoding:'utf8',timeout:60000,maxBuffer:4*1024*1024,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}};}
 function git(cwd,args,code='batch_git_failed'){
   const result=spawnSync('git',['-C',cwd,...args],gitOptions());

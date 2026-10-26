@@ -277,7 +277,7 @@ export async function batchFixture(mode,options={}){
         assert.match(value.reason,options.configDivergence==='two-files'?/multiple CM workflow configs/:/有效配置不同/);
         assert.doesNotMatch(value.reason,/已移除/);
         for(const text of [value.guidance.nextStep,value.reason]){
-          assert(text.includes(`git worktree remove ${worktree}`),text);assert(text.includes(`git branch -d ${branch}`),text);
+          assert(text.includes(`git -C ${codeProject} worktree remove ${worktree}`),text);assert(text.includes(`git -C ${codeProject} branch -d ${branch}`),text);
           assert.doesNotMatch(text,/remove --force|branch -D/);assert.match(text,/worktree_all: false/);
         }
         // Nothing deleted, nothing developed.
