@@ -1,10 +1,11 @@
 param(
     [switch]$Force,
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$NoSkillHints
 )
 
 # CM Workflow Claude Code compatibility installer for Windows.
-# Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [-Force] [-Yes]
+# Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [-Force] [-Yes] [-NoSkillHints]
 $ErrorActionPreference = "Stop"
 if ($Yes) { $Force = $true }
 
@@ -200,13 +201,16 @@ if ($InstallComplete) {
         if ($LASTEXITCODE -ne 0) { throw "运行时声明未完成（核心安装已成功）" }
     }
 
-    # Skill hints: refresh the copy the hook runs, only for users who turned hints on.
-    # Never creates it or touches settings; any failure only warns.
+    # Skill hints: wire the hook into Claude settings once by default (not with -NoSkillHints,
+    # CM_SKILL_HINTS_INSTALL=off, "enabled": false, or after the user removed it); otherwise
+    # only refresh the copy the hook runs. Any failure only warns.
     try {
-        & node (Join-Path $Dest "scripts/cm-skill-hints.mjs") refresh
-        if ($LASTEXITCODE -ne 0) { Write-Warning "技能提醒运行副本刷新未完成（不影响本次安装）" }
+        $HintArgs = @("install", "--host", "claude")
+        if ($NoSkillHints) { $HintArgs += "--no-skill-hints" }
+        & node (Join-Path $Dest "scripts/cm-skill-hints.mjs") @HintArgs
+        if ($LASTEXITCODE -ne 0) { Write-Warning "技能提醒钩子未处理完（不影响本次安装）" }
     } catch {
-        Write-Warning "技能提醒运行副本刷新未完成（不影响本次安装）：$($_.Exception.Message)"
+        Write-Warning "技能提醒钩子未处理完（不影响本次安装）：$($_.Exception.Message)"
     }
 
     Write-Host "`n完成（已安装版本: v$Version）。请在 Claude Code 中运行 /cm-check 校验。"
