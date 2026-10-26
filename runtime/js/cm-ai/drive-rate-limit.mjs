@@ -23,8 +23,8 @@ export const RATE_LIMIT_DEFAULT_DELAYS_MS=Object.freeze([900000,600000,300000]);
 export const RATE_LIMIT_MAX_TOTAL_MS=1800000;
 // Operations whose rate-limited stop is retried (cm-ai-conversation-entry.mjs: advance and
 // decision dispatch the review; resume only reports the state and never dispatches).
-// Single-task driver only: the batch host has no operation that checks such a
-// precondition and redispatches just that review under its lock.
+// The single-task retry is a bound decision; the batch retry is the batch host's
+// retry_review, checked under batch.lock and the member's writer lock.
 // The retry itself is always a decision bound to the frozen stop (never the
 // original advance), so it can only redispatch that one review.
 export const RATE_LIMIT_RETRY_OPERATIONS=Object.freeze(['advance','decision']);
@@ -53,8 +53,10 @@ export const rateLimitRetryable=row=>{
     &&result.state==='pending_review'&&result.code==='review_provider_failed'&&result.pendingAction==='resume';
 };
 // {attempt,max,delayMs} for the next wait, or null.
-export function nextRateLimitRetry(row,env=process.env){
-  if(!rateLimitRetryable(row)||expectedReviewStop(row)===null)return null;
+// kind 'batch': the batch driver, whose retry_review also needs the batch target.
+export function nextRateLimitRetry(row,env=process.env,kind='single'){
+  const expected=expectedReviewStop(row);
+  if(!rateLimitRetryable(row)||expected===null||kind==='batch'&&!expected.batch)return null;
   const delays=rateLimitDelays(env),done=rateLimitRetriesDone(env);
   return done<delays.length?{attempt:done+1,max:delays.length,delayMs:delays[done]}:null;
 }
@@ -85,15 +87,19 @@ const text=value=>typeof value==='string'&&value?value:null;
 // rateLimitStopMatches): the round's identity, the reviewed package and the
 // failed review invocation. null when the result does not carry all of them.
 export const RATE_LIMIT_EXPECTED_ENV='CM_DRIVE_RATE_LIMIT_EXPECTED';
+// A batch stop (cm-ai-batch-run.mjs withReviewRetryTarget) also carries its batch
+// target: the member taskKey and the digest of the batch log when it stopped.
 export function expectedReviewStop(row){
-  const result=obj(row?.result),identity=obj(result.identity);
+  const result=obj(row?.result),identity=obj(result.identity),target=obj(result.reviewRetryTarget);
   if(!['repositoryId','runId','taskId'].every(key=>text(identity[key]))||!Number.isSafeInteger(identity.attempt)
     ||!/^[a-f0-9]{64}$/.test(result.packageDigest??'')||!text(result.reviewInvocationId))return null;
+  const batch=text(target.taskKey)&&/^[a-f0-9]{64}$/.test(target.batchDigest??'')?{taskKey:target.taskKey,batchDigest:target.batchDigest}:null;
   return {identity:{repositoryId:identity.repositoryId,runId:identity.runId,taskId:identity.taskId,attempt:identity.attempt},
-    packageDigest:result.packageDigest,invocationId:result.reviewInvocationId};
+    packageDigest:result.packageDigest,invocationId:result.reviewInvocationId,...(batch?{batch}:{})};
 }
 export function readExpectedReviewStop(env=process.env){
   const raw=env[RATE_LIMIT_EXPECTED_ENV];if(typeof raw!=='string'||!raw)return null;
   let value;try{value=JSON.parse(raw);}catch{return null;}
-  return expectedReviewStop({result:{identity:value?.identity,packageDigest:value?.packageDigest,reviewInvocationId:value?.invocationId}});
+  return expectedReviewStop({result:{identity:value?.identity,packageDigest:value?.packageDigest,reviewInvocationId:value?.invocationId,
+    ...(value?.batch?{reviewRetryTarget:value.batch}:{})}});
 }

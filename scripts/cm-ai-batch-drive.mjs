@@ -36,6 +36,7 @@ import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs'
 import {readRunnerHistory,projectedRunnerStatus,RECHECK_CODES,DOCUMENTATION_SYNC_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
+import {rateLimitRetryEligible} from '../runtime/js/cm-ai/drive-rate-limit.mjs';
 
 import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 
@@ -421,10 +422,14 @@ export function buildCmAiBatchDriveRequest(operation,plan){
 function main(){
   loaded=preflight();
   const {plan,operation,bundle,config,permissions}=loaded;
+  // A timed rate-limit retry (drive-core.mjs) is retry_review carrying the frozen
+  // batch and member stop; the batch host redispatches only that review or answers staleRetry.
+  const expected=loaded.expectedReviewStop??null;
+  const request=expected?{...buildCmAiBatchDriveRequest('status',plan),taskKey:expected.batch.taskKey,identity:expected.identity,
+    packageDigest:expected.packageDigest,expectedReviewStop:{invocationId:expected.invocationId},batchDigest:expected.batch.batchDigest}
+    :buildCmAiBatchDriveRequest(operation,plan);
   driveHost({host:HOST,args:buildCmAiBatchDriveHostArgs(plan,permissions,config,loaded.control?.file,loaded.holds),
-    cwd:bundle.batch.codeProject,operation,request:buildCmAiBatchDriveRequest(operation,plan),
-    // No timed rate-limit retry here: the batch host has no operation that checks
-    // a frozen member review stop and redispatches only that review under its lock.
-    answers:loaded.answers,answerFor});
+    cwd:bundle.batch.codeProject,operation,request,
+    answers:loaded.answers,answerFor,rateLimitRetry:rateLimitRetryEligible(operation,plan)?'batch':false});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))main();

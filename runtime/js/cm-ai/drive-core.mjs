@@ -39,9 +39,11 @@ export function loadPlanFile({argv=process.argv.slice(2),name,known}){
   if(plan&&typeof plan==='object')applyRateLimitResume(plan);
   const expected=rateLimitRetriesDone()>0?readExpectedReviewStop():null;
   if(rateLimitRetriesDone()>0){
-    if(!expected||!known.has('decision'))stop(2,'状态已变，未自动重试：缺少等待时冻结的审查限流前置条件');
+    // The single-task driver retries with a bound decision, the batch driver with retry_review.
+    const retryOperation=known.has('decision')?'decision':'retry_review';
+    if(!expected||retryOperation==='retry_review'&&!expected.batch)stop(2,'状态已变，未自动重试：缺少等待时冻结的审查限流前置条件');
     plan.packageDigest=expected.packageDigest;
-    return {operation:'decision',plan,base,expectedReviewStop:expected};
+    return {operation:retryOperation,plan,base,expectedReviewStop:expected};
   }
   return {operation,plan,base};
 }
@@ -80,7 +82,7 @@ export function deliberatelyUnanswered(message){
 // The long fallback covers hosts that cannot advertise individual phase budgets.
 export const DRIVE_LIVENESS_DEFAULTS=Object.freeze({startupMs:60000,operationMs:21600000,
   heartbeatMs:30000,graceMs:30000,closeMs:5000,killMs:1000,pollMs:250});
-// rateLimitRetry (cm-ai drivers only, drive-rate-limit.mjs): a review the provider
+// rateLimitRetry (cm-ai drivers only, drive-rate-limit.mjs; 'batch' for the batch driver): a review the provider
 // rate limited is redispatched by re-running this same driver command after a
 // wait, without printing the interim result or notifying; the re-run's result is
 // the one printed. Only the runner's automatic pending_review state qualifies.
@@ -296,7 +298,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
         phaseBudget(inFlight);stderr(`host_busy：上一步仍在执行，继续等待 ${waitingFor} 的结果`);return;
       }
       done=true;finalRow=row;finalAt=Date.now();control.abort();
-      retry=rateLimitRetry&&!deliberateStop&&!refused&&!unanswered&&rejected===null?nextRateLimitRetry(row):null;
+      retry=rateLimitRetry&&!deliberateStop&&!refused&&!unanswered&&rejected===null?nextRateLimitRetry(row,process.env,rateLimitRetry==='batch'?'batch':'single'):null;
       if(retriesDone>0&&row.result?.staleRetry===true)stderr('状态已变，未自动重试：宿主核对运行已不停在等待时那次审查限流，没有派发任何操作');
       if(retry)stderr(`审查被限流（reviewer_rate_limited），${waitWords(retry.delayMs)}后在原运行自动重派审查（第 ${retry.attempt}/${retry.max} 次）；等待期间不推送，也不用你处理`);
       else printFinal(row);

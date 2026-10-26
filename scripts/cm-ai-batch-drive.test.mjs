@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
@@ -490,4 +490,76 @@ test('batch configured review reaches both rounds and completes without a review
   assert.deepEqual(developIntents(f),['develop-1','develop-2']);
   assert.match(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r1.md'),'utf8'),/verdict: changes_requested/);
   assert.match(fs.readFileSync(path.join(f.specsDir,'.reviews','work-T-001-r2.md'),'utf8'),/verdict: approved/);
+});
+
+// Batch review rate limit (2026-10-26 follow-up): the batch driver waits, then sends
+// retry_review with the frozen batch and member stop. The batch host redispatches
+// exactly that review, or answers staleRetry without dispatching anything.
+function rateLimitedReviewer(f,failures){
+  const cli=path.join(f.root,'bin','codex'),counter=path.join(f.root,'review-calls.txt');
+  fs.writeFileSync(cli,`#!/usr/bin/env node
+import fs from 'node:fs';import {randomUUID} from 'node:crypto';
+const counter=${JSON.stringify(counter)};const calls=(fs.existsSync(counter)?Number(fs.readFileSync(counter,'utf8')):0)+1;
+fs.writeFileSync(counter,String(calls));
+if(calls<=${failures}){
+  let prompt='';for await(const part of process.stdin)prompt+=part;
+  const message='exceeded retry limit, last status: 429 Too Many Requests';
+  for(const value of [{type:'thread.started',thread_id:randomUUID()},{type:'turn.started'},{type:'error',message},{type:'turn.failed',error:{message}}])
+    process.stdout.write(JSON.stringify(value)+'\\n');
+  // Like the real CLI, still alive when the worker stops it (an instant exit races the
+  // worker's group signal; macOS answers EPERM for a group that is only a zombie).
+  setTimeout(()=>process.exit(1),5000);await new Promise(()=>{});
+}
+await import(${JSON.stringify(reviewer)});
+`);
+  fs.chmodSync(cli,0o700);
+  return ()=>fs.existsSync(counter)?Number(fs.readFileSync(counter,'utf8')):0;
+}
+const batchLog=f=>{const file=path.join(f.specsDir,'运行日志.jsonl');return fs.existsSync(file)?fs.readFileSync(file,'utf8')
+  .split('\n').filter(Boolean).map(JSON.parse).filter(row=>typeof row.phase==='string'&&row.phase.startsWith('batch_')):[];};
+const until=async(check,ms=20000)=>{const end=Date.now()+ms;while(!check()&&Date.now()<end)await new Promise(r=>setTimeout(r,50));return check();};
+function driveAsync(f,file,operation,env){
+  const child=spawn(process.execPath,[DRIVER,'--plan',file,operation],{env:{...process.env,PATH:path.join(f.root,'bin')+path.delimiter+process.env.PATH,
+    CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs'),...env}});
+  let stdout='',stderr='';child.stdout.on('data',c=>stdout+=c);child.stderr.on('data',c=>stderr+=c);
+  return {stderr:()=>stderr,done:new Promise(resolve=>child.on('close',status=>resolve({status,stdout,stderr})))};
+}
+test('batch driver waits out a member review rate limit and redispatches only that review with retry_review',async t=>{
+  const f=fixture(t);prepared(f);f.write('develop-a2.json',develop);
+  const reviews=rateLimitedReviewer(f,1),permissions=['--allow-qa','--review-config','review.json'];
+  const tasks=path.join(f.specsDir,'1.work','tasks.md'),before=fs.readFileSync(tasks,'utf8');
+  const run=await driveAsync(f,f.plan({permissions}),'advance',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'300,300,300'}).done;
+  assert.equal(run.status,0,run.stderr);
+  assert.match(run.stderr,/审查被限流（reviewer_rate_limited），1 秒后在原运行自动重派审查（第 1\/3 次）/);
+  const result=JSON.parse(run.stdout).result;
+  // Only that review: the member is approved, nothing completed, merged or handed off.
+  assert.equal(result.state,'approved',run.stdout);assert.equal(result.taskKey,key);assert.equal(result.operation,'decision');
+  assert.equal(reviews(),2);assert.equal(fs.readFileSync(tasks,'utf8'),before);
+  assert.deepEqual(batchLog(f).map(row=>row.phase),['batch_start']);
+  // The next advance continues the batch as usual.
+  const next=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',permissions}),'advance');
+  assert.equal(next.status,0,next.stderr);assert.notEqual(JSON.parse(next.stdout).result.state,'approved');
+});
+test('batch rate-limit retry is stale once another driver moved the batch on: nothing dispatched or written',async t=>{
+  const f=fixture(t);prepared(f);f.write('develop-a2.json',develop);
+  const reviews=rateLimitedReviewer(f,1),permissions=['--allow-qa','--review-config','review.json'];
+  const waiting=driveAsync(f,f.plan({permissions}),'advance',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'15000'});
+  assert(await until(()=>/秒后在原运行自动重派审查/.test(waiting.stderr())),'the first driver is waiting');
+  // Meanwhile the session advances the batch itself.
+  const other=f.drive(f.plan({mode:'resume',originalHostContext:'batch-host-a',permissions}),'advance');
+  assert.equal(other.status,0,other.stderr);assert.equal(reviews(),2);
+  const tasks=path.join(f.specsDir,'1.work','tasks.md'),afterOther={tasks:fs.readFileSync(tasks,'utf8'),log:batchLog(f)};
+  const first=await waiting.done,result=JSON.parse(first.stdout).result;
+  assert.equal(result.staleRetry,true,first.stdout);assert.equal(result.outcome,'rejected');
+  assert.match(first.stderr,/状态已变，未自动重试/);
+  assert.equal(reviews(),2,'no third review');
+  assert.deepEqual({tasks:fs.readFileSync(tasks,'utf8'),log:batchLog(f)},afterOther,'tasks.md and the batch log unchanged');
+});
+test('batch rate-limit retry stops at the round\'s second failure and does not retry again',async t=>{
+  const f=fixture(t);prepared(f);f.write('develop-a2.json',develop);
+  const reviews=rateLimitedReviewer(f,2),permissions=['--allow-qa','--review-config','review.json'];
+  const run=await driveAsync(f,f.plan({permissions}),'advance',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'300,300,300'}).done;
+  const result=JSON.parse(run.stdout).result;
+  assert.equal(result.state,'blocked',run.stdout);assert.equal(result.pendingAction,'abandon_review');
+  assert.equal(reviews(),2);assert.equal((run.stderr.match(/自动重派审查（第 /g)??[]).length,1);
 });
