@@ -88,6 +88,13 @@ export const rateLimitStopMatches=(status,operation)=>status.packageDigest===ope
   &&reviewInvocationId(status)===operation.expectedReviewStop.invocationId;
 const staleRetry=(operation,status)=>freeze({...summary(operation,status,'rejected'),staleRetry:true,
   reason:'状态已变，未自动重试：运行已不停在等待时那次审查限流（轮次、审查包、审查调用或状态变了），本次没有派发任何操作'});
+// The class of a provider develop that ended on an API failure (worker-claude-developer.mjs,
+// worker-codex-developer.mjs: developer_rate_limited, developer_server_error, ...), so a
+// driver and the notice can name it without parsing text. Only a fixed-form class word.
+export const developFailureClass=status=>{
+  const code=status?.calls?.at(-1)?.failureCode;
+  return ['blocked','unknown'].includes(status?.state)&&typeof code==='string'&&/^developer_[a-z_]{1,48}$/.test(code)?code:null;
+};
 const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',operation:operation.operation,
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
@@ -105,7 +112,8 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   ...(status.state==='blocked'&&status.calls?.at(-1)?.blockedReason!==undefined
     ?{blockedReason:status.calls.at(-1).blockedReason}:{}),
   ...(['blocked','unknown'].includes(status.state)&&typeof status.calls?.at(-1)?.failureCode==='string'
-    ?{failureCode:status.calls.at(-1).failureCode}:{})});
+    ?{failureCode:status.calls.at(-1).failureCode}:{}),
+  ...(developFailureClass(status)!==null?{developFailure:developFailureClass(status)}:{})});
 const correctionSummary=(operation,status)=>status.code==='correction_review_required'
   ?summary(operation,status,'blocked'):null;
 // run_done is a project claim: every approved feature's latest mandatory QA must

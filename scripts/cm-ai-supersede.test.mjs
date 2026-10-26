@@ -402,6 +402,34 @@ test('provider develop without a usable result is redone after its worker group 
     if(process.env.DEBUG_KEEP)fs.writeFileSync(process.env.DEBUG_KEEP,f.root);else fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
+// 2026-10-26: a provider develop that hit the API rate limit stops at the same
+// develop_redo exit (it needs --allow-develop-redo and the worker-gone proof, so it
+// is never retried automatically); the result names the class as developFailure.
+test('provider develop ended by a rate limit names developer_rate_limited and still needs develop_redo',async()=>{
+  const f=runFixture();const children=[];
+  try{
+    const runId='provider-rate-limited',identity=identityFor(runId);
+    const execution=()=>{const value=executionFor(f,'written\n');
+      value.developer.run=createCodexDeveloperRun({requestedModel:'fixture',worker:async({prompt},control)=>{
+        control.onWorker({phase:'spawning'});
+        const child=spawnChild(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});
+        child.unref();children.push(child);control.onWorker({phase:'started',pid:child.pid});
+        return {status:'unknown',code:'developer_rate_limited'};}});
+      return value;};
+    const definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,feature:f.feature,
+      identity,scope:['a.mjs'],requirements:['requirements.md']};
+    const run=await openControlRun(definition,'create',execution());
+    try{
+      const first=await run.host.handle(requestFor(identity));
+      assert.equal(first.pendingAction,'develop_redo',JSON.stringify(first));assert.equal(first.developRedoRequired,true);
+      assert.equal(first.failureCode,'developer_rate_limited');assert.equal(first.developFailure,'developer_rate_limited');
+      // No other run retried it: the develop effect count is one.
+      const records=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution',runId,'state.json'),'utf8')).records;
+      assert.equal(records.filter(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='develop').length,1);
+    }finally{run.close();}
+  }finally{for(const child of children)try{process.kill(-child.pid,'SIGKILL');}catch{}fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 // R2: an interrupted step of the same kind is retired at most twice per run;
 // the third host death shows effect_interrupt_limit and abandon_effect voids.
 test('develop interruptions are capped at two per run, then abandon_effect voids the run',async()=>{

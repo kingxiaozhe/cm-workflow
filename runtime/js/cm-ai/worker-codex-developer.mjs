@@ -6,6 +6,9 @@ import {fileURLToPath} from 'node:url';
 import {commonArgs,cleanEnvironment,specsPermissionArgs} from './codex-config.mjs';
 import {need,text,validCallTimeout,json} from './effect-contract.mjs';
 import {CODEX_RECONNECT_NOTICE_LIMIT,isCodexReconnectNotice} from './codex-reconnect-notice.mjs';
+import {codexRateLimited} from './worker-codex.mjs';
+// A provider terminal (failed turn) still lets the usage of a later turn.failed through.
+const PROVIDER_ENDED=new Set(['provider_failed']);
 
 export function developerArgs({cwd,model,effort,schemaPath,disabledSkills=[],specsRoot=null}) {
   text(cwd);text(schemaPath);
@@ -50,7 +53,7 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
       try{child=spawnProcess(cli,args,{cwd,env:cleanEnvironment(),stdio:['pipe','pipe','pipe'],shell:false,detached:true});}
       catch{usage.complete();resolve({status:'unavailable',code:'spawn_failed'});return;}
       let buffer='',bytes=0,thread=null,turnStarted=false,completed=false,lastMessage=null;
-      let failure=null,closed=false,timer,cleanup,noticeCount=0,reconnectNoticeCount=0;
+      let failure=null,closed=false,timer,cleanup,noticeCount=0,reconnectNoticeCount=0,rateLimited=false;
       const signalGroup=signalName=>{
         if(!Number.isInteger(child.pid)||child.pid<=0)return false;
         try{process.kill(-child.pid,signalName);return true;}
@@ -73,11 +76,14 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
       timer=setTimeout(()=>stop('timeout'),timeoutMs);
       if(signal.aborted)abort();
       const accept=line=>{
-        if(!line.trim()||failure&&failure!=='provider_failed')return;
+        if(!line.trim()||failure&&!PROVIDER_ENDED.has(failure))return;
         let event;try{event=JSON.parse(line);}catch{stop('invalid_event');return;}
         if(!event||Array.isArray(event)||typeof event.type!=='string'){stop('invalid_event');return;}
         if(event.type==='turn.failed'&&thread&&turnStarted&&!completed)usage.terminal(event.usage);
-        if(failure==='provider_failed')return;
+        // Like the Codex reviewer (worker-codex.mjs): every failure event of the turn,
+        // the first or a later one, may name the rate limit; only the class is kept.
+        if((event.type==='error'&&!isCodexReconnectNotice(event)||event.type==='turn.failed')&&codexRateLimited(event))rateLimited=true;
+        if(PROVIDER_ENDED.has(failure))return;
         // Reconnects may precede thread initialization, but never bypass a
         // completed turn. Keep their budget separate from item notices.
         if(!completed&&isCodexReconnectNotice(event)&&reconnectNoticeCount<CODEX_RECONNECT_NOTICE_LIMIT){
@@ -121,7 +127,7 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
       child.stderr.resume();
       child.stdout.setEncoding('utf8');
       child.stdout.on('data',chunk=>{
-        if(failure&&failure!=='provider_failed'||closed)return;
+        if(failure&&!PROVIDER_ENDED.has(failure)||closed)return;
         bytes+=Buffer.byteLength(chunk);if(bytes>4*1024*1024){stop('output_limit');return;}
         buffer+=chunk;let index;
         while((index=buffer.indexOf('\n'))!==-1){accept(buffer.slice(0,index));buffer=buffer.slice(index+1);}
@@ -138,7 +144,9 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
         if(buffer.trim())accept(buffer);
         usage.complete();
         if(failure||code!==0||exitSignal||!completed||lastMessage===null){
-          resolve({status:failure==='spawn_failed'?'unavailable':'unknown',code:failure??'incomplete_result'});return;
+          // provider_failed stays the internal terminal; the published code names a rate limit.
+          resolve({status:failure==='spawn_failed'?'unavailable':'unknown',
+            code:failure==='provider_failed'&&rateLimited?'developer_rate_limited':failure??'incomplete_result'});return;
         }
         try{resolve({status:'succeeded',value:json(JSON.parse(lastMessage)),providerThread:thread});}
         catch{resolve({status:'unknown',code:'invalid_output_json'});}

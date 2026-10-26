@@ -147,8 +147,10 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
   // invocation). The host checks it under the run's writer lock and either
   // redispatches exactly that review or answers staleRetry without any effect.
   const planFile=planFileFromArgv();
+  // The PLAN bytes are frozen when the rate-limited result arrives, not when the host closes.
+  let retryPlanDigest=null;
   const waitAndRetry=()=>{
-    const pending=retry,frozenPlan=planFile?planDigest(planFile):null,expected=expectedReviewStop(finalRow);
+    const pending=retry,frozenPlan=retryPlanDigest,expected=expectedReviewStop(finalRow);
     // Backstop: if this waiting driver is killed, the stop is still sent once
     // the wait and waitMinutes have passed; the re-run's start cancels it.
     import('../notify.mjs').then(mod=>{
@@ -299,6 +301,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       }
       done=true;finalRow=row;finalAt=Date.now();control.abort();
       retry=rateLimitRetry&&!deliberateStop&&!refused&&!unanswered&&rejected===null?nextRateLimitRetry(row,process.env,rateLimitRetry==='batch'?'batch':'single'):null;
+      if(retry)retryPlanDigest=planFile?planDigest(planFile):null;
       if(retriesDone>0&&row.result?.staleRetry===true)stderr('状态已变，未自动重试：宿主核对运行已不停在等待时那次审查限流，没有派发任何操作');
       if(retry)stderr(`审查被限流（reviewer_rate_limited），${waitWords(retry.delayMs)}后在原运行自动重派审查（第 ${retry.attempt}/${retry.max} 次）；等待期间不推送，也不用你处理`);
       else printFinal(row);

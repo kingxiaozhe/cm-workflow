@@ -97,6 +97,12 @@ requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或 256 个�
   盘上改动保留；审查包始终对照本运行创建时拍下的任务基线（重发时不重拍），所以丢失应答期间写入的内容都会进检查与独立审查。不占调用与 effect 名额，每运行最多 2 次；受保护模式下代码根变化可能是半写入，不走此出口。
 - provider 开发（Codex 直写、Claude 提案由宿主应用）结果不明——`unknown/call_timeout`、`unknown/unknown`、提案未通过本地校验的 `blocked/failed`（`invalid_result`）、启动失败或报告失败的 `blocked/unavailable`——同样显示 `blocked/develop_answer_missing`、`pendingAction=develop_redo`，但只限新版本记了 worker 进程身份（`workerJournal` + `develop-worker`）的 effect。
   发送 `develop_redo` 时宿主按记录核对进程组（含应用提案的子进程）；Claude provider 还要代码根仍等于本轮起点（记 `basis`，否则 `develop_redo_root_changed`）：已退出（或从未启动）才写 `develop-answer-redo`（带 `worker` 绑定）；仍在运行拒绝为 `develop_redo_worker_process_alive`，核对不了拒绝为 `develop_redo_worker_process_unknown`，没记身份拒绝为 `develop_redo_worker_identity_unrecorded`。不带原因的 `blocked` 答复仍是终态，不走此出口。
+  provider 开发进程碰到 API 错误时只记类别，不存原始报错：Claude CLI 的合成 assistant 错误消息按错误类别记为 `developer_rate_limited`（`rate_limit`）、
+  `developer_server_error`（`server_error`，含 529 过载）、`developer_auth_failed`、`developer_billing_error`、`developer_model_not_found`，其他为 `developer_api_error`；
+  Codex 开发进程失败轮次的文字里有 429／Too Many Requests／rate limit 时记为 `developer_rate_limited`，其余仍为 `provider_failed`。终态状态不变（`unknown`），
+  所以停点仍是上面的 `develop_answer_missing`/`develop_redo`；结果另带 `failureCode` 和结构化字段 `developFailure`（同一类别）。
+  驾驶员**不自动重试**开发限流：重做必须由人带 `--allow-develop-redo` 发送 `develop_redo`（v2 为固定 `expectedControl`），并由宿主核对旧开发进程已退出，
+  自动发送等于替人授权。推送立即发出，「你要做」写成「开发进程被限流（429）：过一刻钟后回到会话「X」，授权它重做这一轮开发」。
 - `blocked/develop_dispatch_failed`（`pendingAction=resume`）：开发请求在派发给会话之前就失败了——宿主自己的角色路由出错（运行日志写不进 `role_log_failed`、工作流角色配置无效 `invalid_workflow_config`），开发调用没有结果、没有派发、没有写盘。
   修好 reason 指出的宿主环境后 `--mode resume` 再 `advance`：宿主追加 `develop-dispatch-retry` 记录，用新 effect id 重发本轮开发，不占名额，每运行最多 2 次。
   每次重发前（含写下记录后宿主退出、恢复再发）都核对代码根仍等于本轮起点（第 1 轮为任务基线，第 2 轮为已审第 1 轮包）；起点无法核对或代码根已变，改走上一条 `develop_redo` 确认重发，派发时拒绝为 `develop_dispatch_root_changed`。用满 2 次后同样改走 `develop_redo`。

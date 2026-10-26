@@ -56,6 +56,12 @@ export function validateClaudeProposal(raw){
   return result;
 }
 
+// Error classes of Claude CLI 2.1.x API failures (as the reviewer stream maps them,
+// claude-review-stream.mjs). A provider developer that hits one ends with the class
+// as its code; the provider text is never kept. The terminal status is unchanged.
+const DEVELOPER_API_ERROR_CLASSES=Object.freeze({authentication_failed:'developer_auth_failed',
+  billing_error:'developer_billing_error',rate_limit:'developer_rate_limited',
+  server_error:'developer_server_error',model_not_found:'developer_model_not_found'});
 const STARTUP_NOTICES=new Set(['dev_intent','ui_invalidate']);
 function startupNotice(subtype,onNotice){
   if(subtype==='dev_intent')return reportClaudeDevIntentNotice(onNotice);
@@ -92,6 +98,10 @@ function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null){
         need(event.subtype==='thinking_tokens'&&thinkingCount<64,'unexpected_event');thinkingCount++;return;
       }
       if(event.type==='assistant'){
+        // CLI 2.1.x reports an API failure as a synthetic assistant message carrying the
+        // error class, before any tool call; the is_error result follows.
+        if(typeof event.error==='string'&&event.parent_tool_use_id===null&&event.message?.role==='assistant'&&tools.size===0)
+          need(false,Object.hasOwn(DEVELOPER_API_ERROR_CLASSES,event.error)?DEVELOPER_API_ERROR_CLASSES[event.error]:'developer_api_error');
         need(event.parent_tool_use_id===null&&event.error==null&&event.message?.role==='assistant','unexpected_assistant');
         need(Array.isArray(event.message.content)&&event.message.content.length>0,'invalid_event');
         let substantive=false;

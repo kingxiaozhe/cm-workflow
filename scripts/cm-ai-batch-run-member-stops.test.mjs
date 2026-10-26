@@ -37,3 +37,6 @@ test('retry_review cancelled while it opens the member run dispatches no review 
 test('retry_review cancelled while its review runs forwards the cancel and logs batch_cancel',()=>batchFixture('bound-review-provider-retry',{cancelAt:'review'}));
 test('two group members rate limited together: retry_review redispatches the first, the next advance the second',
   ()=>batchFixture('parallel-bound-review-provider-retry',{rateLimitedTasks:['T-001','T-002']}));
+test('a parallel member stopped at develop_redo by a provider rate limit keeps developFailure in the batch stop',async()=>{
+  await batchFixture('parallel-redo',{redoCode:'developer_rate_limited'});
+});

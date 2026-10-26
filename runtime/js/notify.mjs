@@ -317,6 +317,9 @@ const AUTHORIZED_RECOVERY=Object.freeze({
   develop_redo:go=>`需要你确认会话已停止改代码后，${go}授权重做开发`,
   bootstrap_review_recover:go=>`${go}，授权它恢复初始化规则的审查`,
   spec_rebind:go=>`规格被改过：${go}确认改动后，授权它换绑规格`});
+const DEVELOPER_WAIT=Object.freeze({developer_rate_limited:'开发进程被限流（429）：过一刻钟后',
+  developer_server_error:'开发服务过载或出错：稍后',developer_auth_failed:'开发 CLI 要重新登录：登录后',
+  developer_billing_error:'开发账号额度用完：恢复额度后'});
 const REVIEW_REDISPATCH=new Set(['review_provider_failed','review_transport_timeout','review_verdict_invalid','review_abandoned']);
 const REVIEWER_WAIT=Object.freeze({reviewer_rate_limited:'审查被限流：过一刻钟后',reviewer_billing_error:'审查账号额度用完：恢复额度后',
   reviewer_auth_failed:'审查 CLI 要重新登录：登录后',reviewer_server_error:'审查服务暂时出错：稍后'});
@@ -332,6 +335,10 @@ export function noticeAction(fields={}){
     if(Number.isSafeInteger(retries)&&retries>0)return `审查被限流，已自动重试 ${retries} 次仍失败；过半小时后${go}说「继续」即可`;
     if(fields.rateLimitWaiting===true)return `审查被限流，自动重试没有接上；${go}说「继续」即可`;
   }
+  // A provider develop that ended on an API failure: its redo needs the person's
+  // develop_redo authorization (the host then proves the old worker gone itself).
+  if(pendingAction==='develop_redo'&&Object.hasOwn(DEVELOPER_WAIT,fields.developFailure))
+    return `${DEVELOPER_WAIT[fields.developFailure]}${go}，授权它重做这一轮开发（宿主会先核对旧开发进程已退出）`;
   // Exits that need the person's explicit authorization (an --allow-* recovery).
   if(Object.hasOwn(AUTHORIZED_RECOVERY,pendingAction))return AUTHORIZED_RECOVERY[pendingAction](go);
   if(['awaiting_spec_approval','spec_approval_required'].includes(code)||stage==='awaiting_spec_approval')
@@ -964,6 +971,7 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   const run=runId??launchRunKey(args);
   const project=cwd?path.resolve(cwd):null,session=notifySessionLabel(args),feature=text(result.feature)??text(result.identity?.feature);
   const reviewFailure=typeof result.reviewFailure==='string'&&/^reviewer_[a-z_]{1,48}$/.test(result.reviewFailure)?result.reviewFailure:null;
+  const developFailure=typeof result.developFailure==='string'&&/^developer_[a-z_]{1,48}$/.test(result.developFailure)?result.developFailure:null;
   const pendingAction=typeof result.pendingAction==='string'&&/^[a-z_]{1,32}$/.test(result.pendingAction)?result.pendingAction:null;
   const delivery=done||immediateStop({codes:[failure,row?.error?.code,result.code,result.reason,result.blocker,progress.blocker],
     state:text(result.state),pendingAction,ask})?'now':'later';
@@ -973,7 +981,7 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
     code:done?(text(result.code)??text(result.overall)??text(nested.overall)??'done'):code,
     // A finished unit is the natural point to start a fresh session (runtime/model-efficiency.md).
     nextAction:done?'会话边界：换新会话，下一项在新会话里运行':text(result.guidance?.nextStep)??text(progress.nextAction)??text(result.nextAction),
-    ...(reviewFailure?{reviewFailure}:{}),...(pendingAction&&!done?{pendingAction}:{}),...(ask?{ask:true}:{}),delivery};
+    ...(reviewFailure?{reviewFailure}:{}),...(developFailure?{developFailure}:{}),...(pendingAction&&!done?{pendingAction}:{}),...(ask?{ask:true}:{}),delivery};
 }
 
 // The attention record a successful, non-read-only step clears (see clearAttention).
