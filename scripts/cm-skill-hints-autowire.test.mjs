@@ -333,7 +333,7 @@ test('at run time a local file with any problem pauses hints: no hint, no skill 
   fs.writeFileSync(localPath(b.env),'{"judge":true,"enabled":true,"rules":[],"disable":["x"]}');
   assert.match(JSON.parse(await send('ok')).systemMessage,/cm-fix/);
   assert.equal(loadRules({env:b.env,rulesFile}).localError,null);
-  for(const text of ['{"enabled": false, "rules": {}}','{oops','{"judge":"false"}','{"disable":"fix-bug"}','{"enabled":"false"}','[]','null']){
+  for(const text of ['{"enabled": false, "rules": {}}','{oops','{"judge":"false"}','{"disable":"fix-bug"}','{"enabled":"false"}','[]','null','',' \n\t ']){
     fs.writeFileSync(localPath(b.env),text);
     assert.equal(await send(`s-${text}`),'',text);
     const loaded=loadRules({env:b.env,rulesFile});
@@ -344,6 +344,30 @@ test('at run time a local file with any problem pauses hints: no hint, no skill 
   assert.match(statusText({env:b.env,rulesFile}),/本地配置格式异常，提醒已暂停（.*rules 应为列表）/);
   fs.writeFileSync(localPath(b.env),'{oops');
   assert.match(statusText({env:b.env,rulesFile}),/本地配置格式异常，提醒已暂停（.*读取失败（parse））/);
+  fs.writeFileSync(localPath(b.env),'');
+  assert.match(statusText({env:b.env,rulesFile}),/本地配置格式异常，提醒已暂停（.*读取失败（empty））/);
+  // A valid empty object is still a usable file.
+  fs.writeFileSync(localPath(b.env),'{}');
+  assert.match(JSON.parse(await send('empty-object')).systemMessage,/cm-fix/);
+});
+
+for(const [label,text] of [['zero bytes',''],['only whitespace',' \n\t ']]){
+  test(`a local file of ${label} pauses the install default too`,async t=>{
+    const b=box(t);
+    fs.mkdirSync(b.env.CM_WORKFLOW_HOME,{recursive:true});
+    fs.writeFileSync(localPath(b.env),text);
+    const result=await b.run('claude');
+    assert.match(result.out,/⚠.*读取失败（empty）.*没给 Claude 挂/);
+    assert.ok(!fs.existsSync(b.file('claude')));
+    assert.equal(fs.readFileSync(localPath(b.env),'utf8'),text);
+  });
+}
+
+test('an empty CM table is reported by status instead of counting as zero rules',async t=>{
+  const b=box(t);
+  const rulesFile=path.join(b.home,'rules.json');
+  fs.writeFileSync(rulesFile,'');
+  assert.match(statusText({env:b.env,rulesFile}),/CM 自带 读取失败（empty）/);
 });
 
 test('a local file that cannot be read pauses the install default in status',async t=>{

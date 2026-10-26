@@ -83,8 +83,9 @@ export async function loadJudge(specifier='./cm-skill-judge.mjs'){
 }
 
 // Only a regular file of bounded size is read: a FIFO or device at one of these
-// paths would otherwise block the hook. `allowEmpty` is for CM's own files; a host
-// config that is empty is not valid JSON and is reported, never rewritten.
+// paths would otherwise block the hook. `allowEmpty` is only for per-session state, where
+// an empty file just means nothing hinted yet. Every config (host, local, CM table, record)
+// is strict: an empty one is not valid JSON and is reported, never rewritten.
 export function readJson(file,{allowEmpty=false}={}){
   let text;
   try{
@@ -124,7 +125,8 @@ export function localShapeError(value){
 // {settings} for a usable file (or none), else {settings:{}, error}: a read code such as
 // 'parse', or a shape reason.
 export function readLocal(env){
-  const local=readJson(localPath(env),{allowEmpty:true});
+  // Strict JSON: an empty or blank file is a problem like broken JSON (review round 4).
+  const local=readJson(localPath(env));
   if(local.missing)return {settings:{},error:null,missing:true};
   if(local.error)return {settings:{},error:local.error};
   const shape=localShapeError(local.value);
@@ -141,7 +143,7 @@ export function loadRules({env=process.env,rulesFile=defaultRulesPath()}={}){
   if(local.error)return {enabled:false,paused:true,rules:[],localError:local.error};
   const settings=local.settings;
   if(settings.enabled===false)return {enabled:false,rules:[]};
-  const defaults=readJson(rulesFile,{allowEmpty:true});
+  const defaults=readJson(rulesFile);
   const user=(Array.isArray(settings.rules)?settings.rules:[]).map(rule=>normalizeRule(rule,true)).filter(Boolean);
   const disabled=new Set(strings(settings.disable));
   const replaced=new Set(user.map(rule=>rule.id));

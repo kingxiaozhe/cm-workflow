@@ -443,7 +443,7 @@ installs from adding the hook. An install does not wire the hook when:
   covers that run only: the next install without them wires the host as usual, and
   a hook already there is kept;
 - `~/.cm-workflow/skill-hints.local.json` has `"enabled": false`; or it cannot be
-  read, or is not an object, or a known field has the wrong type (`enabled` and
+  read, is empty, or is not an object, or a known field has the wrong type (`enabled` and
   `judge` must be `true`/`false`, `rules` a list, `disable` a list of strings). Then
   it warns and changes nothing until you fix the file;
 - that host is settled: the hook was there before and you removed it. CM keeps the
@@ -493,8 +493,8 @@ overwrites. They take precedence over CM's table:
 }
 ```
 
-If the local file has any problem (it cannot be read, is not an object, or a known
-field has the wrong type), hints pause as a whole: no hint, no skill started and
+If the local file has any problem (it cannot be read, is empty or only whitespace,
+is not JSON or not an object, or a known field has the wrong type), hints pause as a whole: no hint, no skill started and
 nothing sent to Jev, so a valid `"enabled": false` next to a broken field still holds.
 `/cm-check` shows "本地配置格式异常，提醒已暂停" with the cause; a missing or valid file
 works as before. `"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
