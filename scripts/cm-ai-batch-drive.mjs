@@ -423,6 +423,8 @@ function main(){
   const {plan,operation,bundle,config,permissions}=loaded;
   driveHost({host:HOST,args:buildCmAiBatchDriveHostArgs(plan,permissions,config,loaded.control?.file,loaded.holds),
     cwd:bundle.batch.codeProject,operation,request:buildCmAiBatchDriveRequest(operation,plan),
+    // No timed rate-limit retry here: the batch host has no operation that checks
+    // a frozen member review stop and redispatches only that review under its lock.
     answers:loaded.answers,answerFor});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))main();

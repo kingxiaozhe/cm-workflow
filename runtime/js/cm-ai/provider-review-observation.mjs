@@ -190,10 +190,11 @@ export function inspectProviderReviewReconciliation(observationText,expectationT
     const review=cause?reviewResultForPaths(r.value,expected.pkg,causeReviewPaths(expected.pkg)):reviewResult(r.value,expected.pkg);
     return json({...inspect(observationText,expectationText,cause),observationStatus:'completed',code:null,review});
   }
-  need(['error','turn.failed'].includes(terminal)&&r.status==='failed'&&r.code==='provider_failed',
+  // A Codex rate limit (worker-codex.mjs) is the only other trusted failed terminal; it keeps its class.
+  need(['error','turn.failed'].includes(terminal)&&r.status==='failed'&&['provider_failed','reviewer_rate_limited'].includes(r.code),
     'review_reconciliation_evidence_required');
   return json({version:1,kind:'cm-provider-review-failure',requestDigest:expected.request.requestDigest,
     observationDigest:digest(observation),identity:expected.request.identity,logicalContextId:expected.request.contextId,
     provider:expected.request.provider,requestedModel:expected.request.requestedModel,providerThreadId:thread,
-    category:'provider',failure:'reviewer_provider_failed',completionEligible:false});
+    category:'provider',failure:REVIEWER_PROVIDER_FAILURES[r.code],completionEligible:false});
 }

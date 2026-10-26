@@ -600,6 +600,8 @@ export async function batchFixture(mode,options={}){
     if(mode.endsWith('review-provider-retry')){
       assert.equal(result.state,'pending_review',JSON.stringify(result));assert.equal(result.code,'review_provider_failed');
       assert.match(result.reason,/^reviewer_rate_limited: /);assert.deepEqual(calls,parallel?['T-001','T-002']:['T-001']);
+      // The batch passes the member's structured class through (drivers retry on it).
+      assert.equal(result.reviewFailure,'reviewer_rate_limited');
       result=await open().handle({operation:'advance',requestId:'retry-review'});
     }
     if(mode==='qa-resume'){

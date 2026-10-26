@@ -82,3 +82,38 @@ test('Codex reconnect notices are bounded and notice sink failure does not fail 
   assert.deepEqual(actual.result,{status:'succeeded',value:{ok:true}});
   assert.deepEqual(actual.notices,[notice.message.slice(0,200)]);
 });
+
+// 2026-10-26: a real Codex review ended with this pair after its own retries.
+// The class is kept, never the provider text; other errors stay provider_failed.
+const limited='exceeded retry limit, last status: 429 Too Many Requests';
+test('Codex 429 / Too Many Requests / rate limit ends as reviewer_rate_limited (class only, no text)',async()=>{
+  for(const rows of [
+    [{type:'error',message:limited},{type:'turn.failed',error:{message:limited}}],
+    [{type:'turn.failed',error:{message:limited}}],
+    [{type:'error',message:'stream error: Too Many Requests'}],
+    [{type:'error',message:'Rate limit reached for requests'},{type:'turn.failed',error:{message:'request failed'}}],
+  ]){
+    const actual=await stream([...start,...rows]);
+    assert.deepEqual(actual.result,{status:'failed',code:'reviewer_rate_limited'},JSON.stringify(rows));
+    assert.deepEqual(actual.terminals,[{status:'failed',code:'reviewer_rate_limited'}]);
+    assert(!JSON.stringify(actual.events).includes('429'),'no provider text in published events');
+  }
+});
+
+test('Codex failure naming only the HTTP status 429 is a rate limit',async()=>{
+  for(const message of ['unexpected status HTTP 429','HTTP 429']){
+    const actual=await stream([...start,{type:'error',message},{type:'turn.failed',error:{message}}]);
+    assert.deepEqual(actual.result,{status:'failed',code:'reviewer_rate_limited'},message);
+  }
+});
+
+test('Codex non-rate-limit failures stay provider_failed; a 429 reconnect notice that recovers still succeeds',async()=>{
+  for(const message of ['request failed','status 500 Internal Server Error','error 4290 unrelated id']){
+    const actual=await stream([...start,{type:'error',message},{type:'turn.failed',error:{message}}]);
+    assert.deepEqual(actual.result,{status:'failed',code:'provider_failed'},message);
+    assert.deepEqual(actual.terminals,[{status:'failed',code:'provider_failed'}]);
+  }
+  const notice={type:'error',message:'Reconnecting... 1/5 (unexpected status 429 Too Many Requests)'};
+  const recovered=await stream([...start,notice,...finish]);
+  assert.deepEqual(recovered.result,{status:'succeeded',value:{ok:true}});
+});

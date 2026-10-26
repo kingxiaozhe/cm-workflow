@@ -21,6 +21,7 @@ const LOCK_STALE_MS=30000,LOG_LIMIT=256*1024;
 // Lock and dedup state are tiny JSON files; perDay sends bound the state size.
 const CONTROL_FILE_LIMIT=256*1024;
 const RUNNER=fileURLToPath(new URL('./notify-run.mjs',import.meta.url));
+const LATER_RUNNER=fileURLToPath(new URL('./notify-later.mjs',import.meta.url));
 
 export function notifyHome(env=process.env){
   return path.resolve(env.CM_WORKFLOW_HOME||path.join(os.homedir(),'.cm-workflow'));
@@ -237,7 +238,8 @@ const CODE_WORDS=Object.freeze({qa_decision_required:'在等 QA 判定',qa_manda
   checks_not_passed:'检查没通过',develop_checks_not_passed:'开发检查没通过',qa_failed:'QA 没通过',qa_blocked:'QA 被阻断',
   qa_result_blocked:'QA 结果被阻断',qa_execution_unknown:'QA 执行结果不明',project_qa_not_passed:'项目 QA 没通过',
   correction_review_required:'需要重新审查改动',documentation_sync_blocked:'文档同步被阻断',handoff_exists:'交接记录已存在',
-  provider_development_authorization_required:'需要你授权外部开发',host_process_gone:'宿主进程已退出',run_done:'跑完了'});
+  provider_development_authorization_required:'需要你授权外部开发',host_process_gone:'宿主进程已退出',run_done:'跑完了',
+  notify_pending_unsafe:'延后提醒不可用'});
 // Codes without an entry: "subject + outcome" from the words in the code, so
 // the reason is still in Chinese; null when the code says neither.
 const CODE_SUBJECTS=[['qa_fix','QA 修复'],['qa','QA'],['review','审查'],['develop','开发'],['checks','检查'],['check','检查'],
@@ -300,6 +302,71 @@ export function normalizeNotifyText(value){
   return {text};
 }
 
+// What the person does next, in plain words, by stop code (2026-10-26: a notice
+// that only says why it stopped leaves the person guessing). It always names the
+// session to go back to; an unmapped code asks that session to say what it needs.
+// An explicit fields.action (a driver that knows more, e.g. retries already spent)
+// wins. Never built from free text other than that action, the session title and id.
+const USER_STAGES=new Set(['awaiting_user','awaiting_planning_user','awaiting_design_user','change_confirmation',
+  'confirmation_required','self_check_needs_human']);
+// pendingAction exits the runner opens only with an explicit --allow-* (or
+// rebind) permission: the person confirms and authorizes them.
+const AUTHORIZED_RECOVERY=Object.freeze({
+  abandon_review:go=>`需要你确认旧审查进程已停后，${go}授权放弃这次审查再重派`,
+  abandon_effect:go=>`需要你确认上一步的进程已停后，${go}授权放弃这一步再重做`,
+  develop_redo:go=>`需要你确认会话已停止改代码后，${go}授权重做开发`,
+  bootstrap_review_recover:go=>`${go}，授权它恢复初始化规则的审查`,
+  spec_rebind:go=>`规格被改过：${go}确认改动后，授权它换绑规格`});
+const REVIEW_REDISPATCH=new Set(['review_provider_failed','review_transport_timeout','review_verdict_invalid','review_abandoned']);
+const REVIEWER_WAIT=Object.freeze({reviewer_rate_limited:'审查被限流：过一刻钟后',reviewer_billing_error:'审查账号额度用完：恢复额度后',
+  reviewer_auth_failed:'审查 CLI 要重新登录：登录后',reviewer_server_error:'审查服务暂时出错：稍后'});
+export function noticeAction(fields={}){
+  const explicit=clean(fields.action,200);if(explicit)return explicit;
+  const name=clean(fields.sessionTitle,40)||clean(fields.session,24),go=name?`回到会话「${name}」`:'回到对应会话';
+  const code=clean(fields.code,96),stage=clean(fields.stage,48);
+  const pendingAction=clean(fields.pendingAction,32);
+  // The driver's own automatic review retries (drive-core.mjs) for a rate limit.
+  // "继续即可" only when the real exit is still the original run's redispatch.
+  if(fields.reviewFailure==='reviewer_rate_limited'&&code==='review_provider_failed'&&pendingAction==='resume'){
+    const retries=fields.rateLimitRetries;
+    if(Number.isSafeInteger(retries)&&retries>0)return `审查被限流，已自动重试 ${retries} 次仍失败；过半小时后${go}说「继续」即可`;
+    if(fields.rateLimitWaiting===true)return `审查被限流，自动重试没有接上；${go}说「继续」即可`;
+  }
+  // Exits that need the person's explicit authorization (an --allow-* recovery).
+  if(Object.hasOwn(AUTHORIZED_RECOVERY,pendingAction))return AUTHORIZED_RECOVERY[pendingAction](go);
+  if(['awaiting_spec_approval','spec_approval_required'].includes(code)||stage==='awaiting_spec_approval')
+    return `打开规格确认内容，再${go}说「批准」`;
+  if(code==='spec_drift')return `规格被改过：${go}，确认这些改动要不要保留`;
+  if(code==='permission_denied'||/(^|_)authorization_required$/.test(code))return `${go}，看它要你授权什么；同意就说「授权」`;
+  if(code==='review_limit')return `两轮审查都没通过：${go}，决定改规格还是重开这项任务`;
+  if(code==='review_blocked')return `审查认为在批准范围内改不好：${go}看原因，决定改规格还是放弃`;
+  if(['review_redispatch_limit','review_abandon_budget_exhausted'].includes(code))
+    return `审查多次没给结论：${go}，让它查清登录或额度后新建运行重做`;
+  if(/_(retry|redo|recheck)_limit$/.test(code))return `自动重试次数已用完：${go}，决定要不要重开这项任务`;
+  // The classifier saw a question or decision only the person can answer.
+  if(fields.ask===true||code==='confirm_reask_decision_required'||USER_STAGES.has(stage))return `${go}，回答它的问题或做决定`;
+  if(REVIEW_REDISPATCH.has(code))return `${REVIEWER_WAIT[fields.reviewFailure]??''}${go}说「继续」，让它重派审查`;
+  if(code==='qa_triggered')return `${go}说「继续」，让它执行 QA`;
+  if(['qa_decision_required','qa_mandatory_required'].includes(code))return `${go}说「继续」，让它做 QA 判定`;
+  if(['qa_failed','qa_blocked','qa_result_blocked','project_qa_not_passed'].includes(code))return `QA 没通过：${go}，让它说明失败项和修法`;
+  if(code.startsWith('host_'))return `宿主中途停了：${go}说「继续」，让它查状态后恢复`;
+  if(code==='waiting_session_answer')return `${go}看看它是否卡住，需要时说「继续」`;
+  if(['waiting_for_you','no_next_step'].includes(code))return `${go}说「继续」，让它做下一步`;
+  if(code==='checks_not_passed'||code.startsWith('develop_'))return `${go}说「继续」，让它修好后重新提交`;
+  if(code==='cancelled')return `已取消：要继续就${go}说明`;
+  return `${go}，让它说明停在哪、需要你做什么`;
+}
+// A nextAction written for the session (flags, codes, file names, long recovery
+// recipes) is not something a person can act on from a phone. Only a driver's
+// stop is rewritten; host waiting/idle and patrol texts are already written for people.
+const technicalAction=raw=>{
+  const value=clean(raw,1000);
+  return !value||Array.from(value).length>80||/--|`|[{}]|[A-Za-z0-9]_[A-Za-z0-9]|\.(?:mjs|js|json|md|sh)\b/.test(value)
+    ||(value.match(/[A-Za-z]{3,}/g)??[]).length>=3;
+};
+// The default label "下一步" reads as the workflow's step; the compact line says "你要做".
+const actionLabel=spec=>spec.labels.nextAction===DEFAULT_NOTIFY_TEXT.labels.nextAction?'你要做':spec.labels.nextAction;
+
 // The default text is a next-step-first layout; a finished run only names
 // project, task and time. `text` is a normalized notify.json `text`; anything
 // unusable falls back to the default.
@@ -314,6 +381,7 @@ export function buildNotifyMessage(fields,{now=Date.now(),timeZone,text,followUp
     const session=clean(fields.sessionTitle,40)||clean(fields.session,24),code=clean(fields.code,64);
     const reason=(event!=='done'&&codeChinese(code))||spec.headlines[event];
     const lines=[`${followUp?'第 2 次：':''}${reason}`];
+    if(event!=='done')lines.push(`${actionLabel(spec)}：${noticeAction(fields)}`);
     if(Number.isSafeInteger(suppressed)&&suppressed>0)lines.push(`另有 ${suppressed} 条提醒已合并`);
     return {title:cut(project||workflow,NOTIFY_LIMITS.titleChars),subtitle:session?`会话：${session}`:workflow,
       body:cut(lines.join('\n'),NOTIFY_LIMITS.bodyChars)};
@@ -326,7 +394,9 @@ export function buildNotifyMessage(fields,{now=Date.now(),timeZone,text,followUp
   const sessionPart=session?` · 会话 ${session}`:'',rest=[workflow,[feature,task].filter(Boolean).join(' ')].filter(Boolean).join(' · ');
   const subtitle=cut(rest,Math.max(1,NOTIFY_LIMITS.titleChars-Array.from(sessionPart).length))+sessionPart;
   const value=name=>name==='time'?localClock(now,timeZone):name==='project'?project:name==='workflow'?workflow
-    :name==='code'?codeWords(fields.code):clean(fields[name],FIELD_CAPS[name]);
+    :name==='code'?codeWords(fields.code)
+    :name==='nextAction'&&(fields.event===undefined||fields.event==='stuck')&&technicalAction(fields.nextAction)?noticeAction(fields)
+    :clean(fields[name],FIELD_CAPS[name]);
   const rows=spec.fields[fields.event==='done'?'done':'default'].map(name=>[spec.labels[name],value(name)]);
   const lines=rows.filter(([,value])=>value).map(([label,value])=>`${label}：${value}`);
   if(followUp)lines.unshift('第 2 次提醒：上次提醒后仍未处理');
@@ -425,13 +495,75 @@ function withState(home,update){
     return update(state);
   }finally{releaseLock(lockFile,lock);}
 }
-function reserve(home,{hash,attention=null,event,code=null},now,limits){
+// A deferred stop (notifyLater) is one pending file per attention record, read
+// and changed only under the state lock. Its waiter sends only while its token
+// is still the pending one; progress, a new step, a newer stop of the same
+// session or an immediate notice about it removes or replaces the file.
+const PENDING_DIR='notify-pending';
+const CONFIG_NOTICE_MS=24*3600*1000;
+// One fixed configuration-fault notice (at most once a day) replaces every
+// deferred stop while the pending directory is unsafe: those stops are not
+// sent one by one at once (that would bring back the noise deferral removes).
+export const PENDING_UNSAFE_ACTION='延后提醒不可用：.cm-workflow 目录下的 notify-pending 权限或类型不安全（要求本人所有、权限 700 的普通目录，不能是链接），修好前普通停顿不会提醒';
+// The directory itself must be a real 0700 directory of this user inside the
+// notify home: never a symbolic link (a link could point the writes, renames
+// and deletes below anywhere). Anything else: nothing is read, written or
+// removed there. {missing:true} | {dir} | null (unsafe).
+function pendingDir(home,create=false){
+  const dir=path.join(home,PENDING_DIR);
+  let info;
+  try{info=fs.lstatSync(dir);}
+  catch(error){
+    if(error?.code!=='ENOENT')return null;
+    if(!create)return {missing:true};
+    try{fs.mkdirSync(dir,{mode:0o700});fs.chmodSync(dir,0o700);info=fs.lstatSync(dir);}catch{return null;}
+  }
+  if(info.isSymbolicLink()||!info.isDirectory())return null;
+  if(process.platform!=='win32'&&((info.mode&0o777)!==0o700||typeof process.getuid==='function'&&info.uid!==process.getuid()))return null;
+  try{if(fs.realpathSync(dir)!==path.join(fs.realpathSync(home),PENDING_DIR))return null;}catch{return null;}
+  return {dir};
+}
+const pendingFile=(dir,hash)=>path.join(dir,`${hash}.json`);
+// {missing:true} | null (unreadable or unsafe: treated as cancelled) | {token,at}
+function readPending(home,hash){
+  const place=pendingDir(home);if(place===null||place.missing)return place;
+  const read=readBounded(pendingFile(place.dir,hash),4096);if(read===null||read.missing)return read;
+  try{const value=JSON.parse(read.text);return typeof value?.token==='string'&&Number.isFinite(value.at)?value:null;}catch{return null;}
+}
+function removePending(home,hash){
+  const place=pendingDir(home);if(place===null||place.missing)return false;
+  try{fs.unlinkSync(pendingFile(place.dir,hash));return true;}catch{return false;}
+}
+function writePending(home,hash,value){
+  const place=pendingDir(home,true);if(place===null||place.missing)return false;
+  const file=pendingFile(place.dir,hash),temp=`${file}.${process.pid}.${randomUUID()}.tmp`;
+  try{fs.writeFileSync(temp,JSON.stringify(value),{mode:0o600,flag:'wx'});fs.renameSync(temp,file);return true;}
+  catch{try{fs.unlinkSync(temp);}catch{}return false;}
+}
+// Removes a pending stop recorded at or before `before` (an unreadable one too),
+// only inside a safe pending directory.
+function dropPending(home,hash,before){
+  const place=pendingDir(home);if(place===null||place.missing)return false;
+  const pending=readPending(home,hash);
+  if(pending?.missing||pending&&pending.at>before)return false;
+  return removePending(home,hash);
+}
+function reserve(home,{hash,attention=null,event,code=null,pendingToken},now,limits){
   return withState(home,state=>{
-    const keys=Object.fromEntries(Object.entries(state.keys).filter(([,at])=>now-at<NOTIFY_LIMITS.sameKeyMs&&at<=now));
+    // A deferred waiter fires only for its own still-pending stop; any other
+    // notice about the same session supersedes a pending one.
+    if(attention!==null&&pendingToken!==undefined){
+      const pending=readPending(home,attention);
+      if(!pending||pending.missing||pending.token!==pendingToken)return {status:'cancelled'};
+      removePending(home,attention);
+    }else if(attention!==null)dropPending(home,attention,Infinity);
+    // Configuration-fault notices repeat at most once a day; other keys once per sameKeyMs.
+    const keys=Object.fromEntries(Object.entries(state.keys).filter(([,at])=>now-at<CONFIG_NOTICE_MS&&at<=now));
+    const sameKeyMs=event==='config'?CONFIG_NOTICE_MS:NOTIFY_LIMITS.sameKeyMs;
     const sends=state.sends.filter(at=>now-at<24*3600*1000&&at<=now);
     const records=Object.fromEntries(Object.entries(state.attention).filter(([,item])=>now-item.lastAt<NOTIFY_LIMITS.attentionTtlMs&&item.lastAt<=now));
     let followUp=false,next=null;
-    if(attention===null){if(Object.hasOwn(keys,hash))return {status:'duplicate'};}
+    if(attention===null){if(Object.hasOwn(keys,hash)&&now-keys[hash]<sameKeyMs)return {status:'duplicate'};}
     else{
       const level=ATTENTION_LEVEL[event]??2,record=records[attention];
       const changed=!record||level>record.level||(event==='stuck'&&code&&code!==record.code);
@@ -460,8 +592,10 @@ export async function clearAttention(attentionKey,{env=process.env,before=Date.n
     const home=notifyHome(env),hash=keyHash(attentionKey);
     for(let attempt=1;;attempt++){
       const result=withState(home,state=>{
+        // A stop still waiting to be sent (notifyLater) from before the step is dropped too.
+        const dropped=dropPending(home,hash,before);
         const record=state.attention[hash];
-        if(!record||record.lastAt>before)return {status:'unchanged'};
+        if(!record||record.lastAt>before)return {status:dropped?'ok':'unchanged'};
         const attention={...state.attention};delete attention[hash];
         return writeState(home,{...state,version:2,attention})?{status:'ok'}:{status:'state_write_failed'};
       });
@@ -475,19 +609,89 @@ export async function clearAttention(attentionKey,{env=process.env,before=Date.n
   }catch{return false;}
 }
 
+// A new step of the session (the driver's host accepted it) means someone is
+// handling it: a stop from before that still waits to be sent is dropped.
+export async function cancelPendingNotice(attentionKey,{env=process.env,before=Date.now(),attempts=10,delayMs=100}={}){
+  try{
+    if(typeof attentionKey!=='string'||!attentionKey||!readNotifyConfig(env))return false;
+    const home=notifyHome(env),hash=keyHash(attentionKey),lockFile=path.join(home,'notify-state.lock');
+    for(let attempt=1;;attempt++){
+      const lock=takeLock(lockFile);
+      if(lock!==null){try{return dropPending(home,hash,before);}finally{releaseLock(lockFile,lock);}}
+      if(attempt>=attempts){appendNotifyLog(home,Date.now(),{event:'cancel',hash,result:'failed state_busy'});return false;}
+      await new Promise(resolve=>setTimeout(resolve,delayMs));
+    }
+  }catch{return false;}
+}
+
+// Driver side: a stop that is not a person's own decision is sent only if
+// nothing moved for waitMinutes (2026-10-26: notices arrived while the session
+// was still working). A detached waiter (notify-later.mjs) sleeps, then calls
+// notify() with its token; notify() sends only while that token is still the
+// session's pending stop, through the usual lock, dedup and frequency rules.
+// No config: nothing is written or started. Without an attention record there
+// is nothing that could cancel it, so it is sent at once as before.
+export const NOTIFY_LATER_MAX_MS=24*3600*1000;
+export async function notifyLater(fields,{env=process.env,delayMs=null,extraDelayMs=0,now=Date.now(),attempts=10,retryMs=100}={}){
+  try{
+    const config=readNotifyConfig(env);if(!config)return {scheduled:false,reason:'off'};
+    if(typeof fields?.key!=='string'||!fields.key)return {scheduled:false,reason:'invalid_key'};
+    if(typeof fields.attentionKey!=='string'||!fields.attentionKey)return {scheduled:false,reason:'sent_now',...notify(fields,{env,now})};
+    const delay=Math.max(1,Math.min(NOTIFY_LATER_MAX_MS,(Number.isSafeInteger(delayMs)&&delayMs>0?delayMs:config.waitMs)
+      +(Number.isSafeInteger(extraDelayMs)&&extraDelayMs>0?extraDelayMs:0)));
+    const home=notifyHome(env),hash=keyHash(fields.attentionKey),token=randomUUID(),lockFile=path.join(home,'notify-state.lock');
+    let written=false;
+    for(let attempt=1;attempt<=attempts&&!written;attempt++){
+      const lock=takeLock(lockFile);
+      if(lock!==null){try{written=writePending(home,hash,{version:1,token,at:now,dueAt:now+delay});}finally{releaseLock(lockFile,lock);}
+        if(!written)break;}
+      else if(attempt<attempts)await new Promise(resolve=>setTimeout(resolve,retryMs));
+    }
+    const workflow=clean(fields.workflow,24)||'cm';
+    if(!written){
+      const reason=pendingDir(home)===null?'pending_dir_unsafe':'pending_write';
+      appendNotifyLog(home,now,{event:'later',workflow,hash,result:`failed ${reason}`});
+      if(reason==='pending_dir_unsafe'){
+        const fault=notify({key:'config|notify-pending-unsafe',event:'config',workflow,project:fields.project,session:fields.session,
+          sessionTitle:fields.sessionTitle,code:'notify_pending_unsafe',action:PENDING_UNSAFE_ACTION,nextAction:PENDING_UNSAFE_ACTION},{env,now});
+        return {scheduled:false,reason,faultNotice:fault.sent};
+      }
+      return {scheduled:false,reason};
+    }
+    const job={fields:{...fields,delivery:undefined,sessionTitle:fields.sessionTitle===undefined?sessionTitle(env):fields.sessionTitle},token,delayMs:delay};
+    const child=spawn(process.execPath,[LATER_RUNNER],{detached:true,stdio:'ignore',windowsHide:true,
+      env:{...env,CM_NOTIFY_LATER:JSON.stringify(job)}});
+    child.on('error',()=>{
+      appendNotifyLog(home,Date.now(),{event:'later',workflow,hash,result:'failed waiter'});
+      const lock=takeLock(lockFile);if(lock!==null){try{if(readPending(home,hash)?.token===token)removePending(home,hash);}finally{releaseLock(lockFile,lock);}}
+    });
+    child.unref();
+    return {scheduled:true,reason:'armed'};
+  }catch{return {scheduled:false,reason:'error'};}
+}
+// The waiter's send: retried briefly while the state lock is busy.
+export async function sendPendingNotice(fields,token,{env=process.env,attempts=20,retryMs=100}={}){
+  for(let attempt=1;;attempt++){
+    const result=notify(fields,{env,pendingToken:token});
+    if(result.reason!=='state_busy'||attempt>=attempts)return result;
+    await new Promise(resolve=>setTimeout(resolve,retryMs));
+  }
+}
+
 const LEVEL_OF=Object.freeze({done:'passive',idle:'active'});
 // Never throws and never waits. Returns {sent, reason}; sent means the command
 // was handed to the detached launcher, whose own failures go to notify.log.
-export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_LIMITS.commandTimeoutMs}={}){
+export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_LIMITS.commandTimeoutMs,pendingToken}={}){
   try{
     const config=readNotifyConfig(env);if(!config)return {sent:false,reason:'off'};
     if(typeof fields?.key!=='string'||!fields.key)return {sent:false,reason:'invalid_key'};
     const home=notifyHome(env),hash=keyHash(fields.key),event=fields.event??'stuck',workflow=clean(fields.workflow,24)||'cm';
     const attention=typeof fields.attentionKey==='string'&&fields.attentionKey&&Object.hasOwn(ATTENTION_LEVEL,event)
       ?keyHash(fields.attentionKey):null;
-    const reserved=reserve(home,{hash,attention,event,code:clean(fields.code,64)||null},now,config);
+    if(pendingToken!==undefined&&attention===null)return {sent:false,reason:'cancelled'};
+    const reserved=reserve(home,{hash,attention,event,code:clean(fields.code,64)||null,pendingToken},now,config);
     if(reserved.status!=='ok'){
-      if(reserved.status!=='duplicate')appendNotifyLog(home,now,{event,workflow,hash,result:`skipped ${reserved.status}`});
+      if(!['duplicate','cancelled'].includes(reserved.status))appendNotifyLog(home,now,{event,workflow,hash,result:`skipped ${reserved.status}`});
       return {sent:false,reason:reserved.status};
     }
     if(fields.sessionTitle===undefined)fields={...fields,sessionTitle:sessionTitle(env)};
@@ -497,10 +701,12 @@ export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_L
       const value=name==='project'?projectName(fields.project):clean(fields[name],name==='nextAction'?200:64);
       if(value)payload[name]=value;
     }
+    // What the person does next, in plain words (the same line the message shows).
+    if(event!=='done')payload.action=noticeAction(fields);
     const group=projectName(fields.project)||'CM',level=LEVEL_OF[event]??'timeSensitive';
     const child=spawn(process.execPath,[RUNNER,home,hash,event,workflow,String(timeoutMs),'--',...config.command],
       {detached:true,stdio:'ignore',windowsHide:true,
-        env:{...env,CM_NOTIFY_TITLE:message.title,CM_NOTIFY_SUBTITLE:message.subtitle,CM_NOTIFY_BODY:message.body,
+        env:{...env,CM_NOTIFY_LATER:undefined,CM_NOTIFY_TITLE:message.title,CM_NOTIFY_SUBTITLE:message.subtitle,CM_NOTIFY_BODY:message.body,
           CM_NOTIFY_GROUP:group,CM_NOTIFY_LEVEL:level,CM_NOTIFY_PAYLOAD:JSON.stringify(payload)}});
     child.on('error',()=>appendNotifyLog(home,Date.now(),{event,workflow,hash,result:'failed launcher'}));
     child.unref();
@@ -590,6 +796,20 @@ export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,since=Da
   }catch{return null;}
 }
 
+// Stops sent at once: only the person's own decision or authorization helps
+// (spec approval, an authorization, a spent round or retry budget, a verdict
+// that cannot pass, a re-asked confirmation, a question to the person). Any
+// other stop is deferred (notifyLater): the session may well move on by itself.
+const IMMEDIATE_CODES=new Set(['permission_denied','awaiting_spec_approval','spec_approval_required','spec_drift',
+  'review_limit','review_blocked','review_redispatch_limit','review_abandon_budget_exhausted','confirm_reask_decision_required']);
+// `ask` is the classifier's own finding that the person must answer or decide
+// (the same facts it used to call the stop stuck), so the two cannot drift.
+export function immediateStop({codes=[],state=null,pendingAction=null,ask=false}={}){
+  if(ask===true||state==='awaiting_spec_approval'||pendingAction==='spec_approval'||Object.hasOwn(AUTHORIZED_RECOVERY,pendingAction))return true;
+  return codes.some(code=>typeof code==='string'&&(IMMEDIATE_CODES.has(code)||/(^|_)(authorization|approval)_required$/.test(code)
+    ||/_(retry|redo|recheck)_limit$/.test(code)));
+}
+
 // Driver side: decide from the final host response (or the driver's own stop)
 // whether a person is needed. Each workflow is classified by its own result
 // contract (see the host named in each entry); normal progress returns null.
@@ -610,9 +830,10 @@ const FIX_FLOW=new Set(['reproduce','diagnose','cause_review_required','test_aut
 function classifyFix(r){
   const stage=text(r.stage);if(!stage)return null;
   if(stage==='completed')return 'done';
-  if(r.progress&&typeof r.progress==='object'){if(r.progress.finished===true)return 'done';if(r.progress.requiresUser===true)return 'stuck';}
+  // requiresUser: the owner hands the decision to the person (progress.mjs, host.mjs).
+  if(r.progress&&typeof r.progress==='object'){if(r.progress.finished===true)return 'done';if(r.progress.requiresUser===true)return 'ask';}
   // A refused review authorization keeps the stage (execution.mjs) but waits on a person.
-  if(text(r.reason)==='permission_denied')return 'stuck';
+  if(text(r.reason)==='permission_denied')return 'ask';
   return FIX_FLOW.has(stage)||FIX_FLOW.has(stage.replace(/^revision_/,''))?null:'stuck';
 }
 // cm-ai conversation entry (runtime/js/cm-ai/cm-ai-conversation-entry.mjs, operator-guidance.mjs,
@@ -637,6 +858,9 @@ function classifyAi(r){
   if(code==='qa_fix_incomplete')return classifyFix({stage:r.fixStage});
   if(['qa_fix_completed','qa_fix_active','qa_fix_owner_busy'].includes(code)||outcome==='abandoned')return null;
   if(r.pendingAction==='start_next_task'||AI_PROGRESS_CODES.has(code))return null;
+  // Spec approval and authorizations: only the person can give them.
+  if(state==='awaiting_spec_approval'||r.pendingAction==='spec_approval'||code==='permission_denied'
+    ||/(^|_)authorization_required$/.test(code??''))return 'ask';
   if(['rejected','denied','cancelled','blocked','awaiting'].includes(outcome)||AI_STUCK_STATES.has(state)
     ||AI_STUCK_ACTIONS.has(r.pendingAction)||AI_STUCK_CODES.has(code))return 'stuck';
   return null;
@@ -652,10 +876,11 @@ const CLASSIFY={
     const stage=text(r.stage),status=text(r.status),review=obj(r.reviewState);
     if(stage==='awaiting_review'||status==='awaiting_review')return 'done';
     if(STUCK_COMMON.has(stage)||STUCK_COMMON.has(status))return 'stuck';
-    if(['awaiting_user','awaiting_planning_user','awaiting_design_user','self_check_needs_human','change_confirmation',
-      'change_rejected','inputs_replaced'].includes(stage))return 'stuck';
+    // A question or confirmation put to the person.
+    if(['awaiting_user','awaiting_planning_user','awaiting_design_user','self_check_needs_human','change_confirmation'].includes(stage))return 'ask';
+    if(['change_rejected','inputs_replaced'].includes(stage))return 'stuck';
     if(stage==='change_check_failed'&&Number(r.round)>=2)return 'stuck';
-    if(/^change_(requirements|design|tasks|check)$/.test(stage??'')&&text(r.question))return 'stuck';
+    if(/^change_(requirements|design|tasks|check)$/.test(stage??'')&&text(r.question))return 'ask';
     if(status&&(/_unknown$/.test(status)||['correction_recovery_required','correction_recovery_conflict','disposition_details_need_verification'].includes(status)))return 'stuck';
     if(status==='human_summary_prepared'&&r.readyForAwaitingReview===false)return 'stuck';
     if(status==='review_findings_ready'&&r.verdict==='blocked')return 'stuck';
@@ -672,21 +897,27 @@ const CLASSIFY={
     // resume, abandon or discard; an interrupted save waits on reconciliation.
     if(recovery.writing===true||['unknown','recorded'].includes(obj(recovery.call).status))return 'stuck';
     if(stage==='draft_ready')return r.confirmationRequired===true?null:'stuck';
-    return ['awaiting_user','save_unknown','save_blocked',...STUCK_COMMON].includes(stage)?'stuck':null;
+    // awaiting_user: the interview asked the person a question (cm-idea-host.mjs).
+    if(stage==='awaiting_user')return 'ask';
+    return ['save_unknown','save_blocked',...STUCK_COMMON].includes(stage)?'stuck':null;
   },
   // scripts/cm-init-host.mjs, runtime/js/cm-init/draft-generation.mjs (generation returns status, no stage).
   'cm-init'(r){
     const stage=text(r.stage)??(r.status==='blocked'?'blocked':null),recovery=obj(r.recovery);
     if(['rules_written','rules_present'].includes(stage))return 'done';
     if(recovery.writing===true||['unknown','recorded'].includes(obj(recovery.call).status))return 'stuck';
-    return ['analysis_blocked','verification_blocked','confirmation_required','confirmation_rejected','review_changes_requested',
+    // confirmation_required: the rules wait for the person's init_confirm (cm-init-host.mjs).
+    if(stage==='confirmation_required')return 'ask';
+    return ['analysis_blocked','verification_blocked','confirmation_rejected','review_changes_requested',
       'review_blocked','write_incomplete','write_unknown',...STUCK_COMMON].includes(stage)?'stuck':null;
   },
   // runtime/js/cm-refactor/workflow.mjs.
   'cm-refactor'(r){
     const stage=text(r.stage);
     if(['done','not_needed','rejected'].includes(stage))return 'done';
-    return ['awaiting_finish','rulebook_rejected','correction_required',...STUCK_COMMON].includes(stage)?'stuck':null;
+    // awaiting_finish: the finish confirmation was not given (workflow.mjs confirm 'finish').
+    if(stage==='awaiting_finish')return 'ask';
+    return ['rulebook_rejected','correction_required',...STUCK_COMMON].includes(stage)?'stuck':null;
   },
   // runtime/js/cm-test/host.mjs: verdict in result.overall when stage is reported.
   'cm-test'(r){
@@ -708,15 +939,20 @@ const CLASSIFY={
 const READ_ONLY=new Set(['status','fix_status','cancel','qa_result','context_refresh','read_batch','inspect_correction',
   'final_review_package','review_findings','completion_evidence','cause_review_package']);
 export const NOTIFY_WORKFLOWS=Object.freeze(Object.keys(CLASSIFY));
-export function classifyDriveResult(workflow,row){
+// 'ask' (the person must answer or decide) is a stuck stop; only its delivery differs.
+function classifyRaw(workflow,row){
   if(row?.error)return 'stuck';
   const classify=CLASSIFY[workflow];
   return classify?classify(obj(row?.result)):null;
 }
+export function classifyDriveResult(workflow,row){
+  const kind=classifyRaw(workflow,row);
+  return kind==='ask'?'stuck':kind;
+}
 export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   if(READ_ONLY.has(operation))return null;
   const workflow=path.basename(String(host??'')).replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
-  const kind=failure?'stuck':classifyDriveResult(workflow,row);
+  const raw=failure?'stuck':classifyRaw(workflow,row),kind=raw==='ask'?'stuck':raw,ask=raw==='ask';
   if(!kind)return null;
   const done=kind==='done',result=obj(row?.result),progress=obj(result.progress),nested=obj(result.result);
   const code=text(failure)??text(row?.error?.code)??text(result.code)??text(result.reason)??text(result.blocker)
@@ -727,12 +963,17 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   const stage=text(result.stage)??text(result.state)??text(result.status)??operation??null;
   const run=runId??launchRunKey(args);
   const project=cwd?path.resolve(cwd):null,session=notifySessionLabel(args),feature=text(result.feature)??text(result.identity?.feature);
+  const reviewFailure=typeof result.reviewFailure==='string'&&/^reviewer_[a-z_]{1,48}$/.test(result.reviewFailure)?result.reviewFailure:null;
+  const pendingAction=typeof result.pendingAction==='string'&&/^[a-z_]{1,32}$/.test(result.pendingAction)?result.pendingAction:null;
+  const delivery=done||immediateStop({codes:[failure,row?.error?.code,result.code,result.reason,result.blocker,progress.blocker],
+    state:text(result.state),pendingAction,ask})?'now':'later';
   return {key:[workflow,run,task??'',attempt??'',stage??'',done?'done':code??''].join('|'),
     ...(done?{}:{attentionKey:attentionKeyFor({project,session,workflow,runId:run})}),
     event:kind,workflow,project,runId,feature,task,stage,session,
     code:done?(text(result.code)??text(result.overall)??text(nested.overall)??'done'):code,
     // A finished unit is the natural point to start a fresh session (runtime/model-efficiency.md).
-    nextAction:done?'会话边界：换新会话，下一项在新会话里运行':text(result.guidance?.nextStep)??text(progress.nextAction)??text(result.nextAction)};
+    nextAction:done?'会话边界：换新会话，下一项在新会话里运行':text(result.guidance?.nextStep)??text(progress.nextAction)??text(result.nextAction),
+    ...(reviewFailure?{reviewFailure}:{}),...(pendingAction&&!done?{pendingAction}:{}),...(ask?{ask:true}:{}),delivery};
 }
 
 // The attention record a successful, non-read-only step clears (see clearAttention).
@@ -744,6 +985,15 @@ export function driveProgressKey({host,cwd,args=[],operation,row=null,failure=nu
   // Same fallback as driveNotice: without a returned run, the launch arguments identify it.
   const run=runId??launchRunKey(args);
   return attentionKeyFor({project:cwd?path.resolve(cwd):null,session:notifySessionLabel(args),workflow,runId:run});
+}
+
+// The attention record a new, non-read-only step of this session would clear;
+// its start cancels a deferred stop (cancelPendingNotice). With a session (every
+// driver passes --host-context) the record does not depend on the run.
+export function driveAttentionKey({host,cwd,args=[],operation}){
+  if(READ_ONLY.has(operation))return null;
+  const workflow=path.basename(String(host??'')).replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
+  return attentionKeyFor({project:cwd?path.resolve(cwd):null,session:notifySessionLabel(args),workflow,runId:launchRunKey(args)});
 }
 
 // One stderr line telling which project and session this driver's notices name.
