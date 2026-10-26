@@ -171,8 +171,7 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 结果另带结构化字段 `reviewFailure`（同一类别，如 `reviewer_rate_limited`），驾驶员和提醒按它判断，不解析 `reason` 文字。
 Codex 审查返回 429／Too Many Requests／rate limit 时同样记为 `reviewer_rate_limited`（只记类别，不存原始报错）。
 
-**审查被限流时自动等待重试**：只有单任务驾驶员 `cm-ai-drive.mjs` 的 `advance`、`decision` 会自动重试（`resume` 只报告状态、不派发审查）。
-批次驾驶员不自动重试：批次宿主没有「在锁内核对某个成员的冻结审查停点、只重派那一次审查」的操作，按平常规则停下并推送。
+**审查被限流时自动等待重试**：单任务驾驶员 `cm-ai-drive.mjs` 的 `advance`、`decision` 和批次驾驶员 `cm-ai-batch-drive.mjs` 的 `advance` 会自动重试（`resume` 只报告状态、不派发审查）。批次的做法见本段末尾。
 单任务驾驶员拿到 `pending_review/review_provider_failed`、`reviewFailure: reviewer_rate_limited`、`pendingAction: resume`
 且结果带 `reviewInvocationId`（失败那次审查调用）时，不打印这次结果、不推送，在 stderr 写一行「审查被限流……后在原运行自动重派审查（第 n/3 次）」。
 开始等待时冻结前置条件：PLAN 文件字节的 SHA-256、`identity`（`repositoryId`/`runId`/`taskId`/`attempt`）、`packageDigest`、`reviewInvocationId`。
@@ -189,6 +188,19 @@ Codex 审查返回 429／Too Many Requests／rate limit 时同样记为 `reviewe
 驾驶员不再重试，把结果原样返回并立即推送，动作按真实出口写：要你确认旧审查进程已停后授权 `abandon_review` 再重派；
 次数用完（`review_redispatch_limit`）写成新建运行重做。只有真实出口仍是原运行重派（`pendingAction: resume`）、3 次都用完时，
 才写「已自动重试 n 次仍失败；过半小时后回到会话说继续即可」。PLAN 带 `--supersede*` 参数时不自动重试。
+批次：成员停在这种限流时，批次结果另带 `taskKey`、`reviewInvocationId` 和 `reviewRetryTarget:{taskKey,batchDigest}`
+（`batchDigest` 是批次计划与全部批次日志行的摘要，在持有 `batch.lock` 时算出）。等待后批次驾驶员发批次操作 `retry_review`，
+带 `taskKey`、成员 `identity`、`packageDigest`、`expectedReviewStop:{invocationId}`、`batchDigest`。批次宿主拿到 `batch.lock` 后、
+写入或派发任何东西之前核对：批次没停、批次日志摘要没变、批次当前仍停在这个成员（串行是当前任务；并行组是组里还没 ready/done 的成员，
+与 `abandon_review` 等成员恢复操作同一规则），并行组成员的 worktree 与分支仍在；再打开该成员运行（本进程持有它的写锁），
+把带 `expectedReviewStop` 的 `decision` 转给它，由成员按单任务同样的规则核对并只重派这一次审查。任一不符返回
+`outcome: rejected`、`staleRetry: true`、`reason` 以「状态已变，未自动重试」开头，不派发、不写批次日志；`batch.lock` 被另一个驾驶员占着时同样如此。
+重派后成员停在 `decision` 的结果上（通过就是 `approved`），批次不顺带完成、合并或推进其他成员；结果保留成员自己的
+`state`/`code`/`identity`，但把成员才有的下一步（`complete` 等）改成批次的 `pendingAction: advance`，并带 `guidance`（审查限流已自动重试；
+从批次入口发送 advance 继续）。等待重派期间同一宿主收到 `cancel`：打开成员运行时取消就不派发审查，审查进行中取消就转给成员运行；
+两种都写 `batch_cancel` 并返回 `cancelled`。驾驶员把这个结果交还会话，
+由会话照常再发批次 `advance` 继续（自动接着 advance 会越过「只重派这一次审查」，可能触发完成、QA、合并和下一个任务的开发应答）。
+并行组两个成员都被限流时，批次结果只给出组里第一个停住的成员，驾驶员只重派它；另一个成员留到下一次 `advance` 由批次照常重派。
 等待中的驾驶员被杀时，等待时长再加 `waitMinutes` 后会补发一次提醒；重跑一启动就取消这条补发。
 审查答复违反 verdict 规则（`contradictory_verdict`、`invalid_finding_path`、`missing_material`、`review_package_mismatch`、
 `invalid_finding_severity/id/shape`）时不产生回执，停在 `pending_review/review_verdict_invalid`，`reason` 以该代码开头。

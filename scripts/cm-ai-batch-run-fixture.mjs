@@ -69,10 +69,13 @@ export async function batchFixture(mode,options={}){
       tasks:(parallel?['T-001','T-002','T-003']:['T-001','T-002']).map((taskId,index)=>({feature,taskId,scope:[`file${index}.js`],requirements:['requirements.md']}))};
     const calls=[],qaCalls=[],assessments=[],blockedEvidence=[],checkCalls=new Map();let qaReady=mode!=='qa-resume',started;
     const began=new Promise(resolve=>{started=resolve;});
-    let conflictHead=null,interrupted=false,reviewFailed=false,redoThrown=false;const eachSeen=[];let activeBatchId=config.batchId;
+    let conflictHead=null,interrupted=false,reviewFailed=0,redoThrown=false,reviewHeld=null;const rateLimitedSeen={};const eachSeen=[];let activeBatchId=config.batchId;
     const developerModel=mode==='parallel-redo'?'current-session':'fixture';
     const qaSeen=[];
-    const executionFor=async(definition,{parallelMember=false,soloMember=false}={})=>({configuration:{kind:'batch-fixture-v1',...(parallelMember?{parallelMember:true}:{}),...(soloMember?{soloMember:true}:{})},timeoutMs:3000,
+    // openGate: holds executionFor (the member run's opening) until released, so a
+    // cancel can arrive between the retry's checks and its dispatch.
+    let openGate=null;
+    const executionFor=async(definition,{parallelMember=false,soloMember=false}={})=>(openGate&&await openGate.hold(),{configuration:{kind:'batch-fixture-v1',...(parallelMember?{parallelMember:true}:{}),...(soloMember?{soloMember:true}:{})},timeoutMs:3000,
       excludedContexts:['host'],applicableAgentFiles:[],
       developer:{provider:'codex',requestedModel:developerModel,contextId:'author',run:createCodexDeveloperRun({requestedModel:developerModel,
         worker:async({prompt},{signal})=>{
@@ -147,7 +150,14 @@ export async function batchFixture(mode,options={}){
           evidence:failed?'Synthetic transient failure':'Synthetic task check'}];
       },
       reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
-        contexts:['review-1','review-2'],run:(request,{onEvent})=>{
+        contexts:['review-1','review-2'],run:async(request,{onEvent,signal})=>{
+          // cancelAt review: the bound retry's review waits until the batch cancel reaches it.
+          if(options.cancelAt==='review'&&mode.endsWith('bound-review-provider-retry')&&reviewFailed>=1&&request.identity.taskId==='T-001'){
+            onEvent({event:'thread.started',provider_thread:'review-held'});reviewHeld?.();
+            await new Promise(resolve=>signal.aborted?resolve():signal.addEventListener('abort',resolve,{once:true}));
+            onEvent({event:'process_closed',exit_code:null,signal:'SIGTERM',timed_out:false});
+            return {status:'cancelled',code:'cancelled'};
+          }
           assert.equal(request.payload.reviewPackage.specification.task.id,definition.identity.taskId);
           assert.deepEqual(request.payload.reviewPackage.specification.sources,buildManifest(specsDir).filter(source=>source.path.startsWith(`${feature}/`)));
           if(mode==='learning'&&request.identity.taskId==='T-001')
@@ -155,8 +165,10 @@ export async function batchFixture(mode,options={}){
           // The reviewer started, then its process vanished without any terminal event: unknown.
           if(mode==='parallel-unknown'&&request.identity.taskId==='T-002'){
             onEvent({event:'thread.started',provider_thread:'review-lost'});throw Error('Synthetic lost reviewer');}
-          if(mode.endsWith('review-provider-retry')&&request.identity.taskId==='T-001'&&!reviewFailed){
-            reviewFailed=true;
+          if(mode.endsWith('review-provider-retry')&&(options.rateLimitedTasks??['T-001']).includes(request.identity.taskId)
+            &&(rateLimitedSeen[request.identity.taskId]??0)<(options.reviewFailures??1)){
+            rateLimitedSeen[request.identity.taskId]=(rateLimitedSeen[request.identity.taskId]??0)+1;
+            if(request.identity.taskId==='T-001')reviewFailed++;
             // Claude CLI rate limit: no tool call, no verdict, process exited.
             for(const event of [{event:'thread.started',provider_thread:'review-rate-limited'},{event:'turn.started',item_type:null},
               {event:'process_closed',exit_code:1,signal:null,timed_out:false}])onEvent(event);
@@ -205,6 +217,95 @@ export async function batchFixture(mode,options={}){
         packageDigest:binding.packageDigest,contextDigest:binding.contextDigest,status:'completed',reason:'Synthetic docs',at:'2026-09-08T01:00:00Z'})},
     });
     const open=(extra={})=>createCmAiBatch({configuration:config,executionFor,logHome:path.join(root,'logs'),...extra});
+    // retry_review (a driver's timed rate-limit retry) redispatches exactly the frozen
+    // review: a different invocation, batch log or member is refused as staleRetry
+    // with nothing dispatched or written; the exact one dispatches that review only.
+    const reviewCount=()=>{
+      const dir=path.join(specsDir,'.reviews','.execution');let count=0;
+      for(const name of fs.existsSync(dir)?fs.readdirSync(dir):[]){const file=path.join(dir,name,'state.json');
+        if(fs.existsSync(file))count+=JSON.parse(fs.readFileSync(file,'utf8')).records.filter(row=>row.payload.type==='effect-intent').length;}
+      return count;
+    };
+    const batchTaskRunIdFor=taskId=>`task-${digest({batchId:config.batchId,task:`${feature}/${taskId}`}).slice(0,48)}`;
+    const reviewIntents=runId=>JSON.parse(fs.readFileSync(path.join(specsDir,'.reviews','.execution',runId,'state.json'),'utf8')).records
+      .filter(row=>row.payload.type==='effect-intent'&&row.payload.effect.kind==='review').map(row=>row.payload.effect.id);
+    const logText=()=>{const file=path.join(specsDir,'运行日志.jsonl');return fs.existsSync(file)?fs.readFileSync(file,'utf8'):'';};
+    const tasksText=()=>fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8');
+    async function boundReviewRetry(stop){
+      // Both group members hit the rate limit; the batch names the first one it stopped on.
+      const both=(options.rateLimitedTasks??[]).includes('T-002');
+      if(both){assert.equal(rateLimitedSeen['T-002'],1,'T-002 was rate limited too');assert.equal(stop.reviewRetryTarget.taskKey,`${feature}/T-001`);}
+      const bound=(over={})=>open().handle({operation:'retry_review',requestId:`bound-${Math.random().toString(36).slice(2)}`,
+        taskKey:stop.reviewRetryTarget.taskKey,identity:stop.identity,packageDigest:stop.packageDigest,
+        expectedReviewStop:{invocationId:stop.reviewInvocationId},batchDigest:stop.reviewRetryTarget.batchDigest,...over});
+      const unchanged=async(over,why)=>{
+        const before={log:logText(),tasks:tasksText(),effects:reviewCount(),reviews:reviewFailed};
+        const refused=await bound(over);
+        assert.equal(refused.staleRetry,true,`${why}: ${JSON.stringify(refused)}`);assert.equal(refused.outcome,'rejected',why);
+        assert.match(refused.reason,/^状态已变，未自动重试/,why);
+        assert.deepEqual({log:logText(),tasks:tasksText(),effects:reviewCount(),reviews:reviewFailed},before,`${why}: nothing dispatched or written`);
+      };
+      await unchanged({expectedReviewStop:{invocationId:'another-invocation'}},'another member invocation');
+      await unchanged({batchDigest:'0'.repeat(64)},'another batch log');
+      await unchanged({taskKey:`${feature}/T-003`},'a member the batch is not stopped on');
+      await unchanged({identity:{...stop.identity,attempt:2}},'another round');
+      if(options.staleByAdvance){
+        // Another driver moves the batch on meanwhile: the old timer's target is stale.
+        const moved=await open().handle({operation:'advance',requestId:'other-driver'});
+        assert.notEqual(moved.state,'pending_review',JSON.stringify(moved));
+        await unchanged({},'the batch moved on');
+        return moved;
+      }
+      if(options.cancelAt){
+        // A cancel on the same host while the retry opens the member run, or while its
+        // review runs: no review is dispatched (or it is cancelled), batch_cancel is
+        // logged and the retry returns cancelled.
+        const effects=reviewCount(),batch=open();let reached;const atOpen=new Promise(resolve=>{reached=resolve;});
+        let release;
+        if(options.cancelAt==='open')openGate={hold:()=>{reached();return new Promise(resolve=>{release=resolve;});}};
+        else reviewHeld=reached;
+        const pending=batch.handle({operation:'retry_review',requestId:'bound-cancel',taskKey:stop.reviewRetryTarget.taskKey,identity:stop.identity,
+          packageDigest:stop.packageDigest,expectedReviewStop:{invocationId:stop.reviewInvocationId},batchDigest:stop.reviewRetryTarget.batchDigest});
+        await atOpen;
+        const cancel=await batch.handle({operation:'cancel',requestId:'cancel-during-retry'});
+        assert.equal(cancel.outcome,'cancelled',JSON.stringify(cancel));
+        if(release){openGate=null;release();}
+        const ended=await pending;
+        assert.equal(ended.outcome,'cancelled',JSON.stringify(ended));
+        if(options.cancelAt==='open')assert.equal(reviewCount(),effects,'no review dispatched after the cancel');
+        else assert.equal(reviewCount(),effects+1,'the running review was the one cancelled');
+        assert.equal(reviewFailed,options.cancelAt==='open'?1:1);
+        const rows=logText().split('\n').filter(Boolean).map(JSON.parse);
+        assert.equal(rows.filter(row=>row.phase==='batch_cancel').length,1,'batch_cancel logged once');
+        assert.equal((await open().handle({operation:'advance',requestId:'after-cancel'})).code,'cancelled');
+        return null;
+      }
+      const effects=reviewCount(),log=logText(),tasks=tasksText();
+      const retried=await bound();
+      assert.equal(retried.taskKey,`${feature}/T-001`);assert.equal(reviewCount(),effects+1,'exactly one review effect');
+      // Only that review: no completion, merge or handoff, no tasks.md change.
+      assert.equal(logText(),log);assert.equal(tasksText(),tasks);
+      if((options.reviewFailures??1)>1){
+        // The round's second rate limit: the runner's blocked stop, never retried again.
+        assert.equal(retried.state,'blocked',JSON.stringify(retried));assert.equal(retried.code,'review_provider_failed');
+        assert.equal(retried.pendingAction,'abandon_review');assert.equal(retried.reviewRetryTarget,undefined);
+        await unchanged({},'the same target after the second failure');
+        return null;
+      }
+      assert.equal(retried.state,'approved',JSON.stringify(retried));assert.equal(retried.outcome,'advanced');
+      // The member's own state stays; the next step is the batch's advance, with guidance.
+      assert.equal(retried.code,null);assert.equal(retried.identity.taskId,'T-001');assert.equal(retried.pendingAction,'advance');
+      assert.match(retried.guidance.summary,/审查限流已自动重试/);assert.match(retried.guidance.nextStep,/从批次入口发送 advance/);
+      assert.deepEqual(Object.keys(retried.guidance).sort(),['authorizationGranted','nextStep','prerequisites','recoveryOperation','summary']);
+      const {classifyDriveResult}=await import('../runtime/js/notify.mjs');
+      assert.equal(classifyDriveResult('cm-ai-batch',{result:retried}),null,'not a stop that needs a person');
+      await unchanged({},'the same target after it was redispatched');
+      if(both)assert.equal(rateLimitedSeen['T-002'],1,'retry_review did not touch the other member');
+      const next=await open().handle({operation:'advance',requestId:'after-bound-retry'});
+      // The next advance redispatched T-002's review as usual (its one automatic redispatch).
+      if(both){const runId=batchTaskRunIdFor('T-002');assert(reviewIntents(runId).includes('review-1-retry-1'),JSON.stringify(reviewIntents(runId)));}
+      return next;
+    }
     if(mode==='parallel-existing'){
       // Both members' scope files are committed on HEAD, so each member edits an
       // existing file. The batch must run, merge both edits and finish as usual.
@@ -599,10 +700,16 @@ export async function batchFixture(mode,options={}){
     }
     if(mode.endsWith('review-provider-retry')){
       assert.equal(result.state,'pending_review',JSON.stringify(result));assert.equal(result.code,'review_provider_failed');
-      assert.match(result.reason,/^reviewer_rate_limited: /);assert.deepEqual(calls,parallel?['T-001','T-002']:['T-001']);
+      // One-member worktree groups (worktree-each) run one at a time; a two-member group develops both.
+      assert.match(result.reason,/^reviewer_rate_limited: /);assert.deepEqual(calls,parallel&&!each?['T-001','T-002']:['T-001']);
       // The batch passes the member's structured class through (drivers retry on it).
       assert.equal(result.reviewFailure,'reviewer_rate_limited');
-      result=await open().handle({operation:'advance',requestId:'retry-review'});
+      // The frozen target a driver's timed retry_review must find unchanged.
+      assert.equal(result.taskKey,`${feature}/T-001`);assert.equal(result.reviewRetryTarget.taskKey,`${feature}/T-001`);
+      assert.match(result.reviewRetryTarget.batchDigest,/^[a-f0-9]{64}$/);assert.equal(typeof result.reviewInvocationId,'string');
+      if(mode.endsWith('bound-review-provider-retry'))result=await boundReviewRetry(result);
+      else result=await open().handle({operation:'advance',requestId:'retry-review'});
+      if(result===null)return;
     }
     if(mode==='qa-resume'){
       assert.equal(result.code,'qa_decision_required');assert.deepEqual(calls,['T-001']);
