@@ -132,11 +132,13 @@ export function readLocal(env){
 }
 
 // User rules come first so they win a tie. A user rule with a CM rule's id replaces
-// it, and `disable` switches CM rules off by id. A local file that cannot be read or has a
-// field of the wrong type is ignored as a whole (the CM table still works) and reported by
-// `status`; since it may be the user's attempt at "judge": false, nothing goes to Jev then.
+// it, and `disable` switches CM rules off by id. A local file with any problem (cannot be
+// read, not an object, a known field of the wrong type) pauses hints as a whole, decided
+// 2026-10-25: no hint, no skill started, nothing sent to Jev. Taking only its good parts
+// could drop a valid "enabled": false next to a broken field. `status` reports the cause.
 export function loadRules({env=process.env,rulesFile=defaultRulesPath()}={}){
   const local=readLocal(env);
+  if(local.error)return {enabled:false,paused:true,rules:[],localError:local.error};
   const settings=local.settings;
   if(settings.enabled===false)return {enabled:false,rules:[]};
   const defaults=readJson(rulesFile,{allowEmpty:true});
@@ -145,7 +147,7 @@ export function loadRules({env=process.env,rulesFile=defaultRulesPath()}={}){
   const replaced=new Set(user.map(rule=>rule.id));
   const cm=(Array.isArray(defaults.value?.rules)?defaults.value.rules:[])
     .map(rule=>normalizeRule(rule,false)).filter(rule=>rule&&!disabled.has(rule.id)&&!replaced.has(rule.id));
-  return {enabled:true,rules:[...user,...cm],judge:!local.error&&settings.judge!==false,localError:local.error,defaultsError:defaults.error??(defaults.missing?'missing':null),
+  return {enabled:true,rules:[...user,...cm],judge:settings.judge!==false,localError:null,defaultsError:defaults.error??(defaults.missing?'missing':null),
     userCount:user.length,disabledCount:disabled.size,cmCount:cm.length};
 }
 
@@ -598,7 +600,10 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
       :hasHintHook(read.value,env,host)?'已挂':'未挂'}`;
   });
   const loaded=loadRules({env,rulesFile});
-  lines.push(`skill hints: ${wired.join('，')}；开关 ${loaded.enabled?'开':`关（${localPath(env)} 里 enabled 为 false）`}`);
+  const localCause=error=>`${localPath(env)} ${/^格式异常/.test(error)?error:`读取失败（${error}）`}`;
+  lines.push(`skill hints: ${wired.join('，')}；开关 ${loaded.enabled?'开'
+    :loaded.paused?`暂停（本地配置格式异常，提醒已暂停（${localCause(loaded.localError)}））`
+    :`关（${localPath(env)} 里 enabled 为 false）`}`);
   // Same gate and record as `install`, so status never says "on" where an install would not wire.
   const gate=installGate(env,false);
   const settled=settledHosts(env);
@@ -619,9 +624,7 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   }
   if(loaded.enabled){
     lines.push(`  对照表：CM 自带 ${loaded.defaultsError?`读取失败（${loaded.defaultsError}）`:`${loaded.cmCount} 条`}；用户自加 ${loaded.userCount} 条；关掉自带 ${loaded.disabledCount} 条`);
-    if(loaded.localError)lines.push(`  ⚠ ${localPath(env)} ${/^格式异常/.test(loaded.localError)?loaded.localError:`读取失败（${loaded.localError}）`}，用户设置未生效`);
-    lines.push(loaded.localError?'  自动调用：本地文件异常，不发给 Jev，只用关键词'
-      :loaded.judge?'  自动调用：有 TypeSafe 密钥（TYPESAFE_API_KEY 或钥匙串）时由 Jev 判断，否则用关键词'
+    lines.push(loaded.judge?'  自动调用：有 TypeSafe 密钥（TYPESAFE_API_KEY 或钥匙串）时由 Jev 判断，否则用关键词'
       :`  自动调用：已关 Jev（${localPath(env)} 里 judge 为 false），只用关键词`);
   }
   return lines.join('\n')+'\n';

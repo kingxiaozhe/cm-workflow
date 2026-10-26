@@ -493,9 +493,11 @@ overwrites. They take precedence over CM's table:
 }
 ```
 
-A local file that cannot be read or has a field of the wrong type is ignored as a
-whole: CM's own table still hints, nothing is sent to Jev, and `/cm-check` reports
-the file. `"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
+If the local file has any problem (it cannot be read, is not an object, or a known
+field has the wrong type), hints pause as a whole: no hint, no skill started and
+nothing sent to Jev, so a valid `"enabled": false` next to a broken field still holds.
+`/cm-check` shows "本地配置格式异常，提醒已暂停" with the cause; a missing or valid file
+works as before. `"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
 user rule with the same `id` as a CM rule replaces it, and a user rule only ever
 hints (it never starts a skill). `patterns` (regular
 expressions) share a 200 ms budget per message; past it they count as no match. An

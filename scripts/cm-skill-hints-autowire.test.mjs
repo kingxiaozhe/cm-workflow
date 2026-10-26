@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {withConfigLock} from './cm-config-lock.mjs';
 import {
-  install,enable,main,statusText,hasHintHook,hookCommand,settledHosts,
+  install,enable,main,hook,statusText,hasHintHook,hookCommand,settledHosts,
   loadRules,localPath,installDir,autoPath,claudeSettingsPath,codexHooksPath,SCRIPT_NAME,
 } from './cm-skill-hints.mjs';
 
@@ -321,22 +321,29 @@ test('an install that finds the hook wired warns when the record cannot be writt
   assert.ok(b.wired('claude'));
 });
 
-test('at run time a local file with a wrong field type is ignored as a whole and never sends to Jev',async t=>{
+// Decided 2026-10-25 (review round 3): a local file with any problem pauses hints as a whole,
+// so a valid "enabled": false next to a broken field is never lost.
+test('at run time a local file with any problem pauses hints: no hint, no skill started, nothing sent to Jev',async t=>{
   const b=box(t);
+  const rulesFile=path.join(b.home,'rules.json');
+  fs.writeFileSync(rulesFile,JSON.stringify({version:1,rules:[{id:'fix-bug',skill:'cm-fix',keywords:['修这个 bug'],reason:'先复现'}]}));
   fs.mkdirSync(b.env.CM_WORKFLOW_HOME,{recursive:true});
-  for(const text of ['{"judge":"false"}','{"rules":{}}','{"disable":"fix-bug"}','{"enabled":"false"}','{oops']){
-    fs.writeFileSync(localPath(b.env),text);
-    const loaded=loadRules({env:b.env});
-    assert.equal(loaded.judge,false,text);
-    assert.ok(loaded.localError,text);
-    assert.equal(loaded.userCount,0,text);
-  }
-  fs.writeFileSync(localPath(b.env),'{"judge":"false"}');
-  assert.match(statusText({env:b.env}),/⚠ .*格式异常（judge 只能是 true 或 false）.*用户设置未生效/);
-  assert.match(statusText({env:b.env}),/自动调用：.*本地文件异常.*只用关键词/);
+  const send=async session=>hook({prompt:'修这个 bug',session_id:session},{env:b.env,host:'claude',rulesFile,
+    loadJudgeModule:async()=>{throw new Error('Jev must not be loaded');}});
   fs.writeFileSync(localPath(b.env),'{"judge":true,"enabled":true,"rules":[],"disable":["x"]}');
-  assert.equal(loadRules({env:b.env}).judge,true);
-  assert.equal(loadRules({env:b.env}).localError,null);
+  assert.match(JSON.parse(await send('ok')).systemMessage,/cm-fix/);
+  assert.equal(loadRules({env:b.env,rulesFile}).localError,null);
+  for(const text of ['{"enabled": false, "rules": {}}','{oops','{"judge":"false"}','{"disable":"fix-bug"}','{"enabled":"false"}','[]','null']){
+    fs.writeFileSync(localPath(b.env),text);
+    assert.equal(await send(`s-${text}`),'',text);
+    const loaded=loadRules({env:b.env,rulesFile});
+    assert.equal(loaded.enabled,false,text);
+    assert.ok(loaded.localError,text);
+  }
+  fs.writeFileSync(localPath(b.env),'{"enabled": false, "rules": {}}');
+  assert.match(statusText({env:b.env,rulesFile}),/本地配置格式异常，提醒已暂停（.*rules 应为列表）/);
+  fs.writeFileSync(localPath(b.env),'{oops');
+  assert.match(statusText({env:b.env,rulesFile}),/本地配置格式异常，提醒已暂停（.*读取失败（parse））/);
 });
 
 test('a local file that cannot be read pauses the install default in status',async t=>{

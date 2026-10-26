@@ -108,12 +108,15 @@ test('CM_SKILL_HINTS=off and enabled:false both silence the hook',async t=>{
   assert.equal(await g.send('修这个 bug'),'');
 });
 
-test('disable switches off a CM rule by id; a broken local file keeps CM rules',async t=>{
+test('disable switches off a CM rule by id; a broken local file pauses hints altogether',async t=>{
   const f=fixture(t,{local:{disable:['fix-bug']}});
   assert.equal(await f.send('修这个 bug'),'');
+  assert.match(await f.send('补单测'),/cm-test/);
   const g=fixture(t,{local:'{oops'});
-  assert.match(await g.send('修这个 bug'),/cm-fix/);
-  assert.equal(loadRules({env:g.env,rulesFile:g.rulesFile}).localError,'parse');
+  assert.equal(await g.send('修这个 bug'),'');
+  const loaded=loadRules({env:g.env,rulesFile:g.rulesFile});
+  assert.equal(loaded.enabled,false);
+  assert.equal(loaded.localError,'parse');
 });
 
 test('invalid user rules are skipped, not fatal',async t=>{
@@ -364,10 +367,12 @@ test('special files at the local rules, state or log path never block the hook',
   const f=fixture(t);
   fs.mkdirSync(f.env.CM_WORKFLOW_HOME,{recursive:true});
   fs.mkdirSync(path.dirname(logFile(f.env)),{recursive:true});
-  execFileSync('mkfifo',[localPath(f.env)]);
   execFileSync('mkfifo',[logFile(f.env)]);
-  assert.equal(readJson(localPath(f.env)).error,'not-file');
   assert.match(await f.send('修这个 bug'),/cm-fix/);
+  // A special file at the local path is read as a problem, which pauses hints; still no block.
+  execFileSync('mkfifo',[localPath(f.env)]);
+  assert.equal(readJson(localPath(f.env)).error,'not-file');
+  assert.equal(await f.send('修这个 bug',{session:'s2'}),'');
   assert.equal(loadRules({env:f.env,rulesFile:f.rulesFile}).localError,'not-file');
 });
 
