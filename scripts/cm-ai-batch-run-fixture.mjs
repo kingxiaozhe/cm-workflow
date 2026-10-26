@@ -265,49 +265,56 @@ export async function batchFixture(mode,options={}){
     if(options.configDivergence){
       // Compared where it counts: after the worktree is created and before any develop
       // dispatch, both checkouts' effective configurations as loaded. A difference (or a
-      // member that cannot load one) stops the batch and removes the untouched worktree.
+      // member that cannot load one) stops the batch. Review r6: the batch never deletes
+      // the worktree or its branch (hidden index flags can hide work from `git status`);
+      // the guidance gives the manual, non-forced cleanup commands.
       const segment=batchSegment(config.batchId),worktree=path.join(root,'.cm-worktrees',segment,'T-001');
-      for(const requestId of ['diverged-1','diverged-2']){
-        assert.equal(result.code,'batch_member_config_diverged',JSON.stringify(result));
-        assert.equal(result.currentTask,`${feature}/T-001`);
-        assert.match(result.reason,options.configDivergence==='two-files'?/multiple CM workflow configs/:/有效配置不同/);
-        assert.match(result.guidance.nextStep,/worktree_all: false/);assert.match(result.reason,/已移除尚未改动的 worktree 与分支/);
-        assert.deepEqual(calls,[]);assert(!fs.existsSync(worktree));
-        assert.equal(git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']),'');
-        assert(!fs.existsSync(path.join(specsDir,'.reviews','.execution',`task-${digest({batchId:config.batchId,task:`${feature}/T-001`}).slice(0,48)}`)));
-        result=await open().handle({operation:'advance',requestId});
-      }
-      const branch=`cm/${segment}/work/T-001`,unsetFilter=()=>{git(codeProject,['config','--unset','filter.swap.smudge']);git(codeProject,['config','--unset','filter.swap.clean']);};
-      if(options.cleanup==='user-edits'){
-        // Review r5 (P1): a worktree that exists without a member run may hold the operator's
-        // work (here: after an earlier stop, edits and an untracked file). It is never
-        // deleted: the batch only stops and says why.
-        git(codeProject,['worktree','add','-b',branch,worktree,'HEAD']);
-        fs.writeFileSync(path.join(worktree,'notes.txt'),'operator work\n');fs.writeFileSync(path.join(worktree,'base.js'),'edited\n');
-        for(const requestId of ['user-edits-1','user-edits-2']){
-          result=await open().handle({operation:'advance',requestId});
-          assert.equal(result.code,'batch_member_config_diverged',JSON.stringify(result));
-          assert.match(result.reason,/有改动，未删除/);assert.doesNotMatch(result.reason,/已移除/);
-          assert.equal(fs.readFileSync(path.join(worktree,'notes.txt'),'utf8'),'operator work\n');
-          assert.equal(fs.readFileSync(path.join(worktree,'base.js'),'utf8'),'edited\n');
-          assert.equal(git(codeProject,['rev-parse','--abbrev-ref',branch]),branch);assert.deepEqual(calls,[]);
+      const branch=`cm/${segment}/work/T-001`,runDir=path.join(specsDir,'.reviews','.execution',`task-${digest({batchId:config.batchId,task:`${feature}/T-001`}).slice(0,48)}`);
+      const unsetFilter=()=>{git(codeProject,['config','--unset','filter.swap.smudge']);git(codeProject,['config','--unset','filter.swap.clean']);};
+      const stopped=(value,kept=[])=>{
+        assert.equal(value.code,'batch_member_config_diverged',JSON.stringify(value));
+        assert.equal(value.currentTask,`${feature}/T-001`);
+        assert.match(value.reason,options.configDivergence==='two-files'?/multiple CM workflow configs/:/有效配置不同/);
+        assert.doesNotMatch(value.reason,/已移除/);
+        for(const text of [value.guidance.nextStep,value.reason]){
+          assert(text.includes(`git worktree remove ${worktree}`),text);assert(text.includes(`git branch -d ${branch}`),text);
+          assert.doesNotMatch(text,/remove --force|branch -D/);assert.match(text,/worktree_all: false/);
         }
+        // Nothing deleted, nothing developed.
+        assert(fs.existsSync(worktree));assert.equal(git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']),branch);
+        assert.deepEqual(calls,[]);assert(!fs.existsSync(runDir));
+        for(const [file,content] of kept)assert.equal(fs.readFileSync(path.join(worktree,file),'utf8'),content,file);
+      };
+      for(const requestId of ['diverged-1','diverged-2']){stopped(result);result=await open().handle({operation:'advance',requestId});}
+      stopped(result);
+      if(options.cleanup==='user-edits'){
+        // Operator work in the kept worktree survives further advances.
+        fs.writeFileSync(path.join(worktree,'notes.txt'),'operator work\n');fs.writeFileSync(path.join(worktree,'base.js'),'edited\n');
+        for(const requestId of ['user-edits-1','user-edits-2'])
+          stopped(await open().handle({operation:'advance',requestId}),[['notes.txt','operator work\n'],['base.js','edited\n']]);
+        return;
+      }
+      if(options.cleanup==='hidden'){
+        // Review r6: a change hidden by assume-unchanged does not show in `git status`; it is
+        // kept all the same, since nothing is deleted.
+        git(worktree,['update-index','--assume-unchanged','base.js']);fs.writeFileSync(path.join(worktree,'base.js'),'hidden edit\n');
+        assert.equal(git(worktree,['status','--porcelain','--untracked-files=all']),'');
+        for(const requestId of ['hidden-1','hidden-2'])stopped(await open().handle({operation:'advance',requestId}),[['base.js','hidden edit\n']]);
         return;
       }
       if(options.cleanup==='interrupted'){
-        // Review r5 (P2): stopped between removing the worktree and deleting its branch. A
-        // leftover branch with nothing beyond the main checkout's HEAD is deleted safely
-        // and the worktree rebuilt, so the same batch goes on once the configuration agrees.
-        git(codeProject,['branch',branch,'HEAD']);unsetFilter();
+        // The operator's cleanup stopped between its two commands: a branch is left with
+        // nothing beyond the main checkout's HEAD. It is deleted with `branch -d` and the
+        // worktree rebuilt, so the same batch goes on once the configuration agrees.
+        git(codeProject,['worktree','remove',worktree]);unsetFilter();
         result=await open().handle({operation:'advance',requestId:'after-interrupted-cleanup'});
         assert.equal(result.code,'run_done',JSON.stringify(result));assert.deepEqual(calls,['T-001','T-002','T-003']);
         return;
       }
       if(options.cleanup==='unique-commit'){
         // A leftover branch with its own commit is somebody's work: never deleted.
-        const elsewhere=path.join(root,'elsewhere');
-        git(codeProject,['worktree','add','-b',branch,elsewhere,'HEAD']);fs.writeFileSync(path.join(elsewhere,'kept.txt'),'kept\n');
-        git(elsewhere,['add','kept.txt']);git(elsewhere,['commit','-qm','kept work']);git(codeProject,['worktree','remove',elsewhere]);
+        fs.writeFileSync(path.join(worktree,'kept.txt'),'kept\n');git(worktree,['add','kept.txt']);git(worktree,['commit','-qm','kept work']);
+        git(codeProject,['worktree','remove',worktree]);
         const tip=git(codeProject,['rev-parse',branch]);unsetFilter();
         for(const requestId of ['unique-1','unique-2']){
           result=await open().handle({operation:'advance',requestId});
@@ -317,8 +324,9 @@ export async function batchFixture(mode,options={}){
         return;
       }
       if(options.configDivergence==='smudge'){
-        // The exit: once both checkouts load the same configuration, the same batch goes on.
-        git(codeProject,['config','--unset','filter.swap.smudge']);git(codeProject,['config','--unset','filter.swap.clean']);
+        // The exit as the guidance gives it: clean up by hand (no --force, no -D), make
+        // both checkouts load the same configuration, then advance the same batch.
+        git(codeProject,['worktree','remove',worktree]);git(codeProject,['branch','-d',branch]);unsetFilter();
         result=await open().handle({operation:'advance',requestId:'after-config-fix'});
         assert.equal(result.code,'run_done',JSON.stringify(result));assert.deepEqual(calls,['T-001','T-002','T-003']);
       }

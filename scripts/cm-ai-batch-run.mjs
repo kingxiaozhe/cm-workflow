@@ -355,34 +355,23 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     // after the worktree exists and before any develop dispatch.
     for(const key of remaining.filter(key=>soloMember(key)&&!state.ready.has(key))){
       const diverged=memberConfigDivergence(key);if(!diverged)continue;
+      // Review r6: the batch never deletes the worktree or its branch here. Index flags
+      // (assume-unchanged, skip-worktree) can hide work from `git status`, so no check
+      // proves the directory holds nothing to keep; the operator cleans up by hand. While
+      // the worktree stays, every advance reuses it and compares again.
       const {worktree,branch}=location(key);
-      // Removed only when provably untouched: no member run, nothing in the worktree
-      // (changes, untracked or ignored files) and no commit beyond the main checkout's
-      // HEAD. Never --force and never -D: anything else is the operator's to handle.
-      const removed=memberUntouched(key);
-      if(removed){
-        batchGit(config.codeProject,['worktree','remove',worktree]);batchGit(config.codeProject,['branch','-d',branch]);
-        plans.set(key,originalPlans.get(key));
-      }
-      const nextStep=`让主目录与 worktree 加载出同一份项目配置（取消改写配置的 Git 检出过滤器、删掉多余的配置文件并提交、去掉藏起本地改动的 skip-worktree/assume-unchanged），再对本批次 advance；`
+      const cleanup=`确认 worktree ${worktree} 里没有要保留的内容后手动清理：git worktree remove ${worktree}；git branch -d ${branch}（不要加 --force 或 -D，Git 拒绝时说明还有改动或独有提交，先处理）`;
+      const nextStep=`${cleanup}；然后让主目录与 worktree 加载出同一份项目配置（取消改写配置的 Git 检出过滤器、删掉多余的配置文件并提交、去掉藏起本地改动的 skip-worktree/assume-unchanged），再对本批次 advance；`
         +`或在项目配置里设 parallel.worktree_all: false，剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次`;
       return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_member_config_diverged',batchId:config.batchId,currentTask:key,
-        reason:`任务 ${key} 单独在 worktree 里开发，但 ${diverged}；QA 会按另一套配置执行，所以不开发`
-          +(removed?'，已移除尚未改动的 worktree 与分支':`；worktree ${worktree}（分支 ${branch}）里有改动，未删除，请先处理其中的内容`)+`。出口：${nextStep}。`,
-        guidance:stopGuidance(`任务 ${key} 的 worktree 与主目录加载出的项目配置不一致，未开发。`,`${nextStep}。`,
-          ['以 worktree 建好后两边实际加载的配置为准','主目录与已完成的任务不受影响',
-            ...(removed?[]:[`worktree ${worktree} 与分支 ${branch} 有改动，未删除：先保存或处理其中的内容，再删除它们（批次不会代为删除）`])])});
+        reason:`任务 ${key} 单独在 worktree 里开发，但 ${diverged}；QA 会按另一套配置执行，所以不开发。批次不删除该 worktree 与分支 ${branch}。出口：${nextStep}。`,
+        guidance:stopGuidance(`任务 ${key} 的 worktree 与主目录加载出的项目配置不一致，未开发；worktree 与分支保留。`,`${nextStep}。`,
+          ['以 worktree 建好后两边实际加载的配置为准','主目录与已完成的任务不受影响','批次不会代为删除 worktree 或分支；worktree 还在时，下次 advance 会复用它并重新比对配置'])});
     }
     return null;
   }
   function branchExists(branch){
     return spawnSync('git',['-C',config.codeProject,'rev-parse','--verify','--quiet',`refs/heads/${branch}`],gitOptions()).status===0;
-  }
-  function memberUntouched(key){
-    const {worktree,branch}=location(key),definition=originalPlans.get(key);
-    if(fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json')))return false;
-    if(batchGit(worktree,['status','--porcelain','--untracked-files=all','--ignored'])!=='')return false;
-    return batchGit(config.codeProject,['rev-list',`HEAD..refs/heads/${branch}`])==='';
   }
   function memberBranchExists(key,branch){
     const nextStep=`核对分支 ${branch} 上的提交：要保留就合并或另存，不要就在确认后自行删除；然后对本批次 advance`;

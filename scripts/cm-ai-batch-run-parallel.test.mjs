@@ -18,10 +18,13 @@ test('a one-member group whose worktree loads another configuration stops before
   ()=>batchFixture('worktree-each',{configDivergence:'smudge'}));
 test('a one-member group whose worktree loads another configuration stops before developing (two config files)',
   ()=>batchFixture('worktree-each',{configDivergence:'two-files'}));
-// Review r5: cleanup never deletes work, and an interrupted cleanup resumes.
+// Review r5/r6: the batch never deletes a diverged worktree; a manual cleanup interrupted
+// halfway resumes.
 test('a diverged one-member worktree holding operator edits is kept, not deleted',
   ()=>batchFixture('worktree-each',{configDivergence:'smudge',cleanup:'user-edits'}));
 test('a branch left by an interrupted cleanup is deleted safely and the same batch goes on',
   ()=>batchFixture('worktree-each',{configDivergence:'smudge',cleanup:'interrupted'}));
 test('a leftover member branch with its own commit stops the batch and is kept',
   ()=>batchFixture('worktree-each',{configDivergence:'smudge',cleanup:'unique-commit'}));
+test('a diverged one-member worktree with a change hidden by assume-unchanged is kept',
+  ()=>batchFixture('worktree-each',{configDivergence:'smudge',cleanup:'hidden'}));

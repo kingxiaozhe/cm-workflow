@@ -230,7 +230,7 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
      `applicableAgentFiles`）命中 `qa.criticalPaths`，或按日志推算可能是连续第 5 个未 QA 的任务；关键路径来自工作流配置，
      生成时用 `--workflow-config 同一份单任务工作流 JSON` 传入，宿主启动时按实际 `workflows` 再核，不符报 `parallel_solo_qa_checkpoint`。
      主目录项目配置文件与 HEAD 中的不逐字节相同时不给 1 人组（不在提交里 `parallel_solo_config_untracked`，内容不同 `parallel_solo_config_diverged`）。
-     这只是预筛，以 worktree 建好后两边实际加载的配置为准：开发前比对不同就停在 `batch_member_config_diverged`；只有确认未动过（无运行存档、目录干净含未跟踪与忽略文件、分支无新提交）才不强制地删除 worktree 与分支，否则保留。残留空分支下次安全删除重建，有独有提交停在 `batch_member_branch_exists`。1 人组 QA 仍失败时批次停在 `batch_solo_qa_failed`：
+     这只是预筛，以 worktree 建好后两边实际加载的配置为准：开发前比对不同就停在 `batch_member_config_diverged`；批次从不自动删除 worktree 与分支，指引给出路径、分支名和手动清理命令（`git worktree remove`、`git branch -d`，不加 `--force`／`-D`），worktree 还在时下次 advance 复用并重新比对。手动清理中断留下的空分支下次安全删除重建，有独有提交停在 `batch_member_branch_exists`。1 人组 QA 仍失败时批次停在 `batch_solo_qa_failed`：
      交付已提交在成员分支，出口是在主目录合并该分支、`/cm-fix` 按 QA 报告修复、删除工作树与分支、剩余任务用新批次 ID 重新生成。
    - **每个成员的前置任务都排在组内第一个成员之前**：整组在第一个成员处同时开工。功能最后一个任务已完成时不分组。
    能并行才并行，不为组而组（1 人组只是隔离开发，不算并行）；判定不确定时按串行处理。成员在各自 Git 工作树开发、串行合并回
