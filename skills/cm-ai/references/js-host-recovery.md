@@ -244,10 +244,12 @@ worker 已证明审查进程退出、又没有结论的中断，`pendingAction` 
 | `review_boundary_unverified` | 工具或内容越界后退出，或退出前可能已收到结论 |
 | `review_abandon_budget_exhausted` | 本轮 2 次已用完 |
 
-「进程组已停止」的判断（`runtime/js/cm-ai/process-group-exit.mjs`，审查、开发进程和检查/QA 命令共用）：对进程组发信号得到 ESRCH 才算没了；
-得到 EPERM 时不直接下结论——macOS 上，只剩我们自己那个已退出、还没被回收的子进程（僵尸）的进程组也回 EPERM，
-所以先等到看见这个直接子进程的退出事件，再发一次；仍是 EPERM 就读进程表（`ps -A -o pid=,pgid=,stat=`），
-只有这个进程组里全是僵尸（状态以 Z 开头）才算已停止。没看到子进程退出、`ps` 读不了或进程组里有非僵尸进程，一律仍记 `process_cleanup_unknown`。
+「进程组已停止」的判断（`runtime/js/cm-ai/process-group-exit.mjs`，审查、开发进程和检查/QA 命令共用）：对进程组发信号得到 ESRCH 才算没了，
+发送成功说明还有活进程（照旧走 SIGTERM/SIGKILL 清理）。得到 EPERM 时不直接下结论——macOS 上，组长是我们自己那个已退出、
+还没被 Node 回收的子进程（僵尸）时也回 EPERM：先异步等看到这个直接子进程的退出事件（不阻塞事件循环，和后面的重发共用约 1 秒预算），
+看不到就判不明；看到后在剩余预算内每 50 毫秒重发一次，任一次 ESRCH 判已停止、任一次发送成功判有活进程，一直 EPERM 判不明。
+不读进程表、不执行任何外部程序。判不明时各调用方按原来的错误码记：审查进程为 `process_cleanup_unknown`，
+provider 开发进程为 `process_cleanup_failed`，检查/QA 命令为 `cleanup_failed`；这一步之前已记下的失败原因（如超时、限流）优先保留。
 
 外部模型与执行策略的审查不走以上出口：流里有回执就先 `reconcile_review` 对账采纳；没有回执宿主无法证明旧调用已停，`abandon_review`／`abandon_effect` 拒绝为 `external_review_reconciliation_required`，按 status 的 `reviewReconciliation.reason` 向原宿主或 provider 核对。
 

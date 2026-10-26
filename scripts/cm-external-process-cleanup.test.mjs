@@ -111,7 +111,7 @@ test('owned cleanup keeps a live group unknown at its original deadline',{skip:p
 // that already exited but is not reaped yet (a zombie) answers kill(-pgid, 0|SIGTERM)
 // with EPERM; after the reap it is ESRCH. A provider CLI that exits right after its
 // error used to end process_cleanup_unknown. A stop is proven only once our direct
-// child's exit is observed and the group is gone or holds only zombies (ps).
+// child's exit is observed and a re-probe answers ESRCH (no process table is read).
 const exitedChild=(pid=12345)=>Object.assign(new EventEmitter(),{pid,exitCode:1,signalCode:null});
 const denied=()=>{throw Object.assign(new Error('synthetic permission denied'),{code:'EPERM'});};
 test('owned cleanup: a real child that exited at once (unreaped zombie group) is proven stopped',{skip:process.platform==='win32'},async()=>{
@@ -120,21 +120,39 @@ test('owned cleanup: a real child that exited at once (unreaped zombie group) is
   await ownedProcessCleanup(child,{graceMs:0})();
   assert.notEqual(child.exitCode,null);
 });
-test('owned cleanup: EPERM is a stop only after our child exited and ps shows only zombies',{skip:process.platform==='win32'},async()=>{
-  const groups=[];
-  const listGroup=rows=>pgid=>{groups.push(pgid);return rows;};
-  // Only zombies left: stopped.
-  await ownedProcessCleanup(exitedChild(),{graceMs:0,killProcess:denied,listGroup:listGroup([{pid:12345,stat:'Z'},{pid:12346,stat:'Z+'}])})();
-  assert.deepEqual(groups,[12345]);
-  // A live member we cannot signal: never a stop.
-  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killProcess:denied,
-    listGroup:listGroup([{pid:12345,stat:'Z'},{pid:12346,stat:'S'}])})(),{code:'process_cleanup_unknown'});
-  // The process table cannot be read (sandbox): unknown.
-  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killProcess:denied,listGroup:()=>null})(),{code:'process_cleanup_unknown'});
-  // Our own child's exit is not observed: unknown, whatever ps says.
-  const running=Object.assign(new EventEmitter(),{pid:12345,exitCode:null,signalCode:null});
-  await assert.rejects(ownedProcessCleanup(running,{graceMs:0,exitWaitMs:20,killProcess:denied,
-    listGroup:()=>[{pid:12345,stat:'Z'}]})(),{code:'process_cleanup_unknown'});
+// EPERM is resolved only through our own child: after its exit is observed, a re-probe
+// within the same budget must answer ESRCH (stopped) or deliver (a live member).
+const waitingChild=(pid=12345)=>Object.assign(new EventEmitter(),{pid,exitCode:null,signalCode:null});
+test('owned cleanup: EPERM until our child is reaped, then ESRCH, is a stop; the wait never blocks the event loop',{skip:process.platform==='win32'},async()=>{
+  const child=waitingChild(),calls=[];let reaped=false,ticked=false;
+  setTimeout(()=>{ticked=true;},10);
+  setTimeout(()=>{reaped=true;child.exitCode=1;child.emit('exit',1,null);},40);
+  await ownedProcessCleanup(child,{graceMs:0,killProcess:(pid,signal)=>{
+    assert.equal(pid,-12345);calls.push(signal);
+    throw Object.assign(new Error('synthetic'),{code:reaped?'ESRCH':'EPERM'});
+  }})();
+  assert.equal(ticked,true,'a 10 ms timer ran while waiting for the exit');
+  assert.deepEqual(calls,['SIGTERM','SIGTERM']);
+});
+test('owned cleanup: an EPERM that persists after our child exited stays unknown',{skip:process.platform==='win32'},async()=>{
+  const started=Date.now();
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,exitBudgetMs:200,killProcess:denied})(),{code:'process_cleanup_unknown'});
+  assert(Date.now()-started<2000,'bounded by the budget');
+});
+test('owned cleanup: a member that answers once our child exited is live, not stopped',{skip:process.platform==='win32'},async()=>{
+  const calls=[];let first=true;
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killWaitMs:0,killProcess:(pid,signal)=>{
+    calls.push(signal);if(first){first=false;denied();}
+  }})(),{code:'process_cleanup_unknown'});
+  // It was treated as alive: escalated to SIGKILL and still probed alive at the deadline.
+  assert.deepEqual(calls,['SIGTERM','SIGTERM','SIGKILL',0]);
+});
+test('owned cleanup: EPERM without an observed exit of our child stays unknown, even if a later probe says ESRCH',{skip:process.platform==='win32'},async()=>{
+  await assert.rejects(ownedProcessCleanup(waitingChild(),{graceMs:0,exitBudgetMs:30,killProcess:denied})(),{code:'process_cleanup_unknown'});
+  let first=true;
+  await assert.rejects(ownedProcessCleanup(waitingChild(),{graceMs:0,exitBudgetMs:30,killProcess:()=>{
+    if(first){first=false;denied();}throw Object.assign(new Error('synthetic'),{code:'ESRCH'});
+  }})(),{code:'process_cleanup_unknown'});
 });
 test('owned cleanup: a zombie leader with a live descendant is killed, not taken for stopped',{skip:process.platform==='win32'},async t=>{
   const root=fixture(t),pidFile=path.join(root,'grandchild.pid');
