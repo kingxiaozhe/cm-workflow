@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {notify,clearAttention,sessionTitle,scheduleWaitNotice,driveProgressKey,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
+import {notify,notifyLater,cancelPendingNotice,clearAttention,sessionTitle,scheduleWaitNotice,driveProgressKey,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
 
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
@@ -132,8 +132,9 @@ test('runtime read: a missing file stays silent, a directory is a logged off, a 
 
 test('message is bounded and built only from the structured fields',()=>{
   const long='x'.repeat(2000);
+  // A nextAction over 80 characters is replaced by the plain action; a short one keeps its redacted paths.
   const message=buildNotifyMessage({...fields('k'),workflow:long,project:'/very/secret/path/'+long,runId:long,task:long,
-    stage:long,code:long,nextAction:`读 /srv/private/push.env 和 ~/secret/file 后\n${long}`,
+    stage:long,code:long,nextAction:`读 /srv/private/push.env 和 ~/secret/file 后`,
     diff:'DIFF-CONTENT',log:'LOG-CONTENT',env:{TOKEN:'SECRET'}},{now:NOW});
   assert(Array.from(message.title).length<=NOTIFY_LIMITS.titleChars);
   assert(Array.from(message.body).length<=NOTIFY_LIMITS.bodyChars);
@@ -160,8 +161,9 @@ test('done shows the next step and local time; project in the title, task in the
   assert.equal(done.body,'下一步：建议在新会话里开始下一个任务\n时间：16:00');
   const bare=buildNotifyMessage(fields('k',{event:'done',task:null,nextAction:null}),{now:NOW,timeZone:'UTC'});
   assert.equal(bare.body,'时间：08:00');assert.equal(bare.subtitle,'cm-fix');
+  // Host waiting/idle texts are not rewritten; a driver stop without nextAction gets the plain action line.
   assert.equal(buildNotifyMessage({workflow:'cm-ai',event:'waiting'},{now:NOW,timeZone:'America/New_York'}).body,'时间：04:00');
-  assert.equal(buildNotifyMessage({workflow:'cm-ai'},{now:Date.parse('2026-10-08T16:05:00.000Z'),timeZone:'Asia/Shanghai'}).body,'时间：00:05');
+  assert.equal(buildNotifyMessage({workflow:'cm-ai'},{now:Date.parse('2026-10-08T16:05:00.000Z'),timeZone:'Asia/Shanghai'}).body.split('\n').at(-1),'时间：00:05');
 });
 
 test('without an injected time zone the clock follows the process TZ',()=>{
@@ -236,7 +238,8 @@ test('custom text strings are cleaned like field values: paths redacted, control
     {...at,text:{...long,fields:{default:['nextAction','runId','project','workflow','task','stage','code','time']}}});
   assert.equal(Array.from(big.title).length,NOTIFY_LIMITS.titleChars);
   assert(Array.from(big.body).length<=NOTIFY_LIMITS.bodyChars);
-  assert.match(big.body,/^签{11}…：x{199}…\n/);
+  // A long nextAction is replaced by the plain action (see noticeAction); the label keeps its cap.
+  assert.match(big.body,/^签{11}…：回到对应会话，让它说明停在哪、需要你做什么\n/);
   assert.match(big.body,/\n运行：x{63}…\n/);
 });
 
@@ -384,19 +387,21 @@ test('two hosts without a session id waiting in one project are two notices: the
 test('compact layout: title is the project, subtitle the session title, body only why it stopped',()=>{
   const at={now:NOW,timeZone:'UTC',layout:'compact'};
   const stuck=fields('k',{code:'qa_decision_required',session:'4f9fa27f',sessionTitle:'分析 skills 库'});
-  assert.deepEqual(buildNotifyMessage(stuck,at),{title:'work/demo-app',subtitle:'会话：分析 skills 库',body:'在等 QA 判定'});
+  assert.deepEqual(buildNotifyMessage(stuck,at),{title:'work/demo-app',subtitle:'会话：分析 skills 库',
+    body:'在等 QA 判定\n你要做：回到会话「分析 skills 库」说「继续」，让它做 QA 判定'});
   // No plain-words entry: the event headline, never the English code. No title: the short session id; neither: the workflow.
   assert.deepEqual(buildNotifyMessage(fields('k',{session:'4f9fa27f',code:'batch_resources_open'}),{...at,text:{headlines:{default:'要你出手'}}}),
-    {title:'work/demo-app',subtitle:'会话：4f9fa27f',body:'要你出手'});
+    {title:'work/demo-app',subtitle:'会话：4f9fa27f',body:'要你出手\n你要做：回到会话「4f9fa27f」，让它说明停在哪、需要你做什么'});
   assert.equal(buildNotifyMessage(fields('k'),at).subtitle,'cm-fix');
   assert.equal(buildNotifyMessage(fields('k',{event:'done',code:'qa_decision_required'}),at).body,'流程已结束');
   // Codes without an entry still read as Chinese from their words; only a code saying nothing falls back to the headline.
   for(const [code,want] of [['checks_not_passed','检查没通过'],['qa_failed','QA 没通过'],['develop_checks_not_passed','开发检查没通过'],
     ['review_verification_failed','审查失败'],['qa_fix_action_authorization_required','QA 修复要你授权'],['batch_resources_open','需要人处理'],
     ['spec_drift','规格有改动，需重新批准'],['call_timeout','超时']])
-    assert.equal(buildNotifyMessage(fields('k',{code}),at).body,want,code);
+    assert.equal(buildNotifyMessage(fields('k',{code}),at).body.split('\n')[0],want,code);
   assert.equal(buildNotifyMessage(fields('k',{code:'review_verification_failed'}),{now:NOW,timeZone:'UTC'}).body.split('\n')[1],'卡在：审查失败（review_verification_failed）');
-  assert.equal(buildNotifyMessage(stuck,{...at,followUp:true,suppressed:2}).body,'第 2 次：在等 QA 判定\n另有 2 条提醒已合并');
+  assert.equal(buildNotifyMessage(stuck,{...at,followUp:true,suppressed:2}).body,
+    '第 2 次：在等 QA 判定\n你要做：回到会话「分析 skills 库」说「继续」，让它做 QA 判定\n另有 2 条提醒已合并');
   assert.deepEqual(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],layout:'compact'})).config.layout,'compact');
   assert.equal(Object.hasOwn(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],layout:'full'})).config,'layout'),false);
   assert.equal(parseNotifyConfig(JSON.stringify({version:1,command:['/bin/true'],layout:'tiny'})).reason,'layout');
@@ -741,7 +746,8 @@ test('driver classification follows each workflow contract (table)',()=>{
     row:{requestId:'drive',result:ai({outcome:'advanced',state:'blocked',code:'develop_checks_not_passed',pendingAction:'resume',feature:'1.login',
       guidance:{nextStep:'修复后 advance'}})}});
   assert.deepEqual({...blocked},{key:'cm-ai|run-1|T-001|1|blocked|develop_checks_not_passed',attentionKey:'attn|work/demo-app|4f9fa27f',event:'stuck',workflow:'cm-ai',
-    project:'/work/demo-app',runId:'run-1',feature:'1.login',task:'T-001',stage:'blocked',session:'4f9fa27f',code:'develop_checks_not_passed',nextAction:'修复后 advance'});
+    project:'/work/demo-app',runId:'run-1',feature:'1.login',task:'T-001',stage:'blocked',session:'4f9fa27f',code:'develop_checks_not_passed',nextAction:'修复后 advance',
+    delivery:'later'});
   // Without --host-context the attention record is per project, workflow and run; a non-UUID context is kept as given.
   assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',args:['serve'],operation:'advance',row:{requestId:'drive',result:ai({state:'blocked',code:'x'})}}).attentionKey,'attn|w/p|cm-ai|run-1');
   assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',args:['--host-context','claude-session-e2e'],operation:'advance',failure:'host_exited'}).session,'claude-session-e2e');
@@ -758,11 +764,110 @@ test('driver classification follows each workflow contract (table)',()=>{
   assert.match(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',operation:'advance',failure:'host_exited'}).key,/^cm-ai\|args:[0-9a-f]{16}\|/);
 });
 
+// 2026-10-26 user report: a notice must say what to do. The compact layout adds
+// one "你要做" line from a code→action table, naming the session to go back to.
+test('compact layout adds a 你要做 line: mapped actions, rate limit, fallback, custom label, explicit action',()=>{
+  const at={now:NOW,timeZone:'UTC',layout:'compact'},s={session:'4f9fa27f',sessionTitle:'分析 skills 库'};
+  const line=over=>buildNotifyMessage(fields('k',{...s,...over}),at).body.split('\n')[1];
+  assert.equal(line({code:'review_provider_failed'}),'你要做：回到会话「分析 skills 库」说「继续」，让它重派审查');
+  assert.equal(line({code:'review_provider_failed',reviewFailure:'reviewer_rate_limited'}),
+    '你要做：审查被限流：过一刻钟后回到会话「分析 skills 库」说「继续」，让它重派审查');
+  assert.equal(line({code:'qa_triggered'}),'你要做：回到会话「分析 skills 库」说「继续」，让它执行 QA');
+  assert.equal(line({code:'awaiting_spec_approval'}),'你要做：打开规格确认内容，再回到会话「分析 skills 库」说「批准」');
+  assert.equal(line({code:'provider_development_authorization_required'}),'你要做：回到会话「分析 skills 库」，看它要你授权什么；同意就说「授权」');
+  assert.equal(line({code:'review_limit'}),'你要做：两轮审查都没通过：回到会话「分析 skills 库」，决定改规格还是重开这项任务');
+  assert.equal(line({code:'host_exited'}),'你要做：宿主中途停了：回到会话「分析 skills 库」说「继续」，让它查状态后恢复');
+  assert.equal(line({code:'batch_resources_open'}),'你要做：回到会话「分析 skills 库」，让它说明停在哪、需要你做什么');
+  assert.equal(buildNotifyMessage(fields('k',{session:'4f9fa27f',code:'batch_resources_open'}),at).body.split('\n')[1],
+    '你要做：回到会话「4f9fa27f」，让它说明停在哪、需要你做什么');
+  assert.equal(buildNotifyMessage(fields('k',{code:'batch_resources_open'}),at).body.split('\n')[1],
+    '你要做：回到对应会话，让它说明停在哪、需要你做什么');
+  // The label is the user's own nextAction label when text sets one.
+  assert.equal(buildNotifyMessage(fields('k',{...s,code:'qa_triggered'}),{...at,text:{labels:{nextAction:'动作'}}}).body.split('\n')[1],
+    '动作：回到会话「分析 skills 库」说「继续」，让它执行 QA');
+  // An explicit plain action (the driver's rate-limit result) wins; it is cleaned like any field.
+  assert.equal(line({code:'review_provider_failed',action:'审查被限流，已自动重试 1 次仍失败；过半小时后回到会话说「继续」即可 /srv/x'}),
+    '你要做：审查被限流，已自动重试 1 次仍失败；过半小时后回到会话说「继续」即可 <路径>');
+  // done stays as before; the whole body keeps its cap.
+  assert.equal(buildNotifyMessage(fields('k',{...s,event:'done'}),at).body,'流程已结束');
+  assert(Array.from(buildNotifyMessage(fields('k',{...s,sessionTitle:'长'.repeat(200),code:'x'.repeat(300)}),at).body).length<=NOTIFY_LIMITS.bodyChars);
+});
+
+test('full layout keeps a plain nextAction and replaces an empty, long or technical one with the action table',()=>{
+  const at={now:NOW,timeZone:'UTC'},s={session:'4f9fa27f'};
+  const first=over=>buildNotifyMessage(fields('k',{...s,...over}),at).body.split('\n')[0];
+  assert.equal(first({nextAction:'核对 reason 后恢复原运行'}),'下一步：核对 reason 后恢复原运行');
+  for(const nextAction of [null,'','恢复原运行并发送 advance；reason 以 reviewer_rate_limited 开头',
+    '显式 --allow-abandon-review，并提供单行 reason','长'.repeat(81)])
+    assert.equal(first({code:'review_provider_failed',nextAction}),'下一步：回到会话「4f9fa27f」说「继续」，让它重派审查',String(nextAction));
+  assert.equal(first({code:'review_provider_failed',nextAction:'x',action:'过半小时后回到会话说「继续」'}),'下一步：x');
+  assert.equal(buildNotifyMessage(fields('k',{event:'done',nextAction:null}),at).body,'时间：08:00');
+});
+
+// Only stops that need the person's own decision or authorization are sent at
+// once; every other stop waits waitMinutes in case the session moves on.
+test('driver notices: only a person\'s decision or authorization is sent at once; other stops are deferred',()=>{
+  const notice=(result,extra={})=>driveNotice({host:'/x/scripts/cm-ai-host.mjs',cwd:'/w/p',args:['--host-context','s1'],operation:'advance',
+    row:{requestId:'drive',result:ai(result)},...extra});
+  for(const [result,delivery] of [
+    [{state:'pending_review',code:'review_provider_failed',pendingAction:'resume',reviewFailure:'reviewer_rate_limited'},'later'],
+    [{state:'blocked',code:'develop_checks_not_passed',pendingAction:'resume'},'later'],
+    [{state:'fixture_completed',code:'qa_triggered',pendingAction:'qa_execution'},'later'],
+    [{state:'unknown',code:'call_timeout',pendingAction:'abandon_effect'},'later'],
+    [{state:'awaiting_spec_approval',code:null,pendingAction:'spec_approval'},'now'],
+    [{state:'blocked',code:'provider_development_authorization_required',pendingAction:'none'},'now'],
+    [{outcome:'denied',state:'blocked',code:'permission_denied',pendingAction:'none'},'now'],
+    [{state:'blocked',code:'spec_drift',pendingAction:'spec_rebind'},'now'],
+    [{state:'blocked',code:'review_limit',pendingAction:'none'},'now'],
+    [{state:'blocked',code:'review_blocked',pendingAction:'none'},'now'],
+    [{state:'blocked',code:'review_redispatch_limit',pendingAction:'none'},'now'],
+    [{state:'blocked',code:'develop_redo_limit',pendingAction:'none'},'now'],
+    [{outcome:'finalized',state:'run_done',code:'run_done',pendingAction:'none'},'now'],
+  ])assert.equal(notice(result).delivery,delivery,JSON.stringify(result));
+  assert.equal(notice({state:'pending_review',code:'review_provider_failed',pendingAction:'resume',reviewFailure:'reviewer_rate_limited'}).reviewFailure,'reviewer_rate_limited');
+  assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',operation:'advance',failure:'host_exited'}).delivery,'later');
+  assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',operation:'advance',failure:'confirm_reask_decision_required'}).delivery,'now');
+  assert.equal(driveNotice({host:'cm-prd-host.mjs',cwd:'/w/p',operation:'advance',row:{requestId:'drive',result:{stage:'awaiting_user'}}}).delivery,'now');
+  assert.equal(driveNotice({host:'cm-fix-host.mjs',cwd:'/w/p',operation:'advance',row:{requestId:'drive',result:{stage:'blocked',reason:'repair_authorization_required'}}}).delivery,'now');
+});
+
+test('deferred notice: off without config; sent after the delay when nothing moved; one per session; cleared by progress, a new step or an immediate notice',async t=>{
+  const empty=fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-later-off-'));t.after(()=>fs.rmSync(empty,{recursive:true,force:true}));
+  assert.deepEqual(await notifyLater(fields('off',{attentionKey:'attn|a|s'}),{env:{...process.env,CM_WORKFLOW_HOME:empty},delayMs:50}),{scheduled:false,reason:'off'});
+  assert.deepEqual(fs.readdirSync(empty),[]);
+  assert.deepEqual(await notifyLater(fields('off'),{env:{...process.env,CM_WORKFLOW_HOME:undefined,NODE_TEST_CONTEXT:'child-v8'},delayMs:50}),{scheduled:false,reason:'off'});
+  // The per-window cap is lifted so a stray send could not hide behind it.
+  const h=home(t,{config:{frequency:{perWindow:50}}}),attn=name=>`attn|work/demo-app|${name}`,pending=()=>fs.existsSync(path.join(h.dir,'notify-pending'))
+    ?fs.readdirSync(path.join(h.dir,'notify-pending')).filter(name=>name.endsWith('.json')):[];
+  const later=(key,name,delayMs=300,over={})=>notifyLater(fields(key,{attentionKey:attn(name),session:name,...over}),{env:h.env,delayMs});
+  // Nothing moved: sent once after the delay, and the pending record is gone.
+  assert.equal((await later('a1','s-a')).scheduled,true);assert.equal(pending().length,1);
+  assert.equal(h.rows().length,0);
+  assert(await h.until(()=>h.rows().length===1));assert.equal(h.rows()[0].stdin.code,'checks_not_passed');
+  assert(await h.until(()=>pending().length===0));
+  // A later stop of the same session replaces the earlier one: one notice, the newer one.
+  await later('b1','s-b',300,{code:'qa_triggered'});await later('b2','s-b');
+  // Progress cleared one session, a new step started in another, an immediate notice superseded a third.
+  await later('c1','s-c');assert.equal(await clearAttention(attn('s-c'),{env:h.env}),true);
+  await later('d1','s-d');assert.equal(await cancelPendingNotice(attn('s-d'),{env:h.env}),true);
+  await later('e1','s-e');assert.equal(notify(fields('e2',{attentionKey:attn('s-e'),code:'provider_development_authorization_required'}),{env:h.env}).sent,true);
+  assert(await h.until(()=>h.rows().length===3));
+  await new Promise(resolve=>setTimeout(resolve,900));
+  assert.deepEqual(h.rows().map(row=>row.stdin.code).slice(1).sort(),['checks_not_passed','provider_development_authorization_required']);
+  assert.equal(h.rows().length,3,'b2 and e2 only, never b1, c1, d1 or e1');
+  assert.equal(h.rows().filter(row=>row.stdin.code==='checks_not_passed').length,2,'b2 only, never b1, c1 or d1');
+  assert.deepEqual(pending(),[]);
+  // A clear only removes a pending stop from before the step; a newer one stays.
+  await later('f1','s-f',600);assert.equal(await cancelPendingNotice(attn('s-f'),{env:h.env,before:Date.now()-60000}),false);
+  assert.equal(pending().length,1);
+});
+
 // Shared driver core (scripts/*-drive.mjs all use driveHost) with a host that
-// stops on blocked: one notice; repeating the identical run sends nothing new.
+// stops on blocked: one notice after waitMinutes (a stop that is not a person's
+// decision is deferred); repeating the identical run sends nothing new.
 // The notify command takes 3 s, yet the driver exits without waiting for it.
-test('driver ending in blocked notifies exactly once, never waits for the command, and an identical run does not resend',async t=>{
-  const h=home(t,{sleepMs:3000});
+test('driver ending in blocked notifies exactly once after waitMinutes, never waits for the command, and an identical run does not resend',async t=>{
+  const h=home(t,{sleepMs:3000,config:{waitMinutes:0.005}});
   const host=path.join(h.dir,'cm-ai-host.mjs'),wrapper=path.join(h.dir,'cm-ai-drive.mjs'),project=path.join(h.dir,'demo-app');
   fs.mkdirSync(project);
   fs.writeFileSync(host,`process.stdout.write(JSON.stringify({type:'host_ready',sessionId:'s'})+'\\n');
@@ -809,6 +914,39 @@ driveHost({host:${JSON.stringify(host)},args:['serve','--host-context','4f9fa27f
   assert.equal(await exited,0);
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal(Object.keys(JSON.parse(fs.readFileSync(path.join(h.dir,'notify-state.json'),'utf8')).attention).length,1,'the newer stop is kept');
+});
+
+// 2026-10-26: a stop the session handles by itself must not reach the phone.
+// The driver defers it; the next step of the same session cancels it as soon as
+// its host accepts the step, before any result; an immediate stop is not deferred.
+test('driver stop is deferred, the next step of the session cancels it at once, and an authorization stop is sent at once',async t=>{
+  const h=home(t,{config:{waitMinutes:1}});
+  const host=path.join(h.dir,'cm-ai-host.mjs'),wrapper=path.join(h.dir,'cm-ai-drive.mjs'),project=path.join(h.dir,'demo-app');
+  fs.mkdirSync(project);
+  fs.writeFileSync(host,`process.stdout.write(JSON.stringify({type:'host_ready',sessionId:'s'})+'\\n');
+process.stdin.on('data',chunk=>{for(const line of String(chunk).split('\\n').filter(Boolean)){const row=JSON.parse(line);
+ if(row.requestId==='drive')setTimeout(()=>process.stdout.write(JSON.stringify({requestId:'drive',result:{workflow:'cm-ai',outcome:'advanced',
+  state:'blocked',code:process.env.FIXTURE_CODE,pendingAction:'none',identity:{runId:'run-7',taskId:'T-001',attempt:1}}})+'\\n'),Number(process.env.FIXTURE_REPLY_DELAY??0));}});
+process.stdin.on('end',()=>process.exit(0));`);
+  fs.writeFileSync(wrapper,`import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
+driveHost({host:${JSON.stringify(host)},args:['serve','--host-context','4f9fa27f-6196-4f1f-9bb7-fe5bcd5614fa'],cwd:${JSON.stringify(project)},operation:'advance',answers:{},answerFor:()=>null});`);
+  const env={...h.env};delete env.NODE_TEST_CONTEXT;
+  const pending=()=>fs.existsSync(path.join(h.dir,'notify-pending'))?fs.readdirSync(path.join(h.dir,'notify-pending')).filter(name=>name.endsWith('.json')):[];
+  const first=spawnSync(process.execPath,[wrapper],{encoding:'utf8',env:{...env,FIXTURE_CODE:'develop_checks_not_passed'},timeout:20000});
+  assert.equal(first.status,0,first.stderr);
+  assert(await h.until(()=>pending().length===1),'the stop waits as a pending notice');
+  const slow=spawn(process.execPath,[wrapper],{env:{...env,FIXTURE_CODE:'develop_checks_not_passed',FIXTURE_REPLY_DELAY:'1500'}});
+  const exited=new Promise(resolve=>slow.on('close',resolve));
+  assert(await h.until(()=>pending().length===0,1200),'accepting the next step cancelled the earlier stop');
+  assert.equal(await exited,0);
+  assert(await h.until(()=>pending().length===1),'the new stop waits again');
+  assert.deepEqual(h.rows(),[]);
+  const urgent=spawnSync(process.execPath,[wrapper],{encoding:'utf8',env:{...env,FIXTURE_CODE:'provider_development_authorization_required'},timeout:20000});
+  assert.equal(urgent.status,0,urgent.stderr);
+  assert(await h.until(()=>h.rows().length===1));
+  assert.equal(h.rows()[0].stdin.code,'provider_development_authorization_required');
+  assert.match(h.rows()[0].stdin.action,/看它要你授权什么/);
+  assert(await h.until(()=>pending().length===0),'an immediate notice about the session supersedes the pending stop');
 });
 
 // Host bridge: a host_request outstanding past waitMinutes notifies once;

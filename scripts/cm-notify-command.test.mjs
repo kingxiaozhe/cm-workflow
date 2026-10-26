@@ -806,16 +806,16 @@ test('custom text survives switch, off and on; status shows 文案：默认/自�
   noSecret(s.cli([]).stdout);
 });
 
-test('compact layout: preview shows only project, session and why it stopped',async t=>{
+test('compact layout: preview shows project, session, why it stopped and what to do',async t=>{
   const s=sandbox(t);
   s.write('notify.json',JSON.stringify({version:1,command:['/bin/true'],layout:'compact',text:{headlines:{default:'要你出手',done:'跑完了'}}}));
   const preview=await previewText(s.home,{now:Date.parse('2026-10-08T08:00:00.000Z'),timeZone:'Asia/Shanghai'});
   assert.deepEqual(preview.messages.map(({title,subtitle,body})=>[title,subtitle,body]),[
-    ['demo-app','会话：示例会话标题','检查没通过'],
-    ['demo-app','会话：示例会话标题','在等会话应答'],
-    ['demo-app','会话：示例会话标题','会话没有发下一步'],
-    ['demo-app','会话：示例会话标题','在等你处理'],
-    ['demo-app','会话：示例会话标题','宿主进程已退出'],
+    ['demo-app','会话：示例会话标题','检查没通过\n你要做：回到会话「示例会话标题」说「继续」，让它修好后重新提交'],
+    ['demo-app','会话：示例会话标题','在等会话应答\n你要做：回到会话「示例会话标题」看看它是否卡住，需要时说「继续」'],
+    ['demo-app','会话：示例会话标题','会话没有发下一步\n你要做：回到会话「示例会话标题」说「继续」，让它做下一步'],
+    ['demo-app','会话：示例会话标题','在等你处理\n你要做：回到会话「示例会话标题」说「继续」，让它做下一步'],
+    ['demo-app','会话：示例会话标题','宿主进程已退出\n你要做：宿主中途停了：回到会话「示例会话标题」说「继续」，让它查状态后恢复'],
     ['demo-app','会话：示例会话标题','跑完了']]);
 });
 

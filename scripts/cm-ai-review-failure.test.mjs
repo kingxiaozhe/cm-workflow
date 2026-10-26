@@ -108,9 +108,9 @@ function fixture(t,{reviewTimeoutMs=null}={}){
     fs.writeFileSync(file,JSON.stringify({config:'run.json',mode:'create',hostContext:'review-host-a',runtime:'claude',
       permissions:['--review-config','review.json'],answers:'answers',
       checks:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}],...extra}));return file;};
-  const drive=(file,operation)=>{const run=spawnSync(process.execPath,[DRIVER,'--plan',file,operation],{encoding:'utf8',timeout:60000,
+  const drive=(file,operation,env={})=>{const run=spawnSync(process.execPath,[DRIVER,'--plan',file,operation],{encoding:'utf8',timeout:60000,
     env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,CM_WORKFLOW_HOME:path.join(root,'home'),
-      CM_WORKFLOW_LOG_HOME:path.join(root,'logs')}});
+      CM_WORKFLOW_LOG_HOME:path.join(root,'logs'),...env}});
     let result=null;try{result=JSON.parse(run.stdout).result;}catch{}
     return {status:run.status,stderr:run.stderr,result};};
   const store=path.join(specsDir,'.reviews','.execution',identity.runId,'state.json');
@@ -122,10 +122,22 @@ function fixture(t,{reviewTimeoutMs=null}={}){
     const first=drive(plan(),'start');assert.equal(first.status,0,first.stderr);
     assert.equal(first.result.state,'awaiting_review');return first.result.packageDigest;
   };
-  const decide=(packageDigest,attempt=1)=>drive(plan({mode:'resume',permissions:review(attempt),packageDigest,answers:undefined,checks:undefined}),'decision');
+  const decide=(packageDigest,attempt=1,env={})=>drive(plan({mode:'resume',permissions:review(attempt),packageDigest,answers:undefined,checks:undefined}),'decision',env);
   const lastResult=()=>records().findLast(row=>row.payload.type==='review-invocation-result').payload;
   const intents=()=>records().filter(row=>row.payload.type==='effect-intent').map(row=>row.payload.effect.id);
-  return {root,specsDir,codeProject,answers,write,behave,plan,drive,store,records,replay,calls,review,awaitingReview,decide,lastResult,intents};
+  // Optional notices: notify.json in the fixture's CM_WORKFLOW_HOME runs a
+  // recorder; sent() lists what reached it (the launcher is detached).
+  const notices=()=>{
+    const home=path.join(root,'home'),sent=path.join(root,'sent.jsonl'),script=path.join(root,'fake-notify.mjs');
+    fs.mkdirSync(home,{recursive:true});
+    fs.writeFileSync(script,`import fs from 'node:fs';let input='';process.stdin.on('data',c=>input+=c);
+process.stdin.on('end',()=>{fs.appendFileSync(${JSON.stringify(sent)},JSON.stringify({body:process.env.CM_NOTIFY_BODY,stdin:JSON.parse(input)})+'\\n');});`);
+    fs.writeFileSync(path.join(home,'notify.json'),JSON.stringify({version:1,command:[process.execPath,script],layout:'compact'}));
+    const rows=()=>fs.existsSync(sent)?fs.readFileSync(sent,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line)):[];
+    const pending=()=>{const dir=path.join(home,'notify-pending');return fs.existsSync(dir)?fs.readdirSync(dir).filter(name=>name.endsWith('.json')):[];};
+    return {rows,pending};
+  };
+  return {root,specsDir,codeProject,answers,write,behave,plan,drive,store,records,replay,calls,review,awaitingReview,decide,lastResult,intents,notices};
 }
 
 const apiErrors=[
@@ -210,6 +222,46 @@ test(`#8 ${error==='authentication_failed'?'real Claude CLI':'in-process Claude 
   assert.notEqual(registrations[0].payload.binding.invocationId,registrations[1].payload.binding.invocationId);
   assert.notEqual(registrations[0].payload.binding.requestDigest,registrations[1].payload.binding.requestDigest);
   assert.equal(f.replay().state.state,'approved');assert.equal(f.calls().length,2);
+});
+
+// 2026-10-26: a provider rate limit stopped the run although the quota recovered
+// minutes later. The driver waits and re-runs the same command in resume mode,
+// which is the runner's own one automatic redispatch of this round: no review
+// round, no abandon_review, no extra permission, and no notice while it waits.
+const rateLimited={mode:'api_error',error:'rate_limit',status:429,text:'API Error: 429 rate limited'};
+const until=async(check,ms=8000)=>{const end=Date.now()+ms;while(!check()&&Date.now()<end)await new Promise(r=>setTimeout(r,25));return check();};
+test('#8 a rate-limited review is redispatched by the driver after a wait, in the same run, without a notice',async t=>{
+  const f=fixture(t),packageDigest=f.awaitingReview(),notices=f.notices();
+  f.behave(rateLimited,{mode:'ok'});
+  const run=f.decide(packageDigest,1,{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'300,300,300'});
+  assert.equal(run.status,0,run.stderr);
+  // stdout holds only the re-run's result: the interim rate-limited one is not printed.
+  assert.equal(run.result.state,'approved',run.stderr);
+  assert.match(run.stderr,/审查被限流（reviewer_rate_limited），1 秒后在原运行自动重派审查（第 1\/3 次）；等待期间不推送/);
+  assert.deepEqual(f.intents(),['develop-1','review-1','review-1-retry-1']);assert.equal(f.calls().length,2);
+  // The review rounds are untouched: one round, its automatic redispatch spent.
+  assert.equal(f.replay().state.attempt,1);
+  await new Promise(resolve=>setTimeout(resolve,700));
+  assert.deepEqual(notices.rows(),[],'nothing is sent while waiting or after the retry succeeded');
+  assert.deepEqual(notices.pending(),[],'the backstop notice was cancelled by the re-run');
+});
+
+test('#8 a review still rate limited after the automatic retry is returned and notified at once with what to do',async t=>{
+  const f=fixture(t),packageDigest=f.awaitingReview(),notices=f.notices();
+  f.behave(rateLimited,rateLimited,{mode:'ok'});
+  const run=f.decide(packageDigest,1,{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'200,200,200'});
+  // The second rate limit of the round is the runner's blocked stop: no third dispatch, no abandon_review sent.
+  assert.equal(run.result.state,'blocked',run.stderr);assert.equal(run.result.code,'review_provider_failed');
+  assert.equal(run.result.reviewFailure,'reviewer_rate_limited');assert.equal(run.result.pendingAction,'abandon_review');
+  assert.equal(f.calls().length,2);assert.equal(f.records().filter(row=>row.payload.type==='review-redispatch').length,0);
+  assert.equal((run.stderr.match(/自动重派审查（第 /g)??[]).length,1);
+  assert(await until(()=>notices.rows().length===1),'notified at once');
+  const [sent]=notices.rows();
+  assert.equal(sent.body.split('\n')[1],'你要做：审查被限流，已自动重试 1 次仍失败；过半小时后回到会话「review-host-a」说「继续」即可');
+  assert.equal(sent.stdin.code,'review_provider_failed');
+  // Without the automatic retry budget (no eligible operation), status never retries.
+  const status=f.drive(f.plan({mode:'resume',answers:undefined,checks:undefined}),'status',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'200'});
+  assert.equal(status.result.state,'blocked');assert.equal(f.calls().length,2);
 });
 
 test('#8 a reviewer with no init line is redispatched twice per round; the third failure is a limit and abandon is refused',t=>{

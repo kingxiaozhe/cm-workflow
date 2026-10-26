@@ -4,8 +4,10 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import readline from 'node:readline';
 import {guidanceText} from './operator-guidance.mjs';
+import {applyRateLimitResume,nextRateLimitRetry,rateLimitedReview,rateLimitRetriesDone,RATE_LIMIT_RETRY_ENV} from './drive-rate-limit.mjs';
 
 export const stderr=line=>process.stderr.write(`[drive] ${line}\n`);
+const waitWords=ms=>ms<60000?`${Math.max(1,Math.ceil(ms/1000))} 秒`:`${Math.round(ms/60000)} 分钟`;
 export const stop=(code,line)=>{stderr(line);process.exit(code);};
 export function planCheckTimeout(plan,item=null){
   const valid=value=>Number.isInteger(value)&&value>=1&&value<=3600000;
@@ -28,6 +30,8 @@ export function loadPlanFile({argv=process.argv.slice(2),name,known}){
   let plan;
   try{plan=JSON.parse(fs.readFileSync(planPath,'utf8'));}
   catch(error){stop(2,`读不了 ${planPath}: ${error.code??error.message}`);}
+  // A rate-limit re-run (driveHost below) resumes the run its first command created.
+  if(plan&&typeof plan==='object')applyRateLimitResume(plan);
   return {operation,plan,base};
 }
 
@@ -65,7 +69,11 @@ export function deliberatelyUnanswered(message){
 // The long fallback covers hosts that cannot advertise individual phase budgets.
 export const DRIVE_LIVENESS_DEFAULTS=Object.freeze({startupMs:60000,operationMs:21600000,
   heartbeatMs:30000,graceMs:30000,closeMs:5000,killMs:1000,pollMs:250});
-export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null,liveness={},sessionBoundary=null}){
+// rateLimitRetry (cm-ai drivers only, drive-rate-limit.mjs): a review the provider
+// rate limited is redispatched by re-running this same driver command after a
+// wait, without printing the interim result or notifying; the re-run's result is
+// the one printed. Only the runner's automatic pending_review state qualifies.
+export function driveHost({host,args,cwd,operation,request={},answers,paths,answerFor,beforeRequest=null,liveness={},sessionBoundary=null,rateLimitRetry=false}){
   const budget={...DRIVE_LIVENESS_DEFAULTS,...liveness};
   for(const value of Object.values(budget))if(!Number.isSafeInteger(value)||value<1)throw Error('driver_liveness_invalid');
   const ownGroup=process.platform!=='win32';
@@ -75,20 +83,70 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
     env:{...process.env,CM_HOST_HEARTBEAT:'1'}});
   const control=new AbortController();
   child.stderr.on('data',chunk=>process.stderr.write(chunk));
-  let done=false,refused=false,rejected=null,unanswered=false,finalRow=null,finalAt=null,noticed=false,failureCode=null;
+  let done=false,refused=false,rejected=null,unanswered=false,finalRow=null,finalAt=null,noticed=false,failureCode=null,retry=null;
+  const retriesDone=rateLimitRetriesDone();
   let sessionId=null,ready=false,heartbeat=false,lastBeat=0,waitingFor='drive',stopping=false,closed=false;
   let deadline=Date.now()+budget.startupMs,phase='startup',closeDeadline=null,killTimer=null,forceTimer=null;
   // Optional notices never change the result or make watchdog failures successful.
+  // A stop that is not a person's decision waits waitMinutes and is dropped if
+  // the session moves on (notifyLater); a rate limit after this driver's own
+  // retries is sent at once and says how many were tried.
+  const sendNotice=(fields,mod)=>{
+    if(!failureCode&&rateLimitedReview(finalRow)&&retriesDone>0)fields={...fields,rateLimitRetries:retriesDone,delivery:'now'};
+    return fields.delivery==='later'?mod.notifyLater(fields):mod.notify(fields);
+  };
   const notice=failure=>{
     if(noticed)return;noticed=true;
+    if(retry!==null&&!failure){waitAndRetry();return;}
+    if(retry!==null)releaseRetry();
     if(rejected!==null)failure='host_response_rejected';else if(!failure&&unanswered&&!finalRow)failure='host_request_unanswered';
-    import('../notify.mjs').then(({driveNotice,notify,driveProgressKey,clearAttention})=>{
+    import('../notify.mjs').then(mod=>{
+      const {driveNotice,driveProgressKey,clearAttention}=mod;
       const fields=driveNotice({host,cwd,args,operation,row:finalRow,failure});
-      if(fields)return notify(fields);
+      if(fields)return sendNotice(fields,mod);
       const progress=driveProgressKey({host,cwd,args,operation,row:finalRow,failure});
       // The step moved on when its final result arrived, not when the host closed later.
       return progress&&finalAt!==null?clearAttention(progress,{before:finalAt}):null;
     }).catch(()=>{});
+  };
+  // The interim rate-limited result is printed only if the re-run cannot start.
+  const printFinal=row=>{
+    process.stdout.write(JSON.stringify(row,null,2)+'\n');
+    // The driver prints the session-boundary verdict itself so the model only relays it;
+    if(typeof sessionBoundary==='function'&&!row.error){let block=null;try{block=sessionBoundary(row.result,operation);}catch{stderr('会话边界结论生成失败；请按技能输出模板手写三行结论（业务结果不受影响）');}
+      // stderr, not stdout: callers parse stdout as one JSON result.
+      if(typeof block==='string'&&block)process.stderr.write(block+'\n');}
+    const guidance=guidanceText(row.result);if(guidance)stderr(guidance);
+    if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
+    if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);
+  };
+  // A host failure after the result was chosen for a retry: show it as usual.
+  const releaseRetry=()=>{printFinal(finalRow);retry=null;};
+  const waitAndRetry=()=>{
+    const pending=retry;
+    // Backstop: if this waiting driver is killed, the stop is still sent once
+    // the wait and waitMinutes have passed; the re-run's start cancels it.
+    import('../notify.mjs').then(mod=>{
+      const fields=mod.driveNotice({host,cwd,args,operation,row:finalRow,failure:null});
+      return fields?mod.notifyLater({...fields,rateLimitWaiting:true},{extraDelayMs:pending.delayMs}):null;
+    }).catch(()=>{});
+    const timer=setTimeout(()=>{
+      stderr(`审查限流等待结束，在原运行重派审查（第 ${pending.attempt}/${pending.max} 次）`);
+      let rerun;
+      try{rerun=spawn(process.execPath,[...process.execArgv,process.argv[1],...process.argv.slice(2)],{cwd:process.cwd(),stdio:'inherit',
+        env:{...process.env,[RATE_LIMIT_RETRY_ENV]:String(pending.attempt)}});}
+      catch{rerun=null;}
+      const failed=()=>{
+        stderr('自动重派没能启动：下面是限流时的原结果，请回到会话说「继续」');
+        printFinal(finalRow);process.exitCode=hostResponseFailed(finalRow)?1:0;
+        import('../notify.mjs').then(mod=>{const fields=mod.driveNotice({host,cwd,args,operation,row:finalRow,failure:null});
+          return fields?mod.notify({...fields,rateLimitWaiting:true}):null;}).catch(()=>{});
+      };
+      if(!rerun){failed();return;}
+      rerun.once('error',failed);
+      rerun.once('exit',(code,signal)=>{process.exitCode=code??(signal?1:0);});
+    },pending.delayMs);
+    void timer;
   };
   const signalOwnHost=(signal,cleanup=false)=>{
     if((closed&&!cleanup)||!child.pid)return;
@@ -161,6 +219,10 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
     if(row.type==='host_ready'){
       if(ready)return;
       ready=true;sessionId=row.sessionId;heartbeat=Boolean(row.heartbeat);lastBeat=Date.now();
+      // The host accepted a new step of this session: a deferred stop from before is no longer news.
+      const startedAt=Date.now();
+      import('../notify.mjs').then(({driveAttentionKey,cancelPendingNotice})=>{
+        const key=driveAttentionKey({host,cwd,args,operation});return key?cancelPendingNotice(key,{before:startedAt}):null;}).catch(()=>{});
       phase='operation';deadline=Date.now()+budget.operationMs;
       if(beforeRequest){
         let refusal;
@@ -203,14 +265,9 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
         phaseBudget(inFlight);stderr(`host_busy：上一步仍在执行，继续等待 ${waitingFor} 的结果`);return;
       }
       done=true;finalRow=row;finalAt=Date.now();control.abort();
-      process.stdout.write(JSON.stringify(row,null,2)+'\n');
-      // The driver prints the session-boundary verdict itself so the model only relays it;
-      if(typeof sessionBoundary==='function'&&!row.error){let block=null;try{block=sessionBoundary(row.result,operation);}catch{stderr('会话边界结论生成失败；请按技能输出模板手写三行结论（业务结果不受影响）');}
-        // stderr, not stdout: callers parse stdout as one JSON result.
-        if(typeof block==='string'&&block)process.stderr.write(block+'\n');}
-      const guidance=guidanceText(row.result);if(guidance)stderr(guidance);
-      if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
-      if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);
+      retry=rateLimitRetry&&!deliberateStop&&!refused&&!unanswered&&rejected===null?nextRateLimitRetry(row):null;
+      if(retry)stderr(`审查被限流（reviewer_rate_limited），${waitWords(retry.delayMs)}后在原运行自动重派审查（第 ${retry.attempt}/${retry.max} 次）；等待期间不推送，也不用你处理`);
+      else printFinal(row);
       process.exitCode=deliberateStop||refused?2:hostResponseFailed(row)||rejected!==null||unanswered?1:0;
       // Normal EOF follows a final result. The explicit force compatibility
       // path for a legacy host is separately logged by closeHost above.

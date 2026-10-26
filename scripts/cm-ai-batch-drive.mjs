@@ -36,6 +36,7 @@ import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs'
 import {readRunnerHistory,projectedRunnerStatus,RECHECK_CODES,DOCUMENTATION_SYNC_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
+import {rateLimitRetryEligible} from '../runtime/js/cm-ai/drive-rate-limit.mjs';
 
 import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 
@@ -423,6 +424,6 @@ function main(){
   const {plan,operation,bundle,config,permissions}=loaded;
   driveHost({host:HOST,args:buildCmAiBatchDriveHostArgs(plan,permissions,config,loaded.control?.file,loaded.holds),
     cwd:bundle.batch.codeProject,operation,request:buildCmAiBatchDriveRequest(operation,plan),
-    answers:loaded.answers,answerFor});
+    answers:loaded.answers,answerFor,rateLimitRetry:rateLimitRetryEligible(operation,plan)});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))main();

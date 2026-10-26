@@ -60,6 +60,7 @@ import {readCloseoutReport} from '../runtime/js/cm-ai/knowledge-closeout.mjs';
 import {readRunnerHistory,attemptBaseline,projectedRunnerStatus,RECHECK_CODES,DOCUMENTATION_SYNC_CODES} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
+import {rateLimitRetryEligible} from '../runtime/js/cm-ai/drive-rate-limit.mjs';
 import {cmAiSessionBoundary} from '../runtime/js/session-boundary.mjs';
 import {printHandoff} from '../runtime/js/session-handoff.mjs';
 import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
@@ -940,6 +941,7 @@ async function main(){
   driveHost({host:HOST,args:[...buildCmAiDriveHostArgs(plan,permissions,config,loaded.control?.file),...(loaded.holdRevision?['--hold-revision']:[])],cwd:definition.codeProject,operation,request,
     answers:answer,paths:{answers:loaded.answers},answerFor,
     sessionBoundary:result=>cmAiSessionBoundary(result,{specsDir:definition.specsDir,feature:definition.feature,identity:definition.identity}),
+    rateLimitRetry:rateLimitRetryEligible(operation,plan),
     ...(loaded.bootstrapRules?{beforeRequest:()=>loaded.bootstrapRules.prepare(plan.mode)}:{})});
 }
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fileURLToPath(import.meta.url))
