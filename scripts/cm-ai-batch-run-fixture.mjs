@@ -121,7 +121,7 @@ export async function batchFixture(mode,options={}){
             data.identity.attempt===1?'implemented\n':'implemented again\n');
           // The session wrote, then the conversation dropped: no answer (develop_answer_missing).
           if(mode==='parallel-redo'&&parallelMember&&definition.identity.taskId==='T-002'&&!redoThrown){
-            redoThrown=true;throw Object.assign(new Error('host_disconnected'),{code:'host_disconnected'});}
+            redoThrown=true;const code=options.redoCode??'host_disconnected';throw Object.assign(new Error(code),{code});}
           if(recovery&&blockedIds.includes(definition.identity.taskId)&&(parallelMember||options.terminalAgain))
             return {status:'succeeded',value:{outcome:'blocked',...(options.withReason?{reason:'Expected stub throws; waiting for peer'}:{})}};
           if(parallel&&definition.identity.taskId==='T-002')await new Promise(resolve=>setTimeout(resolve,50));
@@ -524,6 +524,14 @@ export async function batchFixture(mode,options={}){
       const logfile=path.join(specsDir,'运行日志.jsonl'),rows=()=>fs.readFileSync(logfile,'utf8').trim().split('\n').map(JSON.parse);
       assert.equal(result.code,'batch_parallel_member_recovery_required',JSON.stringify(result));
       assert.deepEqual([result.currentTask,result.pendingAction,result.memberCode],[`${feature}/T-002`,'develop_redo','develop_answer_missing']);
+      // The member's bounded develop class survives the batch's rebuilt stop, and the notice names it.
+      if(options.redoCode==='developer_rate_limited'){
+        assert.equal(result.developFailure,'developer_rate_limited',JSON.stringify(result));
+        const {driveNotice,buildNotifyMessage}=await import('../runtime/js/notify.mjs');
+        const notice=driveNotice({host:'/x/scripts/cm-ai-batch-host.mjs',cwd:codeProject,args:['--host-context','s1'],operation:'advance',row:{requestId:'drive',result}});
+        assert.equal(notice.delivery,'now');
+        assert.match(buildNotifyMessage(notice,{now:Date.now(),layout:'compact'}).body,/开发进程被限流（429）：过一刻钟后回到会话「s1」，授权它重做这一轮开发/);
+      }else assert.equal(Object.hasOwn(result,'developFailure'),false);
       assert.match(result.reason,/--allow-develop-redo 1\.work\/T-002/);assert.equal(result.guidance.authorizationGranted,false);
       // Kept in place: no serial reschedule, its worktree and edits stay for the redo.
       assert.equal(rows().filter(row=>row.phase==='batch_member_blocked').length,0);

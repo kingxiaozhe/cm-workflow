@@ -8,7 +8,7 @@ import {need,text,validCallTimeout,json} from './effect-contract.mjs';
 import {CODEX_RECONNECT_NOTICE_LIMIT,isCodexReconnectNotice} from './codex-reconnect-notice.mjs';
 import {codexRateLimited} from './worker-codex.mjs';
 // A provider terminal (failed turn) still lets the usage of a later turn.failed through.
-const PROVIDER_ENDED=new Set(['provider_failed','developer_rate_limited']);
+const PROVIDER_ENDED=new Set(['provider_failed']);
 
 export function developerArgs({cwd,model,effort,schemaPath,disabledSkills=[],specsRoot=null}) {
   text(cwd);text(schemaPath);
@@ -53,7 +53,7 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
       try{child=spawnProcess(cli,args,{cwd,env:cleanEnvironment(),stdio:['pipe','pipe','pipe'],shell:false,detached:true});}
       catch{usage.complete();resolve({status:'unavailable',code:'spawn_failed'});return;}
       let buffer='',bytes=0,thread=null,turnStarted=false,completed=false,lastMessage=null;
-      let failure=null,closed=false,timer,cleanup,noticeCount=0,reconnectNoticeCount=0;
+      let failure=null,closed=false,timer,cleanup,noticeCount=0,reconnectNoticeCount=0,rateLimited=false;
       const signalGroup=signalName=>{
         if(!Number.isInteger(child.pid)||child.pid<=0)return false;
         try{process.kill(-child.pid,signalName);return true;}
@@ -80,6 +80,9 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
         let event;try{event=JSON.parse(line);}catch{stop('invalid_event');return;}
         if(!event||Array.isArray(event)||typeof event.type!=='string'){stop('invalid_event');return;}
         if(event.type==='turn.failed'&&thread&&turnStarted&&!completed)usage.terminal(event.usage);
+        // Like the Codex reviewer (worker-codex.mjs): every failure event of the turn,
+        // the first or a later one, may name the rate limit; only the class is kept.
+        if((event.type==='error'&&!isCodexReconnectNotice(event)||event.type==='turn.failed')&&codexRateLimited(event))rateLimited=true;
         if(PROVIDER_ENDED.has(failure))return;
         // Reconnects may precede thread initialization, but never bypass a
         // completed turn. Keep their budget separate from item notices.
@@ -88,9 +91,7 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
           try{if(typeof onNotice==='function')onNotice(event.message.slice(0,200));}catch{}
           return;
         }
-        // A failed turn naming HTTP 429 / Too Many Requests / a rate limit (the Codex
-        // reviewer's rule) keeps that class; the provider text is never kept.
-        if(event.type==='error'||event.type==='turn.failed'){stop(codexRateLimited(event)?'developer_rate_limited':'provider_failed');return;}
+        if(event.type==='error'||event.type==='turn.failed'){stop('provider_failed');return;}
         if(completed){
           stop(event.type==='item.completed'&&event.item?.type==='error'?'invalid_event':'event_after_terminal');return;
         }
@@ -143,7 +144,9 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
         if(buffer.trim())accept(buffer);
         usage.complete();
         if(failure||code!==0||exitSignal||!completed||lastMessage===null){
-          resolve({status:failure==='spawn_failed'?'unavailable':'unknown',code:failure??'incomplete_result'});return;
+          // provider_failed stays the internal terminal; the published code names a rate limit.
+          resolve({status:failure==='spawn_failed'?'unavailable':'unknown',
+            code:failure==='provider_failed'&&rateLimited?'developer_rate_limited':failure??'incomplete_result'});return;
         }
         try{resolve({status:'succeeded',value:json(JSON.parse(lastMessage)),providerThread:thread});}
         catch{resolve({status:'unknown',code:'invalid_output_json'});}

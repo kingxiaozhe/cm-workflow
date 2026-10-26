@@ -230,3 +230,19 @@ test(`Codex developer failure "${message}" ends as ${code}`,()=>fixture(async cw
   const result=await worker({prompt:'synthetic'},{signal:new AbortController().signal});
   assert.deepEqual(result,{status:'unknown',code});
 }));
+
+// Codex review round 1: the class is collected from every failure event of the turn
+// (as the Codex reviewer does), whichever carries it; the terminal stays the first.
+const failedPair=(first,second)=>`${ownerGuardSource()}let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{
+const emit=x=>process.stdout.write(JSON.stringify(x)+'\\n');
+emit({type:'thread.started',thread_id:'isolated-fixture'});emit({type:'turn.started'});
+emit({type:'error',message:${JSON.stringify(first)}});emit({type:'turn.failed',error:{message:${JSON.stringify(second)}}});
+setTimeout(()=>process.exit(1),5000);
+});`;
+for(const [first,second,code] of [['Request failed','HTTP 429 Too Many Requests','developer_rate_limited'],
+  ['HTTP 429 Too Many Requests','Request failed','developer_rate_limited'],['Request failed','stream closed','provider_failed']])
+test(`Codex developer error "${first}" then turn.failed "${second}" ends as ${code}`,()=>fixture(async cwd=>{
+  const worker=codexDeveloperWorker({cwd,model:'fixture',schemaPath:'/unused',
+    spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',failedPair(first,second)],options)});
+  assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code});
+}));

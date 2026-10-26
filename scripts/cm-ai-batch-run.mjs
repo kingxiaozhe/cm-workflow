@@ -666,6 +666,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   // (parallelRecoveryRequired); original-call reconciliation that is not available now
   // cannot become available later, so it is not offered. Supersede is offered only when
   // memberSupersedeAdmitted says the supersede check and the external run guard pass.
+  // The member's own bounded diagnostic classes, kept when the batch rebuilds a stop
+  // around a member result (drivers and notices act on them, never on reason text).
+  const memberDiagnostics=status=>Object.freeze({
+    ...(typeof status?.reviewFailure==='string'&&/^reviewer_[a-z_]{1,48}$/.test(status.reviewFailure)?{reviewFailure:status.reviewFailure}:{}),
+    ...(typeof status?.developFailure==='string'&&/^developer_[a-z_]{1,48}$/.test(status.developFailure)?{developFailure:status.developFailure}:{})});
   function parallelMemberUnresolved(key,status,raw,history){
     const strict=Boolean(config.externalModels||config.executionPolicy),runId=plans.get(key).identity.runId;
     const supersedable=memberSupersedeAdmitted(config.specsDir,runId,history);
@@ -680,6 +685,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         :`批次与单任务宿主目前都没有能处理它的操作：${why}${original}。保留批次、原运行和 worktree，不要取消批次或手改存档，把 rawState 与本 reason 交给维护者处理`);
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_unresolved',batchId:config.batchId,
       currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:status.pendingAction??null,
+      ...memberDiagnostics(status),
       rawState:raw,
       reason:`${batchKind(strict)}的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}（原始存档状态 ${raw}），结果尚未确认、写入方未证明已停或审查尚未终结，不改排串行（改排会换 runId、从 attempt 1 重派，绕过原调用对账与写入方停止证明）。出口：${exit}。`,
       guidance:stopGuidance('并行成员结果未确认，批次不会自动改排或重派。',`${exit}。`,
@@ -703,6 +709,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       :`关闭批次宿主，带 ${grant.flag} ${key} 用同一批次配置重新启动，发送批次操作 ${action}（taskKey ${key}、单行 reason）`;
     return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_parallel_member_recovery_required',batchId:config.batchId,
       currentTask:key,identity:status.identity,memberState:status.state,memberCode:status.code??null,pendingAction:action,
+      ...memberDiagnostics(status),
       reason:`${batchKind(Boolean(config.externalModels||config.executionPolicy))}的并行成员 ${key} 停在 ${status.state}/${status.code??status.state}，可在它自己的运行里恢复，所以不改排串行（改排会丢掉原调用回执或中断记录）。出口：${exit}；之后 advance 继续本批次。`,
       guidance:Object.freeze({summary:'并行成员停在可在原运行内恢复的状态，批次不会自动改排。',nextStep:`${exit}；之后 advance 继续本批次。`,
         recoveryOperation:action,prerequisites:Object.freeze(['先确认旧宿主与该成员的会话或子进程已停止写入','恢复只转给该成员运行，不跨成员']),authorizationGranted:false})});
