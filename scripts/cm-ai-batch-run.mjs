@@ -10,7 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {openControlRun,validateRunDefinition,assertCreatableScope} from './cm-ai-run.mjs';
 import {developmentRetryable,completionRetryable,reviewRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {batchOperatorGuidance} from '../runtime/js/cm-ai/operator-guidance.mjs';
-import {digest,json,shape,need,id,hex} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {digest,json,shape,need,id,hex,validIdentity} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {scanRows,findCmAiQaDecision,latestCmAiQaRun} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {checkParallelWrite} from './cm-task-gate.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
@@ -721,6 +721,56 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     return validateRunDefinition({...definition,codeProject:worktree,
       ...(definition.codeProjects?{codeProjects:definition.codeProjects.map(root=>path.join(worktree,path.relative(config.codeProject,root)))}:{})});
   }
+  // The batch-level part of a rate-limit retry target: which member, and the batch
+  // log as it was when the member stopped (digest of the plan and every batch row).
+  const batchLogDigest=state=>digest({planDigest,rows:state.rows});
+  const rateLimitedStop=result=>result?.state==='pending_review'&&result.code==='review_provider_failed'
+    &&result.reviewFailure==='reviewer_rate_limited'&&result.pendingAction==='resume'
+    &&typeof result.reviewInvocationId==='string'&&typeof result.identity?.runId==='string';
+  function withReviewRetryTarget(result){
+    if(!rateLimitedStop(result))return result;
+    const taskKey=[...plans].find(([,definition])=>definition.identity.runId===result.identity.runId)?.[0];
+    if(!taskKey)return result;
+    return Object.freeze({...result,taskKey:result.taskKey??taskKey,
+      reviewRetryTarget:Object.freeze({taskKey,batchDigest:batchLogDigest(progress())})});
+  }
+  // retry_review: redispatch exactly the one rate-limited review a driver waited for.
+  // batch.lock is held by the caller; the member's own decision check (expectedReviewStop,
+  // cm-ai-conversation-entry.mjs) runs in the member run this process opens and whose
+  // writer lock it holds. Any difference: staleRetry, nothing dispatched or written.
+  async function retryReview(request,state){
+    const taskKey=request.taskKey;
+    const stale=why=>Object.freeze({outcome:'rejected',code:'review_retry_target_changed',staleRetry:true,
+      batchId:config.batchId,taskKey,operation:'retry_review',reason:`状态已变，未自动重试：${why}；本次没有派发任何操作`});
+    need(typeof taskKey==='string'&&taskKey.length>0,'invalid_input');validIdentity(request.identity);hex(request.packageDigest);hex(request.batchDigest);
+    shape(request.expectedReviewStop,['invocationId']);id(request.expectedReviewStop.invocationId);
+    if(!plans.has(taskKey))return stale(`${taskKey} 不是本批次的任务`);
+    if(state.stopped)return stale('批次已经停止');
+    if(request.batchDigest!==batchLogDigest(state))return stale('批次日志在等待期间有了新记录');
+    const stopped=membership.has(state.current)
+      ?membership.get(state.current).filter(key=>membership.has(key)&&!state.ready?.has(key)&&!state.done?.has(key)):[state.current];
+    if(!stopped.includes(taskKey))return stale(`批次当前停在 ${stopped.join('、')}，不是 ${taskKey}`);
+    if(membership.has(taskKey)){
+      const {worktree,branch}=location(taskKey);
+      if(!fs.existsSync(worktree)||batchGit(worktree,['branch','--show-current'])!==branch)return stale(`${taskKey} 的 worktree 已不在或换了分支`);
+      bindWorktree(taskKey);
+    }
+    const definition=plans.get(taskKey);
+    if(request.identity.repositoryId!==definition.identity.repositoryId||request.identity.runId!==definition.identity.runId
+      ||request.identity.taskId!==definition.identity.taskId)return stale(`${taskKey} 的运行已不是等待时那一个`);
+    if(!fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json')))
+      return stale(`${taskKey} 没有运行存档`);
+    const run=await open(taskKey);
+    if(run.blocked)return {outcome:'blocked',code:run.blocked.reason,batchId:config.batchId};
+    try{
+      const wire={operation:'decision',requestId:request.requestId,identity:request.identity,packageDigest:request.packageDigest,
+        expectedReviewStop:{invocationId:request.expectedReviewStop.invocationId}};
+      const result=controlPolicy?await run.controlHost.handle({version:2,...wire}):await run.host.handle({version:1,...wire});
+      // Only this review: the member stays where its decision leaves it (approved,
+      // changes_requested, a second failure); the next advance continues the batch.
+      return Object.freeze({...result,batchId:config.batchId,taskKey});
+    }finally{run.close();}
+  }
   async function memberAction(request,state){
     const {option,flag}=BATCH_MEMBER_ACTIONS[request.operation],taskKey=request.taskKey;
     const refuse=(code,reason)=>Object.freeze({outcome:'rejected',code,batchId:config.batchId,taskKey,operation:request.operation,reason});
@@ -748,10 +798,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   return Object.freeze({controlTarget:()=>batchControlTarget(progress().current),async handle(raw){
     const request=json(raw);shape(request,['operation','requestId',...(request.operation==='reconcile_review'?['taskKey','invocationId']:[]),
+      ...(request.operation==='retry_review'?['taskKey','identity','packageDigest','expectedReviewStop','batchDigest']:[]),
       ...(Object.hasOwn(BATCH_MEMBER_ACTIONS,request.operation??'')?['taskKey','reason']:[]),
       ...(controlPolicy?['version',...((IN_RUN_ACTIONS.has(request.operation??''))?['expectedControl']:[])]:[])]);id(request.requestId);
     if(controlPolicy)need(request.version===2,'fingerprint_mismatch');
-    need(['advance','status','cancel','reconcile_review',...Object.keys(BATCH_MEMBER_ACTIONS)].includes(request.operation));
+    need(['advance','status','cancel','reconcile_review','retry_review',...Object.keys(BATCH_MEMBER_ACTIONS)].includes(request.operation));
     if(request.operation==='cancel'&&busy){
       cancelled=true;
       if(members.size){record('batch_cancel',{from_key:liveKey});
@@ -767,8 +818,16 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     if(request.operation==='status'&&busy)return {outcome:'reported',batchId:config.batchId,currentTask:liveKey,state:'running'};
     need(!busy,'batch_busy');busy=true;
     try{
-      releaseLock=acquireBatchLock(config);
+      // Another driver holding batch.lock is moving the batch: a timed retry is stale.
+      try{releaseLock=acquireBatchLock(config);}
+      catch(error){if(request.operation==='retry_review'&&error?.code==='batch_locked')return Object.freeze({outcome:'rejected',
+        code:'review_retry_target_changed',staleRetry:true,batchId:config.batchId,taskKey:request.taskKey,operation:'retry_review',
+        reason:'状态已变，未自动重试：另一个驾驶员正在推进本批次；本次没有派发任何操作'});throw error;}
+      const result=await (async()=>{
       const initial=progress();liveKey=initial.current;
+      // A driver's timed rate-limit retry: checked against the frozen batch and member
+      // stop while batch.lock is held, before anything else runs or is written.
+      if(request.operation==='retry_review')return await retryReview(request,initial);
       if(controlPolicy&&IN_RUN_ACTIONS.has(request.operation)){
         const expected=json(request.expectedControl);shape(expected,['version','batchId','taskKey','member','batchDigest']);
         readControlTarget(expected.member);hex(expected.batchDigest);
@@ -866,6 +925,10 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         active.close();active=null;liveKey=next;
       }
       need(false,'batch_limit');
+      })();
+      // Still under batch.lock: a rate-limited member stop names the frozen target a
+      // timed retry_review must find unchanged (the batch log digest and the member).
+      return request.operation==='advance'?withReviewRetryTarget(result):result;
     }finally{active?.close();active=null;releaseLock?.();releaseLock=null;busy=false;}
   }});
 }
