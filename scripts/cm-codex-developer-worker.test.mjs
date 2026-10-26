@@ -246,3 +246,20 @@ test(`Codex developer error "${first}" then turn.failed "${second}" ends as ${co
     spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',failedPair(first,second)],options)});
   assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code});
 }));
+
+// 2026-10-27: a Codex developer that exits right after its failed turn (its group is
+// then only our unreaped zombie child, EPERM on macOS) is proven stopped, so the call
+// keeps its class instead of process_cleanup_failed.
+test('Codex developer exiting at once after a 429 keeps developer_rate_limited (no cleanup failure)',()=>fixture(async cwd=>{
+  const script=`${ownerGuardSource()}let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{
+const emit=x=>process.stdout.write(JSON.stringify(x)+'\\n');
+emit({type:'thread.started',thread_id:'isolated-fixture'});emit({type:'turn.started'});
+emit({type:'error',message:'HTTP 429 Too Many Requests'});emit({type:'turn.failed',error:{message:'HTTP 429 Too Many Requests'}});
+process.exit(1);
+});`;
+  for(let attempt=0;attempt<3;attempt++){
+    const worker=codexDeveloperWorker({cwd,model:'fixture',schemaPath:'/unused',
+      spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',script],options)});
+    assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code:'developer_rate_limited'},`attempt ${attempt}`);
+  }
+}));

@@ -1,5 +1,6 @@
 import {createProviderUsageCapture} from './provider-usage.mjs';
 // Read-only Claude process: edits are text proposals consumed by the protected host.
+import {signalOwnedGroup} from './process-group-exit.mjs';
 import {spawn} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import {claudeBaseArgs,claudeEnvironment} from './worker-claude.mjs';
@@ -166,18 +167,19 @@ export function claudeDeveloperWorker({cwd,model,effort,cli='claude',timeoutMs=1
       let buffer='',bytes=0;
       const stream=createClaudeDeveloperStream(onNotice,value=>usage.terminal(value));
       let failure=null,closed=false,timer,cleanup;
-      const signalGroup=signalName=>{
+      // signalOwnedGroup (process-group-exit.mjs): an exited, not yet reaped leader
+      // (EPERM on macOS) is a stop only once its exit is observed and ps shows no
+      // live member; anything unproven is a cleanup failure, as before.
+      const signalGroup=async signalName=>{
         if(!Number.isInteger(child.pid)||child.pid<=0)return false;
-        try{process.kill(-child.pid,signalName);return true;}
-        catch(error){if(error.code!=='ESRCH')failure??='process_cleanup_failed';return false;}
+        try{return await signalOwnedGroup(child,signalName)==='sent';}
+        catch{failure??='process_cleanup_failed';return false;}
       };
-      const cleanGroup=()=>{
-        if(cleanup)return cleanup;
-        if(!signalGroup('SIGTERM'))return cleanup=Promise.resolve();
+      const cleanGroup=()=>cleanup??=(async()=>{
+        if(!await signalGroup('SIGTERM'))return;
         // Keep escalation alive even when the leader closes its own pipes first.
-        cleanup=new Promise(done=>setTimeout(()=>{signalGroup('SIGKILL');done();},1000));
-        return cleanup;
-      };
+        await new Promise(done=>setTimeout(done,1000));await signalGroup('SIGKILL');
+      })();
       const stop=code=>{
         failure??=code;
         if(closed)return;

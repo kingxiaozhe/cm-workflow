@@ -106,3 +106,57 @@ test('owned cleanup keeps a live group unknown at its original deadline',{skip:p
   await assert.rejects(cleanup(),{code:'process_cleanup_unknown'});
   assert.deepEqual(calls,['SIGTERM','SIGKILL',0]);
 });
+
+// 2026-10-27 (macOS 26 measured): a process group whose only member is our own child
+// that already exited but is not reaped yet (a zombie) answers kill(-pgid, 0|SIGTERM)
+// with EPERM; after the reap it is ESRCH. A provider CLI that exits right after its
+// error used to end process_cleanup_unknown. A stop is proven only once our direct
+// child's exit is observed and the group is gone or holds only zombies (ps).
+const exitedChild=(pid=12345)=>Object.assign(new EventEmitter(),{pid,exitCode:1,signalCode:null});
+const denied=()=>{throw Object.assign(new Error('synthetic permission denied'),{code:'EPERM'});};
+test('owned cleanup: a real child that exited at once (unreaped zombie group) is proven stopped',{skip:process.platform==='win32'},async()=>{
+  const child=spawn(process.execPath,['-e','process.exit(1)'],{detached:true,stdio:'ignore'});
+  const started=Date.now();while(Date.now()-started<400){} // the child exits; this loop keeps it unreaped
+  await ownedProcessCleanup(child,{graceMs:0})();
+  assert.notEqual(child.exitCode,null);
+});
+test('owned cleanup: EPERM is a stop only after our child exited and ps shows only zombies',{skip:process.platform==='win32'},async()=>{
+  const groups=[];
+  const listGroup=rows=>pgid=>{groups.push(pgid);return rows;};
+  // Only zombies left: stopped.
+  await ownedProcessCleanup(exitedChild(),{graceMs:0,killProcess:denied,listGroup:listGroup([{pid:12345,stat:'Z'},{pid:12346,stat:'Z+'}])})();
+  assert.deepEqual(groups,[12345]);
+  // A live member we cannot signal: never a stop.
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killProcess:denied,
+    listGroup:listGroup([{pid:12345,stat:'Z'},{pid:12346,stat:'S'}])})(),{code:'process_cleanup_unknown'});
+  // The process table cannot be read (sandbox): unknown.
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killProcess:denied,listGroup:()=>null})(),{code:'process_cleanup_unknown'});
+  // Our own child's exit is not observed: unknown, whatever ps says.
+  const running=Object.assign(new EventEmitter(),{pid:12345,exitCode:null,signalCode:null});
+  await assert.rejects(ownedProcessCleanup(running,{graceMs:0,exitWaitMs:20,killProcess:denied,
+    listGroup:()=>[{pid:12345,stat:'Z'}]})(),{code:'process_cleanup_unknown'});
+});
+test('owned cleanup: a zombie leader with a live descendant is killed, not taken for stopped',{skip:process.platform==='win32'},async t=>{
+  const root=fixture(t),pidFile=path.join(root,'grandchild.pid');
+  const child=spawn(process.execPath,['-e',`const c=require('child_process').spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'ignore'});
+require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));c.unref();process.exit(0);`],{detached:true,stdio:'ignore'});
+  t.after(()=>{try{process.kill(-child.pid,'SIGKILL');}catch{}});
+  while(!fs.existsSync(pidFile))await new Promise(resolve=>setTimeout(resolve,10));
+  const grandchild=Number(fs.readFileSync(pidFile,'utf8'));
+  await ownedProcessCleanup(child,{graceMs:50})();
+  assert.equal(alive(grandchild),false,'the TERM-ignoring descendant was killed');
+});
+test('Codex reviewer that exits right after its 429 ends reviewer_rate_limited, not process_cleanup_unknown',{skip:process.platform==='win32'},async t=>{
+  const root=fixture(t),script=path.join(root,'codex-429.mjs');
+  fs.writeFileSync(script,`let input='';for await(const part of process.stdin)input+=part;
+const message='exceeded retry limit, last status: 429 Too Many Requests';
+for(const value of [{type:'thread.started',thread_id:'t-429'},{type:'turn.started'},{type:'error',message},{type:'turn.failed',error:{message}}])
+  process.stdout.write(JSON.stringify(value)+'\\n');
+process.exit(1);`);
+  for(let attempt=0;attempt<3;attempt++){
+    const result=await worker(root,{promptTransport:'stdin',timeoutMs:5000,spawnProcess:(_cli,_args,opts)=>spawn(process.execPath,[script],opts),
+      preflight:{passed:true,cli_model:'synthetic-reviewer',prompt_transport:'stdin',
+        config_fingerprint:configFingerprint({...options(root),promptTransport:'stdin'})}})({prompt:'p'},{signal:new AbortController().signal,onEvent:()=>{}});
+    assert.deepEqual(result,{status:'failed',code:'reviewer_rate_limited'},`attempt ${attempt}`);
+  }
+});

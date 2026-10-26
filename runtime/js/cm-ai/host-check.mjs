@@ -1,6 +1,7 @@
 // Runs host-configured, already-authorized project checks. Commands may execute
 // project code; specsRoot opts into Codex's native sandbox for that subprocess.
 // Without specsRoot this preserves the existing direct host-check behavior.
+import {signalOwnedGroup} from './process-group-exit.mjs';
 import {beginHostStage} from './host-stage-observer.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -74,13 +75,18 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
           const match=line.trim().match(/^[^0-9A-Za-z]*(tests|suites|pass|passed|passing|fail|failed|failing|skipped|todo)\s*[:=]?\s*(\d+)\s*$/i);
           if(match&&counts.size<8&&!counts.has(match[1].toLowerCase()))counts.set(match[1].toLowerCase(),match[2]);
         };
-        const kill=name=>{
+        // signalOwnedGroup (process-group-exit.mjs): an exited, not yet reaped command
+        // (EPERM on macOS) is stopped only once its exit is observed and ps shows no
+        // live member; anything unproven is cleanup_failed, as before.
+        const kill=async name=>{
           if(!Number.isInteger(child.pid)||child.pid<=0)return false;
-          try{process.kill(-child.pid,name);return true;}
-          catch(error){if(error.code!=='ESRCH')failure??='cleanup_failed';return false;}
+          try{return await signalOwnedGroup(child,name)==='sent';}
+          catch{failure??='cleanup_failed';return false;}
         };
-        const clean=()=>cleanup??=(kill('SIGTERM')
-          ?new Promise(done=>setTimeout(()=>{kill('SIGKILL');done();},1000)):Promise.resolve());
+        const clean=()=>cleanup??=(async()=>{
+          if(!await kill('SIGTERM'))return;
+          await new Promise(done=>setTimeout(done,1000));await kill('SIGKILL');
+        })();
         const stop=reason=>{failure??=reason;clean();};
         const abort=()=>stop('cancelled');
         signal.addEventListener('abort',abort,{once:true});
