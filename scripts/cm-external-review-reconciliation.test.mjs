@@ -132,6 +132,17 @@ test('reconciled provider failure spends the original one-retry budget and requi
   assert.equal(f.dispatches(),2);assert.deepEqual(f.reopen().status(),final);
 },{timeoutMs:20,reviewRun:lateReceiptRun({failed:true})}));
 
+// A Codex 429 receipt keeps its class through reconciliation (2026-10-26).
+test('reconciled Codex rate limit keeps the reviewer_rate_limited class',()=>fixture(async f=>{
+  const runner=f.make();await runner.executeEffect(f.effect('develop'));
+  const first=await runner.executeEffect(f.effect('review'));
+  const after=runner.reconcileReview({invocationId:first.reviewReconciliation.invocationId});
+  assert.equal(after.state,'pending_review',JSON.stringify(after));assert.equal(after.code,'review_provider_failed');
+  assert.match(after.reason,/^reviewer_rate_limited: /);
+  assert.equal(after.reviewInvocation.result.inspection.failure,'reviewer_rate_limited');
+  assert.deepEqual(f.reopen().status(),after);
+},{timeoutMs:20,reviewRun:lateReceiptRun({failed:true,change:receipt=>{receipt.result.code='reviewer_rate_limited';}})}));
+
 test('replay rejects receipt or reconciliation bindings even when an attacker recomputes the journal hash chain',()=>fixture(async f=>{
   const runner=f.make();await runner.executeEffect(f.effect('develop'));
   const end=await runner.executeEffect(f.effect('review'));

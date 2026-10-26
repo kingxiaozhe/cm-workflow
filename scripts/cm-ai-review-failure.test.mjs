@@ -190,6 +190,8 @@ test(`#8 ${error==='authentication_failed'?'real Claude CLI':'in-process Claude 
   assert.equal(failed.status,0,failed.stderr);
   assert.equal(failed.result.state,'pending_review');assert.equal(failed.result.code,'review_provider_failed');
   assert.equal(failed.result.pendingAction,'resume');assert.match(failed.result.reason,new RegExp(`^${failure}: `));
+  // The class is also a structured field, so a driver never parses the reason text.
+  assert.equal(failed.result.reviewFailure,failure);
   const result=f.lastResult();
   assert.equal(result.outcome,'failed');assert.equal(result.reconciliationRequired,false);
   assert.equal(result.inspection.kind,'cm-provider-review-failure');assert.equal(result.inspection.category,'provider');

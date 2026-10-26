@@ -29,6 +29,14 @@ function validEventShape(message) {
   return true;
 }
 
+// A failed turn whose provider text names HTTP 429 / Too Many Requests / a rate
+// limit is the same class the Claude reviewer reports (reviewer_rate_limited).
+// Only the class leaves this file; the provider text is never kept or published.
+const RATE_LIMITED=/(?<![0-9])429(?![0-9])|too many requests|rate[ _-]?limit/i;
+const failureText=message=>message.type==='error'?message.message:message.error?.message;
+export const codexRateLimited=message=>{const text=failureText(message);
+  return typeof text==='string'&&RATE_LIMITED.test(text.slice(0,2000));};
+
 export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
   disabledSkills = [], cli = 'codex', timeoutMs = 60000,
   promptTransport = 'argument', spawnProcess = spawn, onNotice = null,onUsage=null,onUsageClaim=null }) {
@@ -48,7 +56,9 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
       });
       const cleanupGroup=ownedProcessCleanup(child);
       let buffer = '', outputBytes = 0, value, completion = false, failure, settled = false;
-      let failureTerminal = false, noticeCount = 0, reconnectNoticeCount = 0, receiptInvalid=false;
+      let failureTerminal = false, noticeCount = 0, reconnectNoticeCount = 0, receiptInvalid=false, rateLimited=false;
+      // provider_failed stays the internal code; the published one names the class.
+      const published=code=>code==='provider_failed'&&rateLimited?'reviewer_rate_limited':code;
       let providerThread, turnStarted = false, usageContextInvalid=false, timedOut = false, closeTimer, closing=false, terminationRequested=false;
       const cleanup=()=>process.platform==='win32'&&!terminationRequested?Promise.resolve():
         cleanupGroup().catch(()=>{failure='process_cleanup_unknown';});
@@ -101,6 +111,7 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
         }
         if (message.type === 'turn.started') {if(!providerThread)usageContextInvalid=true;turnStarted = true;}
         const isFailureTerminal = message.type === 'turn.failed' || message.type === 'error';
+        if (isFailureTerminal && codexRateLimited(message)) rateLimited = true;
         // The generic error notice can precede the official turn.failed event.
         // Preserve one normalized failure, while accounting only native terminals.
         if(message.type==='turn.failed'&&providerThread&&turnStarted&&!completion&&!usageContextInvalid)usage.terminal(message.usage);
@@ -153,12 +164,12 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
         // Windows/direct-child exit and uncertain cleanup cannot issue this receipt.
         if(process.platform!=='win32'&&failure!=='process_cleanup_unknown'&&!receiptInvalid&&typeof onTerminal==='function'){
           if(completion&&providerThread&&value!==undefined)onTerminal({status:'succeeded',value});
-          else if(failureTerminal&&providerThread)onTerminal({status:'failed',code:'provider_failed'});
+          else if(failureTerminal&&providerThread)onTerminal({status:'failed',code:published('provider_failed')});
         }
         if(failure==='process_cleanup_unknown')resolve({status:'failed',code:failure});
         else if (signal.aborted) resolve({ status: 'cancelled', code: 'cancelled' });
         else if (failure || code !== 0 || !completion || !providerThread || value === undefined) {
-          resolve({ status: 'failed', code: failure ?? 'incomplete_result' });
+          resolve({ status: 'failed', code: published(failure ?? 'incomplete_result') });
         } else resolve({ status: 'succeeded', value });
       });
       if(promptTransport==='stdin'){
