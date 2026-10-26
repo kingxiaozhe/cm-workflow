@@ -205,7 +205,8 @@ function shipped(t,{installed=true,authorSkills}={}){
   const f=fixture(t,{rules:JSON.parse(fs.readFileSync(defaultRulesPath(),'utf8')),authorNames:SHIPPED_AUTHORS,
     authorSkills:authorSkills??(installed?SHIPPED_AUTHORS.map(name=>['.claude/skills',name]):[])});
   let n=0;
-  return {...f,hints:async prompt=>[...(await f.send(prompt,{session:`p${n++}`})).matchAll(/可以试 \/([\w.:-]+)/g)].map(m=>m[1])};
+  // Hinted or started (no TypeSafe key here, so invoke rules go by their keywords).
+  return {...f,hints:async prompt=>[...(await f.send(prompt,{session:`p${n++}`})).matchAll(/(?:可以试|已让模型用|要不要用) \/([\w.:-]+)/g)].map(m=>m[1])};
 }
 const PHRASES=[
   ['我想给这个记账工具加一个预算提醒功能，但还没想清楚，你逼问我几轮把方案理清。','grill-me','cm-challenge'],
@@ -214,7 +215,8 @@ const PHRASES=[
   ['在这个仓库里加多币种，逼问我把技术方案理清','grill-with-docs','cm-challenge'],
   ['帮我定一下技术方案，存储用 SQLite 还是 JSON','grill-with-docs','cm-challenge'],
   ['help me think this through for the codebase','grill-with-docs','cm-challenge'],
-  ['src/storage 下面拆了五个小文件，接口太碎了。帮我想想怎么设计一个更深的模块接口。','improve-codebase-architecture','cm-refactor'],
+  // One module's interface is codebase-design (model-invocable), not the whole-codebase report.
+  ['src/storage 下面拆了五个小文件，接口太碎了。帮我想想怎么设计一个更深的模块接口。',null,null],
   ['代码太乱了，不知道从哪重构','improve-codebase-architecture','cm-refactor'],
   ['the architecture is a mess, where to start refactoring?','improve-codebase-architecture','cm-refactor'],
   ['我拿不准预算状态机对不对，做个能点着玩的原型让我看看。','prototype',null],
@@ -239,7 +241,7 @@ const CHATTER=['今天天气怎么样','把这行改成中文','帮我看看这�
 
 test('shipped table: real phrasings hint the author skill when it is installed',async t=>{
   const f=shipped(t);
-  for(const [prompt,skill] of PHRASES)assert.deepEqual(await f.hints(prompt),[skill],prompt);
+  for(const [prompt,skill] of PHRASES)assert.deepEqual(await f.hints(prompt),skill?[skill]:[],prompt);
 });
 
 test('shipped table: without the author skill it falls back to the CM counterpart, or stays quiet',async t=>{
@@ -326,6 +328,7 @@ test('status reports wiring, switch and table counts',async t=>{
   let text=statusText({env:f.env,rulesFile:f.rulesFile});
   assert.match(text,/Claude 未挂，Codex 未挂；开关 开/);
   assert.match(text,/CM 自带 3 条；用户自加 1 条；关掉自带 1 条/);
+  assert.match(text,/自动调用：有 TypeSafe 密钥/);
   fs.writeFileSync(localPath(f.env),JSON.stringify({enabled:false}));
   text=statusText({env:f.env,rulesFile:f.rulesFile});
   assert.match(text,/开关 关/);
@@ -526,7 +529,7 @@ test('a skill name after a CJK path segment is not an adoption',async t=>{
 
 // ---- refresh: an install or upgrade brings an enabled copy up to the installed version ----
 
-const COPIED=[SCRIPT_NAME,RULES_NAME,'cm-matt-skills.mjs','cm-config-lock.mjs'];
+const COPIED=[SCRIPT_NAME,RULES_NAME,'cm-matt-skills.mjs','cm-config-lock.mjs','cm-skill-judge.mjs'];
 const shippedFile=name=>fs.readFileSync(path.join(path.dirname(defaultRulesPath()),name),'utf8');
 const bytesOf=file=>fs.existsSync(file)?fs.readFileSync(file,'utf8'):null;
 
@@ -680,4 +683,144 @@ test('enable refuses a host config whose hooks or UserPromptSubmit has the wrong
       assert.equal(fs.readFileSync(file,'utf8'),text);
     }
   }
+});
+
+// ---- auto-invoke (方案-技能自动调用 2026-10-25) ----
+// Jev is always a fake here: `jev` answers with the given probabilities, or throws.
+
+const INVOKE_RULES={version:1,rules:[
+  {id:'long-session',skill:'handoff',author:true,keywords:['会话太长'],reason:'写交接',invoke:{mode:'direct',when:'写交接'}},
+  {id:'multi-session-work',skill:'wayfinder',author:true,keywords:['好几个会话'],reason:'拆决策票',
+    fallback:{skill:'cm-prd',reason:'拆规格'},invoke:{mode:'ask',when:'拆决策票',near:'排个计划'}},
+  {id:'fix-bug',skill:'cm-fix',keywords:['修这个 bug'],reason:'先复现'},
+]};
+function invoking(t,{installed=['handoff','wayfinder'],local,answer={none:1},key='fake-key'}={}){
+  const f=fixture(t,{rules:INVOKE_RULES,local,authorNames:['handoff','wayfinder'],
+    authorSkills:installed.flatMap(name=>[['.claude/skills',name],['.agents/skills',name]])});
+  const calls=[];
+  const fetchImpl=async(url,options)=>{
+    const sent=JSON.parse(options.body);
+    calls.push(sent);
+    if(answer instanceof Error)throw answer;
+    // Options the test leaves out get 0, so every option asked has a probability.
+    const probabilities=Object.fromEntries(Object.keys(sent.questions.skill.criteria).map(label=>[label,answer[label]??0]));
+    return new Response(JSON.stringify({answers:{skill:{type:'choice',probabilities}}}),{status:200});
+  };
+  const loadAuthor=async()=>({...(await loadAuthorCheck()),skills:f.authorOptions.skills,license:f.authorOptions.license});
+  const run=async(prompt,{host='claude',session='s1',loadJudgeModule}={})=>{
+    const out=await hook({prompt,session_id:session},{env:f.env,host,rulesFile:f.rulesFile,now:NOW,loadAuthor,
+      judgeOptions:{key,fetchImpl},...(loadJudgeModule?{loadJudgeModule}:{})});
+    return out?JSON.parse(out):null;
+  };
+  return {...f,calls,run};
+}
+
+test('a fitting direct skill: the model is told to read its SKILL.md and the user sees one line',async t=>{
+  const f=invoking(t,{answer:{handoff:0.97,wayfinder:0.01,none:0.02}});
+  const out=await f.run('今天先到这，明天接着做');
+  assert.deepEqual(Object.keys(out),['systemMessage','hookSpecificOutput']);
+  assert.equal(out.systemMessage,'🤖 技能自动调用：已让模型用 /handoff');
+  assert.equal(out.hookSpecificOutput.hookEventName,'UserPromptSubmit');
+  const file=path.join(f.home,'.claude/skills/handoff/SKILL.md');
+  assert.ok(out.hookSpecificOutput.additionalContext.includes(`先用 Read 工具读取 ${file}，再严格按其中的步骤执行`));
+  const codex=await f.run('今天先到这，明天接着做',{host:'codex'});
+  assert.equal(codex.systemMessage,'🤖 技能自动调用：已让模型用 $handoff');
+  assert.ok(codex.hookSpecificOutput.additionalContext.includes(`先读取文件 ${path.join(f.home,'.agents/skills/handoff/SKILL.md')}`));
+});
+
+test('an ask skill: the model is told to ask the user first',async t=>{
+  const f=invoking(t,{answer:{wayfinder:0.9,handoff:0.05,none:0.05}});
+  const out=await f.run('这活很大，得慢慢来');
+  assert.equal(out.systemMessage,'🤖 技能自动调用：已让模型先问你要不要用 /wayfinder');
+  assert.match(out.hookSpecificOutput.additionalContext,/先用一句话问用户要不要用它/);
+  assert.match(out.hookSpecificOutput.additionalContext,/用户同意后，用 Read 工具读取 .*wayfinder\/SKILL\.md/);
+  // Jev sees the candidates, their look-alike and none; only the first 500 characters.
+  assert.deepEqual(Object.keys(f.calls[0].questions.skill.criteria),['handoff','wayfinder','wayfinder~near','none']);
+});
+
+test('Jev decides when it answers: a keyword match it calls none starts and hints nothing',async t=>{
+  const f=invoking(t,{answer:{handoff:0.1,none:0.9}});
+  assert.equal(await f.run('会话太长的时候界面会卡吗'),null);
+  assert.equal(f.calls.length,1);
+  // Other rules still hint alongside.
+  assert.deepEqual(Object.keys(await f.run('修这个 bug',{session:'s2'})),['systemMessage']);
+});
+
+test('when Jev fails, the invoke rule\'s keywords decide, and the failure is logged without text',async t=>{
+  const f=invoking(t,{answer:new TypeError('fetch failed')});
+  const out=await f.run('会话太长了，换个会话接着做');
+  assert.equal(out.systemMessage,'🤖 技能自动调用：已让模型用 /handoff');
+  assert.equal(f.calls.length,2);
+  assert.deepEqual(f.log().map(({event,via,error,skill,mode})=>({event,via,error,skill,mode})),[
+    {event:'judge-error',via:undefined,error:'network',skill:undefined,mode:undefined},
+    {event:'invoke',via:'keyword',error:undefined,skill:'handoff',mode:'direct'}]);
+  assert.doesNotMatch(fs.readFileSync(logFile(f.env),'utf8'),/会话太长|换个会话|fake-key/);
+  assert.equal(await f.run('今天先到这',{session:'s2'}),null);
+});
+
+test('a message with a credential never reaches Jev; keywords still work',async t=>{
+  const f=invoking(t,{answer:{handoff:1}});
+  const secret='sk-'+'Q1w2E3r4'.repeat(3);
+  assert.equal((await f.run(`会话太长了，key 是 ${secret}`)).systemMessage,'🤖 技能自动调用：已让模型用 /handoff');
+  assert.equal(await f.run(`换个话题，key 是 ${secret}`,{session:'s2'}),null);
+  assert.equal(await f.run('换个话题，密码是 hunter2',{session:'s3'}),null);
+  // The TypeSafe key itself, whatever its shape.
+  assert.equal(await f.run('帮我看看配置里的 fake-key 对不对',{session:'s4'}),null);
+  assert.equal(f.calls.length,0);
+  assert.deepEqual(f.log().filter(entry=>entry.event==='judge-error').map(entry=>entry.error),['secret','secret','secret','secret']);
+  assert.doesNotMatch(fs.readFileSync(logFile(f.env),'utf8'),/hunter2|Q1w2E3r4|fake-key/);
+});
+
+test('nothing is judged or added when the message opens with a command or is too long',async t=>{
+  const f=invoking(t,{answer:{handoff:1}});
+  assert.equal(await f.run('/handoff 下个会话负责导出'),null);
+  assert.equal(await f.run('$wayfinder 拆一下',{host:'codex'}),null);
+  assert.equal(await f.run('/grill-me 先问透'),null);
+  assert.equal(await f.run('写交接'+'x'.repeat(MAX_PROMPT)),null);
+  assert.equal(f.calls.length,0);
+});
+
+test('a skill that is not the installed author version is never judged or started; its fallback hints as before',async t=>{
+  const f=invoking(t,{installed:['handoff'],answer:{handoff:0.1,none:0.9}});
+  const out=await f.run('这个活要分好几个会话做');
+  assert.deepEqual(Object.keys(out),['systemMessage']);
+  assert.match(out.systemMessage,/可以试 \/cm-prd——拆规格/);
+  assert.deepEqual(Object.keys(f.calls[0].questions.skill.criteria),['handoff','none']);
+  const none=invoking(t,{installed:[],answer:{handoff:1}});
+  assert.equal(await none.run('今天先到这'),null);
+  assert.equal(none.calls.length,0);
+});
+
+test('judge:false, no key or a missing judge module all fall back to keywords without a call',async t=>{
+  for(const options of [{local:{judge:false}},{key:''}]){
+    const f=invoking(t,{...options,answer:{handoff:1}});
+    assert.equal(await f.run('今天先到这'),null);
+    assert.match((await f.run('会话太长了',{session:'s2'})).systemMessage,/已让模型用 \/handoff/);
+    assert.equal(f.calls.length,0);
+    assert.deepEqual(f.log().map(entry=>entry.event),['invoke']);
+  }
+  const f=invoking(t,{answer:{handoff:1}});
+  assert.match((await f.run('会话太长了',{loadJudgeModule:async()=>null})).systemMessage,/已让模型用 \/handoff/);
+  assert.equal(f.calls.length,0);
+});
+
+test('a user rule cannot start a skill, even naming an author skill with invoke',async t=>{
+  const f=invoking(t,{installed:['handoff'],local:{rules:[{id:'long-session',skill:'handoff',author:true,keywords:['收工'],
+    reason:'mine',invoke:{mode:'direct',when:'x'}}]},answer:{handoff:1}});
+  const out=await f.run('收工');
+  assert.deepEqual(Object.keys(out),['systemMessage']);
+  assert.match(out.systemMessage,/可以试 \/handoff——mine/);
+  assert.equal(f.calls.length,0);
+});
+
+test('a later request in the same session starts the skill again',async t=>{
+  const f=invoking(t,{answer:{handoff:0.95,none:0.05}});
+  assert.ok((await f.run('先到这，交接一下')).hookSpecificOutput);
+  assert.ok((await f.run('再交接一次，刚才漏了')).hookSpecificOutput);
+});
+
+test('the shipped table marks only handoff direct and the two heavy skills ask',()=>{
+  const {rules}=loadRules({env:{HOME:'/nonexistent',CM_WORKFLOW_HOME:'/nonexistent/.cm'}});
+  assert.deepEqual(Object.fromEntries(rules.filter(rule=>rule.invoke).map(rule=>[rule.skill,rule.invoke.mode])),
+    {handoff:'direct',wayfinder:'ask','improve-codebase-architecture':'ask'});
 });

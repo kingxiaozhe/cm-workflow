@@ -12,7 +12,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 const source = fileURLToPath(new URL('..', import.meta.url));
-const COPIED = ['cm-skill-hints.mjs', 'cm-skill-hints.json', 'cm-matt-skills.mjs', 'cm-config-lock.mjs'];
+const COPIED = ['cm-skill-hints.mjs', 'cm-skill-hints.json', 'cm-matt-skills.mjs', 'cm-config-lock.mjs', 'cm-skill-judge.mjs'];
 const STUB_CREATOR = `import json, pathlib, sys
 args = sys.argv[1:]
 path = pathlib.Path(args[args.index('--marketplace-path') + 1])

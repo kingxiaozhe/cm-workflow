@@ -378,12 +378,54 @@ installed skills.
 A `UserPromptSubmit` hook that reads each message you type, matches it against a
 keyword table and, when a skill fits, shows you a one-line hint such as
 `💡 技能提醒：可以试 /grill-me——…`. The hint is shown to you directly
-(`systemMessage`) and is not added to the model's context. It only hints; it
-never runs a skill. Matching is local
-keyword and optional regex matching: nothing is sent anywhere and no tokens are
-spent on it. Messages over 2000 characters and text inside ``` fences are
+(`systemMessage`) and is not added to the model's context. For these hints,
+matching is local keyword and optional regex matching: nothing is sent anywhere
+and no tokens are spent on it. The three auto-started skills below are the
+exception: when a TypeSafe key is available, the first 500 characters of each
+message are sent to TypeSafe's Jev to judge them. Messages over 2000 characters and text inside ``` fences are
 skipped, at most two skills are hinted per message, and each skill at most once
 per session. Sessions that CM itself launches set `CM_SKILL_HINTS=off`.
+
+Three author skills that the model cannot start on its own (they are marked
+`disable-model-invocation`) are started instead of hinted, when their pinned author
+version is installed for that host:
+
+- `handoff`: the hook adds one sentence to the model's context telling it to read
+  that skill's `SKILL.md` and follow it, and shows you
+  `🤖 技能自动调用：已让模型用 /handoff`.
+- `wayfinder` and `improve-codebase-architecture`: the model is told to ask you
+  first and to read the skill only after you agree
+  (`🤖 技能自动调用：已让模型先问你要不要用 /wayfinder`).
+
+Whether one of them fits is judged by TypeSafe's Jev when a TypeSafe key is
+available (`TYPESAFE_API_KEY`, or on macOS a keychain item named
+`TYPESAFE_API_KEY` for your user). Only the first 500 characters of the message
+are sent. A message is kept local, and the keyword table decides for it, when:
+
+- after folding it contains one of a fixed
+  list of credential words: password, passwd, pwd, passcode, token, secret, API key,
+  access key, private key, credential, `密码`, `密钥`, `口令`, `令牌`, `凭证`, `凭据`
+  and their traditional Chinese forms. Folding works character by character: a letter
+  or digit becomes its plain form (full-width and other compatibility forms made plain,
+  accents split off), a symbol stays only when it stands for exactly one letter or digit
+  (a circled letter), and everything else is dropped (spaces, punctuation, zero-width
+  and control characters, modifier letters, Hangul fillers, symbols such as `№`); then
+  lower case. So `API  key`, `api_key`, `ＡＰＩ ｋｅｙ` and a zero-width space inside the
+  word all count;
+- or it holds a known key shape (API keys, tokens, private keys), a long mixed-case run,
+  or the TypeSafe key itself.
+
+This is pattern matching, not a guarantee. It does not catch: a credential pasted with
+no recognisable shape and no credential word; look-alike letters from other scripts
+(a Cyrillic `а` in `pаssword`); letters with no decomposition (`tøken`); extra, missing,
+swapped or digit-for-letter characters (`passXword`, `t0ken`); escapes and encodings
+(`pass%77ord`); text reordered with bidirectional controls; other wording or languages. Jev gets at most 3
+seconds, with a second request when the first fails or has not answered within 1
+second. Without a key, on a credential-looking message, or when Jev fails, the
+same keyword table decides. A message that opens with a command (`/handoff …`) is
+left to the host. `"judge": false` in your local file keeps it to keywords even
+with a key. The log records which skill was started and whether Jev or keywords
+decided, never the message or the key.
 
 The installer does not enable it yet. To try it:
 
@@ -391,8 +433,9 @@ The installer does not enable it yet. To try it:
 node ~/.claude/scripts/cm-skill-hints.mjs enable
 ```
 
-This copies the script, CM's table and the author-skill checker
-(`cm-matt-skills.mjs`) to `~/.cm-workflow/skill-hints/` and adds
+This copies the script, CM's table, the author-skill checker
+(`cm-matt-skills.mjs`) and the Jev judge (`cm-skill-judge.mjs`) to
+`~/.cm-workflow/skill-hints/` and adds
 one `UserPromptSubmit` hook to `~/.claude/settings.json` and `~/.codex/hooks.json`
 (`--claude` or `--codex` for one side), keeping every other setting and hook. A
 file it cannot parse is left untouched. Codex asks you to trust the new hook the
@@ -402,7 +445,7 @@ first time it runs; CM does not trust it for you. If the file changes while
 Once hints are on (the hook is wired, or `~/.cm-workflow/skill-hints/` exists),
 every run of `install.sh`, `install-codex.sh` or `install.ps1` refreshes that copy
 (`node ~/.claude/scripts/cm-skill-hints.mjs refresh` does the same by hand). It
-replaces only the script, the table and the two helper scripts; host configs, Codex
+replaces only the script, the table and the three helper scripts; host configs, Codex
 trust, session state and logs are left alone, and nothing is created for users who
 never enabled hints. A failed refresh is a warning, not an install failure.
 
@@ -420,7 +463,8 @@ overwrites. They take precedence over CM's table:
 ```
 
 `"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
-user rule with the same `id` as a CM rule replaces it. `patterns` (regular
+user rule with the same `id` as a CM rule replaces it, and a user rule only ever
+hints (it never starts a skill). `patterns` (regular
 expressions) share a 200 ms budget per message; past it they count as no match. An
 author skill (`grill-me`, `grill-with-docs`, `handoff`, `wayfinder`,
 `improve-codebase-architecture`, `prototype`) is only hinted when its pinned

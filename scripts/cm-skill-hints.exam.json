@@ -1,0 +1,706 @@
+{
+  "version": 1,
+  "about": "技能自动调用考题（方案-技能自动调用-2026-10-25 第 8 条）：30 句该用、20 句不该用，含 10-24 实测 17 句（source 为 2026-10-24）。expect 是钩子该让模型用的技能，null 表示不该触发。用户自己敲了 /技能名 的句子由宿主直接调起，钩子不重复注入也算命中。",
+  "cases": [
+    {
+      "id": "10-24-manual-handoff",
+      "source": "2026-10-24",
+      "expect": "handoff",
+      "prompt": "/handoff 下个会话负责实现导出 CSV"
+    },
+    {
+      "id": "10-24-manual-wayfinder",
+      "source": "2026-10-24",
+      "expect": "wayfinder",
+      "prompt": "/wayfinder 把这个记账工具改造成支持多人协作、云端同步的版本"
+    },
+    {
+      "id": "10-24-manual-improve-arch",
+      "source": "2026-10-24",
+      "expect": "improve-codebase-architecture",
+      "prompt": "/improve-codebase-architecture"
+    },
+    {
+      "id": "handoff-1",
+      "expect": "handoff",
+      "prompt": "今天先到这，帮我交接一下，明天换个新会话接着做",
+      "jev": {
+        "request": "24be52ebf4fd37e8",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "handoff-2",
+      "expect": "handoff",
+      "prompt": "这个会话太长了，整理一份交接文档给下一个会话用",
+      "jev": {
+        "request": "cce0cd7a41a67db1",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "handoff-3",
+      "expect": "handoff",
+      "prompt": "我要开新窗口继续，把现在的进度和上下文压缩成一份文档",
+      "jev": {
+        "request": "e05c1f4d5557656f",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "handoff-4",
+      "expect": "handoff",
+      "prompt": "上下文快满了，写个 handoff 吧，下个会话要接着修登录 bug",
+      "jev": {
+        "request": "afa9b250eac9272f",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "handoff-5",
+      "expect": "handoff",
+      "prompt": "帮我把目前的情况总结一下，方便另一个 agent 接手",
+      "jev": {
+        "request": "760ef45ac000c47b",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "handoff-6",
+      "expect": "handoff",
+      "prompt": "先写个交接摘要，我切到新会话去实现导出功能",
+      "jev": {
+        "request": "64ad605a756a7de7",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "handoff-7",
+      "expect": "handoff",
+      "prompt": "我准备把这活交给 Codex 继续做，帮它写一份接手说明",
+      "jev": {
+        "request": "27ef7cef81421de6",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "handoff-8",
+      "expect": "handoff",
+      "prompt": "context window is almost full, write a handoff doc so a fresh session can pick this up",
+      "jev": {
+        "request": "6e0806ddd640e45d",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "handoff-9",
+      "expect": "handoff",
+      "prompt": "窗口卡得不行了，重开之前把要点留一份给下个会话",
+      "jev": {
+        "request": "21d8f1116ca22b23",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "handoff-10",
+      "expect": "handoff",
+      "prompt": "明天换台电脑继续，把这次讨论的结论和待办整理成交接文档",
+      "jev": {
+        "request": "4031252b5c2aa470",
+        "probabilities": {
+          "handoff": 1,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "wayfinder-1",
+      "expect": "wayfinder",
+      "prompt": "这个改造一个会话肯定做不完，帮我拆成几张决策票一张张推进",
+      "jev": {
+        "request": "6dc46abf87aac74c",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 1,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "wayfinder-2",
+      "expect": "wayfinder",
+      "prompt": "要把单机版改成多人协作加云同步，得跨好几个会话做，帮我规划一下怎么推进",
+      "jev": {
+        "request": "e859611b924b5161",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 1,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "wayfinder-3",
+      "expect": "wayfinder",
+      "prompt": "这是个好几天才能做完的大活，先帮我把要拍板的事情拆出来",
+      "jev": {
+        "request": "a1e63e58c7ee8d92",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0.99,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0.01
+        }
+      }
+    },
+    {
+      "id": "wayfinder-4",
+      "expect": "wayfinder",
+      "prompt": "我想把整个后端从 Express 迁到 Fastify，分阶段推进，帮我理一个路线",
+      "jev": {
+        "request": "86216145e9859447",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 1,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "wayfinder-5",
+      "expect": "wayfinder",
+      "prompt": "this migration is too big for one session, break it into decision tickets we can work through",
+      "jev": {
+        "request": "fbaea0f1160d5847",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 1,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "wayfinder-6",
+      "expect": "wayfinder",
+      "prompt": "重写支付模块牵扯太多，我想分几个会话慢慢做，先把路线图和待决问题列出来",
+      "jev": {
+        "request": "c823a4fb347cb53e",
+        "probabilities": {
+          "handoff": 0.01,
+          "wayfinder": 0.98,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.01,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "wayfinder-7",
+      "expect": "wayfinder",
+      "prompt": "这个项目要从 JS 全面迁移到 TS，工作量大，帮我拆成能分多次完成的决策和任务",
+      "jev": {
+        "request": "33db3feef15c4f9e",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 1,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "wayfinder-8",
+      "expect": "wayfinder",
+      "prompt": "我们要加一整套权限系统，估计要好几轮会话，先帮我把问题拆成一张张票",
+      "jev": {
+        "request": "700603a8c035993a",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 1,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "wayfinder-9",
+      "expect": "wayfinder",
+      "prompt": "大改造：把记账工具做成 SaaS，帮我规划跨多个会话的推进方式",
+      "jev": {
+        "request": "1d35c88282309eea",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 1,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "improve-arch-1",
+      "expect": "improve-codebase-architecture",
+      "prompt": "这个仓库越写越乱了，帮我看看架构哪里值得改",
+      "jev": {
+        "request": "2045ebf85c4b061f",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0.99,
+          "improve-codebase-architecture~near": 0.01,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "improve-arch-2",
+      "expect": "improve-codebase-architecture",
+      "prompt": "模块边界不清、耦合太重，不知道从哪里下手重构，帮我找找机会",
+      "jev": {
+        "request": "8b22251f03d40f3f",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0.04,
+          "improve-codebase-architecture": 0.9,
+          "improve-codebase-architecture~near": 0.05,
+          "none": 0.01
+        }
+      }
+    },
+    {
+      "id": "improve-arch-3",
+      "expect": "improve-codebase-architecture",
+      "prompt": "代码结构很乱，想改善一下架构，先帮我出一份报告看看有哪些可以优化的点",
+      "jev": {
+        "request": "1011decf38d446fe",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 1,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "improve-arch-4",
+      "expect": "improve-codebase-architecture",
+      "prompt": "帮我审视一下整个代码库的架构，找出值得加深的浅模块",
+      "jev": {
+        "request": "9ce03db20fa5effc",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 1,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "improve-arch-5",
+      "expect": "improve-codebase-architecture",
+      "prompt": "the codebase is a mess, find the best refactoring opportunities and write up a report",
+      "jev": {
+        "request": "d6f56a4faace3309",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 1,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "improve-arch-6",
+      "expect": "improve-codebase-architecture",
+      "prompt": "这项目接口拆得太碎了，整体架构该怎么改？先别动代码，给我列出候选方案",
+      "jev": {
+        "request": "693490dd0de1688a",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0.07,
+          "improve-codebase-architecture": 0.62,
+          "improve-codebase-architecture~near": 0.29,
+          "none": 0.02
+        }
+      }
+    },
+    {
+      "id": "improve-arch-7",
+      "expect": "improve-codebase-architecture",
+      "prompt": "想系统地梳理一下项目里哪些模块设计得不好，值得重构",
+      "jev": {
+        "request": "7fabec1011dc8a49",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0.98,
+          "improve-codebase-architecture~near": 0.01,
+          "none": 0.01
+        }
+      }
+    },
+    {
+      "id": "improve-arch-8",
+      "expect": "improve-codebase-architecture",
+      "prompt": "架构腐化得厉害，帮我诊断一下哪些地方最值得整理",
+      "jev": {
+        "request": "89536db4bcbb3750",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 1,
+          "improve-codebase-architecture~near": 0,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-grilling-1",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "我想给这个记账工具加一个预算提醒功能，但还没想清楚，你逼问我几轮把方案理清。",
+      "jev": {
+        "request": "9d2ec285c0249814",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0.03,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.07,
+          "none": 0.9
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-grilling-2",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "帮我压力测试一下这个方案：每天凌晨跑定时任务汇总消费，超预算就推送手机通知。",
+      "jev": {
+        "request": "8f110de0c82f41d9",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0.01,
+          "improve-codebase-architecture~near": 0.27,
+          "none": 0.72
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-codebase-design-1",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "src/storage 下面拆了五个小文件，接口太碎了。帮我想想怎么设计一个更深的模块接口。",
+      "jev": {
+        "request": "7165f2cd5a6ab763",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 1,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-codebase-design-2",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "我想让 budget.js 更好测试，测试的接缝应该放在哪里？",
+      "jev": {
+        "request": "fa65e45ad7631815",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 1,
+          "none": 0
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-domain-modeling-1",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "帮我把这个项目里的业务术语整理一下，写一份 GLOSSARY.md。",
+      "jev": {
+        "request": "d6c9f688d4fafab7",
+        "probabilities": {
+          "handoff": 0.02,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 0.98
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-domain-modeling-2",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "我们决定把存储从 JSON 文件换成 SQLite，帮我把这个决定记成一条 ADR。",
+      "jev": {
+        "request": "9ecfb7eb5a781cdc",
+        "probabilities": {
+          "handoff": 0.02,
+          "wayfinder": 0.01,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.02,
+          "none": 0.95
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-prototype-1",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "我拿不准预算状态机（正常、接近超支、已超支、月初重置）对不对，做个能点着玩的原型让我看看。",
+      "jev": {
+        "request": "d2610654d0b053d4",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.18,
+          "none": 0.8200000000000001
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-prototype-2",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "预算页面该长什么样我没想法，给我做几版差别很大的界面对比看看。",
+      "jev": {
+        "request": "b67005b027708443",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.01,
+          "none": 0.99
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-writing-for-agents-1",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "帮我给这个项目写一个 CLAUDE.md。",
+      "jev": {
+        "request": "86d544a0d1ad5a7a",
+        "probabilities": {
+          "handoff": 0.18,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.01,
+          "none": 0.81
+        }
+      }
+    },
+    {
+      "id": "10-24-auto-writing-for-agents-2",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "我想写一个新技能，每周自动汇总消费并给出建议，帮我起草它的 SKILL.md。",
+      "jev": {
+        "request": "d5092a8d07c6ad9d",
+        "probabilities": {
+          "handoff": 0.01,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.06,
+          "none": 0.93
+        }
+      }
+    },
+    {
+      "id": "10-24-manual-grill-me",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "/grill-me 我想做一个家庭成员共享记账的功能"
+    },
+    {
+      "id": "10-24-manual-grill-with-docs",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "/grill-with-docs 给这个记账工具加多币种支持"
+    },
+    {
+      "id": "10-24-manual-setup",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "/setup-matt-pocock-skills"
+    },
+    {
+      "id": "10-24-manual-wait-what",
+      "source": "2026-10-24",
+      "expect": null,
+      "prompt": "/wait-what"
+    },
+    {
+      "id": "none-discuss-feature",
+      "expect": null,
+      "prompt": "我们来讨论给这个记账工具加导出 CSV 的功能，先列个实现思路，不用写代码。",
+      "jev": {
+        "request": "cf6d78a034156d4b",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0.04,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.21,
+          "none": 0.75
+        }
+      }
+    },
+    {
+      "id": "none-refactor-only",
+      "expect": null,
+      "prompt": "把 src/login.js 重构一下，只整理结构，不改变行为",
+      "jev": {
+        "request": "4203a7ec234d4aa3",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.78,
+          "none": 0.22
+        }
+      }
+    },
+    {
+      "id": "none-shift-handover",
+      "expect": null,
+      "prompt": "交接班的排班表功能怎么做？员工换班时要自动生成交接记录",
+      "jev": {
+        "request": "1ccb4676db633658",
+        "probabilities": {
+          "handoff": 0.01,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.44,
+          "none": 0.55
+        }
+      }
+    },
+    {
+      "id": "none-session-timeout",
+      "expect": null,
+      "prompt": "帮我写个函数，把会话（session）过期时间从 30 分钟改成 2 小时",
+      "jev": {
+        "request": "64571809c05289db",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 1
+        }
+      }
+    },
+    {
+      "id": "none-explain-architecture",
+      "expect": null,
+      "prompt": "解释一下这个项目的整体架构，各模块是怎么配合的",
+      "jev": {
+        "request": "96f62768bc8a86b4",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0.99,
+          "none": 0.01
+        }
+      }
+    },
+    {
+      "id": "none-fix-bug",
+      "expect": null,
+      "prompt": "修复一下登录接口返回 500 的 bug",
+      "jev": {
+        "request": "e4b9d9011476592d",
+        "probabilities": {
+          "handoff": 0,
+          "wayfinder": 0,
+          "improve-codebase-architecture": 0,
+          "improve-codebase-architecture~near": 0,
+          "none": 1
+        }
+      }
+    }
+  ],
+  "recorded": {
+    "date": "2026-10-25"
+  }
+}

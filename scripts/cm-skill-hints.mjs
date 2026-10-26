@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Skill hints: a UserPromptSubmit hook for Claude Code and Codex that matches the
 // user's message against a keyword table and shows the user at most two fitting
-// skills. It only hints; it never runs a skill.
+// skills. Most rules only hint; the few marked `invoke` start an author skill instead
+// (see "Auto-invoke" below).
 //
 // The hint goes to the user directly (`systemMessage`), not to the model: real
 // sessions showed a model told "mention it only if it fits" left even clear cases
@@ -13,6 +14,14 @@
 // never message text. Any error exits quietly so a message is never held up.
 // Wiring is opt-in: `enable` adds the hook, the installer does not (yet); for users who
 // turned it on, the installer runs `refresh` so an upgrade reaches the copy the hook runs.
+//
+// Auto-invoke, decided 2026-10-25 (方案-技能自动调用): author skills the model cannot
+// start itself (`disable-model-invocation`) get a rule with `invoke`. When one fits, the
+// hook tells the model to read that skill's SKILL.md and follow it (mode "direct"), or to
+// ask the user first (mode "ask"), and shows the user one line saying so. Whether it fits
+// is judged by Jev when a TypeSafe key exists (cm-skill-judge.mjs: first 500 characters
+// only, never a message that looks like it holds a secret, 3 seconds at most), else and
+// on any Jev failure by the rule's keywords. Only the pinned author version is started.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,7 +34,7 @@ export const RULES_NAME='cm-skill-hints.json';
 export const LOCAL_NAME='skill-hints.local.json';
 // Copied together into ~/.cm-workflow/skill-hints so the hook runs without the CM tree.
 // They are written before the script itself, so a failed copy leaves the old script.
-const COMPANIONS=['cm-matt-skills.mjs','cm-config-lock.mjs',RULES_NAME];
+const COMPANIONS=['cm-matt-skills.mjs','cm-config-lock.mjs','cm-skill-judge.mjs',RULES_NAME];
 export const MAX_PROMPT=2000;
 export const MAX_HINTS=2;
 export const ADOPT_WINDOW=5;
@@ -34,6 +43,7 @@ export const PATTERN_BUDGET_MS=200;
 const MAX_READ=1024*1024;
 const HOSTS=['claude','codex'];
 const SKILL_NAME=/^[\w.:-]+$/;
+const INVOKE_MODES=['direct','ask'];
 
 const homeOf=env=>env.HOME||os.homedir();
 export const cmHome=env=>path.resolve(env.CM_WORKFLOW_HOME||path.join(homeOf(env),'.cm-workflow'));
@@ -62,6 +72,10 @@ export function isAuthorInstalled(name,host,env,check){
   return Boolean(skill&&root)&&check.skillState(root,skill,check.license)==='author';
 }
 export const mention=(skill,host)=>`${host==='codex'?'$':'/'}${skill}`;
+// Loaded like the author checker: if it cannot be loaded, every invoke rule uses keywords.
+export async function loadJudge(specifier='./cm-skill-judge.mjs'){
+  try{return await import(new URL(specifier,import.meta.url).href);}catch{return null;}
+}
 
 // Only a regular file of bounded size is read: a FIFO or device at one of these
 // paths would otherwise block the hook. `allowEmpty` is for CM's own files; a host
@@ -86,8 +100,11 @@ export function normalizeRule(rule,user){
   if(!keywords.length&&!patterns.length)return null;
   const fallback=rule.fallback&&typeof rule.fallback.skill==='string'&&SKILL_NAME.test(rule.fallback.skill)
     ?{skill:rule.fallback.skill,reason:String(rule.fallback.reason??'')}:null;
+  // Starting a skill is for CM's own author rules only; a user rule never gets it.
+  const invoke=!user&&rule.author===true&&INVOKE_MODES.includes(rule.invoke?.mode)&&typeof rule.invoke.when==='string'&&rule.invoke.when.trim()
+    ?{mode:rule.invoke.mode,when:rule.invoke.when,...(typeof rule.invoke.near==='string'&&rule.invoke.near.trim()?{near:rule.invoke.near}:{})}:null;
   return {id:typeof rule.id==='string'&&rule.id?rule.id:`${user?'user':'cm'}:${rule.skill}`,skill:rule.skill,
-    reason:String(rule.reason??''),author:rule.author===true,fallback,keywords,patterns,user};
+    reason:String(rule.reason??''),author:rule.author===true,fallback,keywords,patterns,user,invoke};
 }
 
 // User rules come first so they win a tie. A user rule with a CM rule's id replaces
@@ -103,7 +120,7 @@ export function loadRules({env=process.env,rulesFile=defaultRulesPath()}={}){
   const replaced=new Set(user.map(rule=>rule.id));
   const cm=(Array.isArray(defaults.value?.rules)?defaults.value.rules:[])
     .map(rule=>normalizeRule(rule,false)).filter(rule=>rule&&!disabled.has(rule.id)&&!replaced.has(rule.id));
-  return {enabled:true,rules:[...user,...cm],localError:local.error??null,defaultsError:defaults.error??(defaults.missing?'missing':null),
+  return {enabled:true,rules:[...user,...cm],judge:settings.judge!==false,localError:local.error??null,defaultsError:defaults.error??(defaults.missing?'missing':null),
     userCount:user.length,disabledCount:disabled.size,cmCount:cm.length};
 }
 
@@ -135,14 +152,20 @@ const BEFORE='(?<=^|[\\s`(\\[{<"\'“‘（【「『《，。、；：！？,;!?
 export const typed=(prompt,skill,host)=>
   new RegExp(`${BEFORE}${escape(mention(skill,host))}(?![\\w.:/-])`,'i').test(prompt);
 
+// Which rules' keywords or patterns occur in the message (fenced code left out).
+export function keywordHits(rules,prompt){
+  const text=stripCode(prompt.toLowerCase());
+  const byPattern=patternMatches(rules,text);
+  return rules.map((rule,index)=>rule.keywords.some(word=>text.includes(word))||byPattern[index]);
+}
+
 export function pickHints({prompt,rules,host,env,hinted=[],authorCheck=null}){
   const lower=prompt.toLowerCase();
-  const text=stripCode(lower);
-  const byPattern=patternMatches(rules,text);
+  const hits=keywordHits(rules,prompt);
   const picked=[];
   for(const [index,rule] of rules.entries()){
     if(picked.length>=MAX_HINTS)break;
-    if(!rule.keywords.some(word=>text.includes(word))&&!byPattern[index])continue;
+    if(!hits[index])continue;
     const hint=resolve(rule,host,env,authorCheck);
     if(!hint||hinted.includes(hint.skill)||picked.some(item=>item.skill===hint.skill))continue;
     // The user already typed or named it: nothing to remind.
@@ -187,10 +210,45 @@ export function appendLog(env,record){
   fs.appendFileSync(file,JSON.stringify(record)+'\n',{mode:0o600});
 }
 
+// ---- auto-invoke ----
+
+// A message that opens with a command (`/grill-me …`, `$handoff`) already names its
+// skill: the host runs it, so nothing is judged or added.
+export const opensWithCommand=prompt=>/^\s*[/$][\w.:-]+(?:\s|$)/.test(prompt);
+export const skillFile=(skill,host,env,check)=>
+  path.join(check.skillRoots(env).find(item=>item.runtime===host).root,skill,'SKILL.md');
+
+// What the model is told. The "direct" wording is the one the 2026-10-25 gate test
+// measured (5 of 5 sessions read the file first and followed it).
+export function invokeContext({skill,mode,reason},file,host){
+  const read=host==='claude'?`先用 Read 工具读取 ${file}`:`先读取文件 ${file}`;
+  if(mode==='direct')return `[CM 技能提醒] 这条消息属于作者技能 ${skill} 的场景。请${read}，再严格按其中的步骤执行（该技能不能用 Skill 工具调起，必须读文件照做）。`;
+  return `[CM 技能提醒] 这条消息可能适合用作者技能 ${skill}（${reason}）。作者把它设为手动调用，因为它动静较大，所以请先用一句话问用户要不要用它，别的什么都先不做。用户同意后，${read.slice(1)}，再严格按其中的步骤执行；用户不同意就照常回答。`;
+}
+export const invokeLine=({skill,mode},host)=>mode==='direct'
+  ?`🤖 技能自动调用：已让模型用 ${mention(skill,host)}`
+  :`🤖 技能自动调用：已让模型先问你要不要用 ${mention(skill,host)}`;
+
+// The invoke rule to start for this message, or null. Jev decides when it answered;
+// keywords decide when it could not (no key, secret, timeout, error, switched off).
+export async function pickInvoke({prompt,rules,host,env,authorCheck,judgeModule,useJudge=true,judgeOptions={}}){
+  const candidates=rules.filter(rule=>rule.invoke&&isAuthorInstalled(rule.skill,host,env,authorCheck));
+  if(!candidates.length||opensWithCommand(prompt))return {rule:null,candidates};
+  let verdict={error:useJudge?'no-judge':'off'};
+  if(useJudge&&judgeModule){
+    verdict=await judgeModule.judge({prompt,env,...judgeOptions,
+      choices:candidates.map(rule=>({skill:rule.skill,when:rule.invoke.when,near:rule.invoke.near}))});
+  }
+  if(!verdict.error)return {rule:candidates.find(rule=>rule.skill===verdict.skill)??null,via:'jev',candidates};
+  const hits=keywordHits(candidates,prompt);
+  return {rule:candidates.find((rule,index)=>hits[index])??null,via:'keyword',error:verdict.error,candidates};
+}
+
 export const messageText=(hints,host)=>
   hints.map(hint=>`💡 技能提醒：可以试 ${mention(hint.skill,host)}——${hint.reason}`).join('\n');
 
-export async function hook(input,{env=process.env,host='claude',rulesFile=defaultRulesPath(),now=Date.now(),loadAuthor=loadAuthorCheck}={}){
+export async function hook(input,{env=process.env,host='claude',rulesFile=defaultRulesPath(),now=Date.now(),loadAuthor=loadAuthorCheck,
+  loadJudgeModule=loadJudge,judgeOptions={}}={}){
   if(env.CM_SKILL_HINTS==='off'||!HOSTS.includes(host))return '';
   const prompt=typeof input?.prompt==='string'?input.prompt:'';
   if(!prompt)return '';
@@ -209,10 +267,21 @@ export async function hook(input,{env=process.env,host='claude',rulesFile=defaul
     else if(item.left>1)pending.push({...item,left:item.left-1});
   }
   const authorCheck=loaded.rules.some(rule=>rule.author)?await loadAuthor():null;
-  const hints=prompt.length>MAX_PROMPT?[]:pickHints({prompt,rules:loaded.rules,host,env,hinted:state.hinted,authorCheck});
+  const short=prompt.length<=MAX_PROMPT;
+  const invoked=short&&loaded.rules.some(rule=>rule.invoke)
+    ?await pickInvoke({prompt,rules:loaded.rules,host,env,authorCheck,useJudge:loaded.judge,judgeOptions,
+      judgeModule:loaded.judge?await loadJudgeModule():null})
+    :{rule:null,candidates:[]};
+  // An installed invoke rule is handled above only; the rest hint as before.
+  const handled=new Set(invoked.candidates.map(rule=>rule.id));
+  const hints=short?pickHints({prompt,rules:loaded.rules.filter(rule=>!handled.has(rule.id)),host,env,hinted:state.hinted,authorCheck}):[];
+  const start=invoked.rule?{skill:invoked.rule.skill,mode:invoked.rule.invoke.mode,reason:invoked.rule.reason}:null;
   // Bookkeeping failures cost the statistics, never the hint itself.
   try{
     for(const item of adopted)appendLog(env,{t:time,event:'adopted',host,rule:item.rule,skill:item.skill});
+    // A missing key is the normal state for most users, not worth a line per message.
+    if(invoked.error&&!['no-key','off'].includes(invoked.error))appendLog(env,{t:time,event:'judge-error',host,error:invoked.error});
+    if(start)appendLog(env,{t:time,event:'invoke',host,rule:invoked.rule.id,skill:start.skill,mode:start.mode,via:invoked.via});
     for(const hint of hints)appendLog(env,{t:time,event:'hint',host,rule:hint.rule,skill:hint.skill});
   }catch{/* 统计丢一条 */}
   // Session state is never removed (decided 2026-10-24): a session resumed months
@@ -223,8 +292,12 @@ export async function hook(input,{env=process.env,host='claude',rulesFile=defaul
         pending:[...pending,...hints.map(hint=>({rule:hint.rule,skill:hint.skill,left:ADOPT_WINDOW}))]}));
     }catch{/* 下条消息可能重复提醒一次 */}
   }
-  if(!hints.length)return '';
-  return JSON.stringify({systemMessage:messageText(hints,host)});
+  if(!start&&!hints.length)return '';
+  const lines=[...(start?[invokeLine(start,host)]:[]),...(hints.length?[messageText(hints,host)]:[])];
+  const output={systemMessage:lines.join('\n')};
+  if(start)output.hookSpecificOutput={hookEventName:'UserPromptSubmit',
+    additionalContext:invokeContext(start,skillFile(start.skill,host,env,authorCheck),host)};
+  return JSON.stringify(output);
 }
 
 // ---- wiring: copy a stable script + table into ~/.cm-workflow/skill-hints and add the hook ----
@@ -380,6 +453,8 @@ export function statusText({env=process.env,rulesFile=defaultRulesPath()}={}){
   if(loaded.enabled){
     lines.push(`  对照表：CM 自带 ${loaded.defaultsError?`读取失败（${loaded.defaultsError}）`:`${loaded.cmCount} 条`}；用户自加 ${loaded.userCount} 条；关掉自带 ${loaded.disabledCount} 条`);
     if(loaded.localError)lines.push(`  ⚠ ${localPath(env)} 读取失败（${loaded.localError}），用户规则未生效`);
+    lines.push(loaded.judge?'  自动调用：有 TypeSafe 密钥（TYPESAFE_API_KEY 或钥匙串）时由 Jev 判断，否则用关键词'
+      :`  自动调用：已关 Jev（${localPath(env)} 里 judge 为 false），只用关键词`);
   }
   return lines.join('\n')+'\n';
 }
