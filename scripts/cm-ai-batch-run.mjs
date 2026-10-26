@@ -762,14 +762,37 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       return stale(`${taskKey} 没有运行存档`);
     const run=await open(taskKey);
     if(run.blocked)return {outcome:'blocked',code:run.blocked.reason,batchId:config.batchId};
+    // Registered like a driven member, so a cancel on this host reaches it (it is
+    // forwarded to the member run and logged as batch_cancel while the review runs).
+    members.set(taskKey,run);
     try{
+      // A cancel that arrived while the run was opening: dispatch nothing, record the
+      // cancel exactly as the serial path does after its open.
+      if(cancelled){
+        record('batch_cancel',{from_key:taskKey});
+        await run.host.handle({version:1,operation:'cancel',requestId:request.requestId,identity:plans.get(taskKey).identity});
+        return Object.freeze({outcome:'cancelled',code:'cancelled',batchId:config.batchId,taskKey});
+      }
       const wire={operation:'decision',requestId:request.requestId,identity:request.identity,packageDigest:request.packageDigest,
         expectedReviewStop:{invocationId:request.expectedReviewStop.invocationId}};
       const result=controlPolicy?await run.controlHost.handle({version:2,...wire}):await run.host.handle({version:1,...wire});
-      // Only this review: the member stays where its decision leaves it (approved,
-      // changes_requested, a second failure); the next advance continues the batch.
-      return Object.freeze({...result,batchId:config.batchId,taskKey});
-    }finally{run.close();}
+      if(cancelled)return Object.freeze({outcome:'cancelled',code:'cancelled',batchId:config.batchId,taskKey});
+      return retriedMemberResult(result,taskKey);
+    }finally{members.delete(taskKey);run.close();}
+  }
+  // Only this review: the member keeps its own state, code and identity (approved,
+  // changes_requested, a second failure). A next step the batch entry does not take
+  // (complete, resume, decision) becomes the batch's advance, with guidance saying so.
+  const BATCH_NEXT=new Set(['none','advance',...IN_RUN_ACTIONS]);
+  function retriedMemberResult(result,taskKey){
+    const base={...result,batchId:config.batchId,taskKey};
+    if(result.outcome==='rejected'||result.staleRetry===true||BATCH_NEXT.has(result.pendingAction))return Object.freeze(base);
+    const approved=result.state==='approved'&&result.code===null;
+    return Object.freeze({...base,pendingAction:'advance',guidance:stopGuidance(
+      approved?`审查限流已自动重试，${taskKey} 的审查已通过；批次停在这一步，没有顺带完成、合并或推进其他任务。`
+        :`审查限流已自动重试，${taskKey} 的这次审查已有结果（${result.state}${result.code?`/${result.code}`:''}）；批次没有顺带推进。`,
+      '从批次入口发送 advance 继续本批次（成员不能单独发 complete 或 decision）。',
+      ['自动重试只重派了这一次审查','完成、QA、合并和后续任务由下一次批次 advance 照原流程进行'])});
   }
   async function memberAction(request,state){
     const {option,flag}=BATCH_MEMBER_ACTIONS[request.operation],taskKey=request.taskKey;

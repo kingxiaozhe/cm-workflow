@@ -534,6 +534,8 @@ test('batch driver waits out a member review rate limit and redispatches only th
   const result=JSON.parse(run.stdout).result;
   // Only that review: the member is approved, nothing completed, merged or handed off.
   assert.equal(result.state,'approved',run.stdout);assert.equal(result.taskKey,key);assert.equal(result.operation,'decision');
+  // The batch's next step, not the member's complete: send advance from the batch entry.
+  assert.equal(result.pendingAction,'advance');assert.match(result.guidance.nextStep,/从批次入口发送 advance/);
   assert.equal(reviews(),2);assert.equal(fs.readFileSync(tasks,'utf8'),before);
   assert.deepEqual(batchLog(f).map(row=>row.phase),['batch_start']);
   // The next advance continues the batch as usual.

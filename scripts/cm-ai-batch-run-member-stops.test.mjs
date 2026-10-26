@@ -33,3 +33,7 @@ test('retry_review redispatches only the frozen review of a one-member worktree 
 test('retry_review redispatches only the frozen review of a multi-member group member',()=>batchFixture('parallel-bound-review-provider-retry'));
 test('retry_review is stale once another driver moved the batch on',()=>batchFixture('bound-review-provider-retry',{staleByAdvance:true}));
 test('retry_review stops at the round\'s second rate limit without another dispatch',()=>batchFixture('bound-review-provider-retry',{reviewFailures:2}));
+test('retry_review cancelled while it opens the member run dispatches no review and logs batch_cancel',()=>batchFixture('bound-review-provider-retry',{cancelAt:'open'}));
+test('retry_review cancelled while its review runs forwards the cancel and logs batch_cancel',()=>batchFixture('bound-review-provider-retry',{cancelAt:'review'}));
+test('two group members rate limited together: retry_review redispatches the first, the next advance the second',
+  ()=>batchFixture('parallel-bound-review-provider-retry',{rateLimitedTasks:['T-001','T-002']}));

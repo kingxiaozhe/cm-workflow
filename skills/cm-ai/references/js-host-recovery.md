@@ -195,7 +195,10 @@ Codex 审查返回 429／Too Many Requests／rate limit 时同样记为 `reviewe
 与 `abandon_review` 等成员恢复操作同一规则），并行组成员的 worktree 与分支仍在；再打开该成员运行（本进程持有它的写锁），
 把带 `expectedReviewStop` 的 `decision` 转给它，由成员按单任务同样的规则核对并只重派这一次审查。任一不符返回
 `outcome: rejected`、`staleRetry: true`、`reason` 以「状态已变，未自动重试」开头，不派发、不写批次日志；`batch.lock` 被另一个驾驶员占着时同样如此。
-重派后成员停在 `decision` 的结果上（通过就是 `approved`），批次不顺带完成、合并或推进其他成员；驾驶员把这个结果交还会话，
+重派后成员停在 `decision` 的结果上（通过就是 `approved`），批次不顺带完成、合并或推进其他成员；结果保留成员自己的
+`state`/`code`/`identity`，但把成员才有的下一步（`complete` 等）改成批次的 `pendingAction: advance`，并带 `guidance`（审查限流已自动重试；
+从批次入口发送 advance 继续）。等待重派期间同一宿主收到 `cancel`：打开成员运行时取消就不派发审查，审查进行中取消就转给成员运行；
+两种都写 `batch_cancel` 并返回 `cancelled`。驾驶员把这个结果交还会话，
 由会话照常再发批次 `advance` 继续（自动接着 advance 会越过「只重派这一次审查」，可能触发完成、QA、合并和下一个任务的开发应答）。
 并行组两个成员都被限流时，批次结果只给出组里第一个停住的成员，驾驶员只重派它；另一个成员留到下一次 `advance` 由批次照常重派。
 等待中的驾驶员被杀时，等待时长再加 `waitMinutes` 后会补发一次提醒；重跑一启动就取消这条补发。
