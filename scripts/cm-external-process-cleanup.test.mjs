@@ -137,7 +137,16 @@ test('owned cleanup: EPERM until our child is reaped, then ESRCH, is a stop; the
 test('owned cleanup: an EPERM that persists after our child exited stays unknown',{skip:process.platform==='win32'},async()=>{
   const started=Date.now();
   await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,exitBudgetMs:200,killProcess:denied})(),{code:'process_cleanup_unknown'});
-  assert(Date.now()-started<2000,'bounded by the budget');
+  assert(Date.now()-started<1000,'bounded by the budget');
+});
+// Review 2026-10-27 round 2: every signal used to get the full exit budget again, so a
+// probe that met EPERM at the kill deadline still waited the whole budget past it.
+test('owned cleanup: an EPERM probe at the kill deadline does not wait past it',{skip:process.platform==='win32'},async()=>{
+  const started=Date.now();
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killWaitMs:0,exitBudgetMs:200,killProcess:(pid,signal)=>{
+    if(signal===0)denied();
+  }})(),{code:'process_cleanup_unknown'});
+  assert(Date.now()-started<150,`ended at the kill deadline, not ${Date.now()-started} ms later`);
 });
 test('owned cleanup: a member that answers once our child exited is live, not stopped',{skip:process.platform==='win32'},async()=>{
   const calls=[];let first=true;

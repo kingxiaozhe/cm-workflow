@@ -168,8 +168,8 @@ export function claudeDeveloperWorker({cwd,model,effort,cli='claude',timeoutMs=1
       const stream=createClaudeDeveloperStream(onNotice,value=>usage.terminal(value));
       let failure=null,closed=false,timer,cleanup;
       // signalOwnedGroup (process-group-exit.mjs): an exited, not yet reaped leader
-      // (EPERM on macOS) is a stop only once its exit is observed and ps shows no
-      // live member; anything unproven is a cleanup failure, as before.
+      // (EPERM on macOS) is a stop only once its exit is observed and a re-probe
+      // answers ESRCH; anything unproven is a cleanup failure, as before.
       const signalGroup=async signalName=>{
         if(!Number.isInteger(child.pid)||child.pid<=0)return false;
         try{return await signalOwnedGroup(child,signalName)==='sent';}

@@ -76,8 +76,8 @@ export function createHostCheck({cwd,commands,timeoutMs=60000,specsRoot=null,out
           if(match&&counts.size<8&&!counts.has(match[1].toLowerCase()))counts.set(match[1].toLowerCase(),match[2]);
         };
         // signalOwnedGroup (process-group-exit.mjs): an exited, not yet reaped command
-        // (EPERM on macOS) is stopped only once its exit is observed and ps shows no
-        // live member; anything unproven is cleanup_failed, as before.
+        // (EPERM on macOS) is stopped only once its exit is observed and a re-probe
+        // answers ESRCH; anything unproven is cleanup_failed, as before.
         const kill=async name=>{
           if(!Number.isInteger(child.pid)||child.pid<=0)return false;
           try{return await signalOwnedGroup(child,name)==='sent';}

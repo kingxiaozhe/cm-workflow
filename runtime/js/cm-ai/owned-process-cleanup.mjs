@@ -7,14 +7,21 @@ export function ownedProcessCleanup(child,{graceMs=250,killWaitMs=750,killProces
   exitBudgetMs=1000}={}) {
   let cleanup;
   const error=()=>Object.assign(new Error('process_cleanup_unknown'),{code:'process_cleanup_unknown'});
-  // true: a member received it; false: the group is gone (or only zombies are left).
-  const signal=async value=>(await signalOwnedGroup(child,value,{killProcess,budgetMs:exitBudgetMs}))==='sent';
+  // true: a member received it; false: the group is gone. An EPERM resolution never
+  // gets more than what is left of one overall deadline (review 2026-10-27): every
+  // signal used to get the full exitBudgetMs again, so the last probe could run past
+  // the cleanup's own limit.
+  let overall=null;
+  const left=()=>Math.max(0,overall-Date.now());
+  const signal=async(value,cap=exitBudgetMs)=>(await signalOwnedGroup(child,value,
+    {killProcess,budgetMs:Math.min(exitBudgetMs,cap,left())}))==='sent';
   const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   return ()=>cleanup??=(async()=>{
     // Preserve the legacy Windows leader termination, without claiming tree cleanup.
     if(process.platform==='win32'){child.kill('SIGTERM');throw error();}
     // A failed spawn has no PID; in-memory test transports also have none.
     if(!Number.isInteger(child.pid)||child.pid<=0){child.kill('SIGTERM');return;}
+    overall=Date.now()+exitBudgetMs+graceMs+killWaitMs;
     if(!await signal('SIGTERM'))return;
     await pause(graceMs);
     if(!await signal('SIGKILL'))return;
@@ -24,7 +31,7 @@ export function ownedProcessCleanup(child,{graceMs=250,killWaitMs=750,killProces
     // permission error still fails immediately, without another probe.
     do {
       await pause(Math.min(25,Math.max(0,until-Date.now())));
-      if(!await signal(0))return;
+      if(!await signal(0,Math.max(0,until-Date.now())))return;
     } while(Date.now()<until);
     throw error();
   })();

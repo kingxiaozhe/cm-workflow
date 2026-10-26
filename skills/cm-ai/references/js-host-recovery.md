@@ -249,7 +249,7 @@ worker 已证明审查进程退出、又没有结论的中断，`pendingAction` 
 还没被 Node 回收的子进程（僵尸）时也回 EPERM：先异步等看到这个直接子进程的退出事件（不阻塞事件循环，和后面的重发共用约 1 秒预算），
 看不到就判不明；看到后在剩余预算内每 50 毫秒重发一次，任一次 ESRCH 判已停止、任一次发送成功判有活进程，一直 EPERM 判不明。
 不读进程表、不执行任何外部程序。判不明时各调用方按原来的错误码记：审查进程为 `process_cleanup_unknown`，
-provider 开发进程为 `process_cleanup_failed`，检查/QA 命令为 `cleanup_failed`；这一步之前已记下的失败原因（如超时、限流）优先保留。
+provider 开发进程为 `process_cleanup_failed`，检查/QA 命令为 `cleanup_failed`。开发进程与检查/QA 命令在这一步之前已记下的失败原因（如超时、限流）优先保留；审查进程不同：清理判不明时一律记 `process_cleanup_unknown`，覆盖此前的限流等原因，因为写入方是否已停没有证据时不能按限流去自动重派。
 
 外部模型与执行策略的审查不走以上出口：流里有回执就先 `reconcile_review` 对账采纳；没有回执宿主无法证明旧调用已停，`abandon_review`／`abandon_effect` 拒绝为 `external_review_reconciliation_required`，按 status 的 `reviewReconciliation.reason` 向原宿主或 provider 核对。
 
