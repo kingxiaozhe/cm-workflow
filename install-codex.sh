@@ -24,6 +24,8 @@ UPDATE_CACHEBUSTER="$CREATOR_ROOT/scripts/update_plugin_cachebuster.py"
 READ_MARKETPLACE="$CREATOR_ROOT/scripts/read_marketplace_name.py"
 ASSUME_YES=0
 OVERWRITE_LOCAL_EDITS=0
+# Non-empty when --no-skill-hints is given: this run does not wire the skill-hints hook.
+SKIP_SKILL_HINTS=""
 # Records what this install wrote so the next install can tell hand edits apart.
 INSTALL_MANIFEST_NAME=".cm-install-manifest.sha256"
 INSTALL_MANIFEST="$PLUGIN_DEST/$INSTALL_MANIFEST_NAME"
@@ -81,8 +83,9 @@ for arg in "$@"; do
   case "$arg" in
     --yes) ASSUME_YES=1 ;;
     --overwrite-local-edits) OVERWRITE_LOCAL_EDITS=1 ;;
+    --no-skill-hints) SKIP_SKILL_HINTS=1 ;;
     *)
-      echo "Usage: $0 [--yes] [--overwrite-local-edits]" >&2
+      echo "Usage: $0 [--yes] [--overwrite-local-edits] [--no-skill-hints]" >&2
       exit 2
       ;;
   esac
@@ -501,10 +504,11 @@ echo
 echo "CM Workflow installed for Codex from: $PLUGIN_DEST"
 echo "User guide: $PLUGIN_DEST/docs/user-guide.md"
 echo "Start a new Codex thread, then run \$cm-check, \$cm-prd, or \$cm-test."
-# Skill hints: the hook runs a copy under ~/.cm-workflow/skill-hints; refresh it only for
-# users who turned hints on (never creates it, never touches hooks.json). Failure only warns.
-node "$PLUGIN_DEST/scripts/cm-skill-hints.mjs" refresh </dev/null ||
-  echo "⚠ 技能提醒运行副本刷新未完成（不影响本次安装）" >&2
+# Skill hints: wire the hook into ~/.codex/hooks.json once by default (not with
+# --no-skill-hints, CM_SKILL_HINTS_INSTALL=off, "enabled": false, or after the user removed
+# it); otherwise only refresh the copy. Codex trust stays the user's. Failure only warns.
+node "$PLUGIN_DEST/scripts/cm-skill-hints.mjs" install --host codex ${SKIP_SKILL_HINTS:+--no-skill-hints} </dev/null ||
+  echo "⚠ 技能提醒钩子未处理完（不影响本次安装）" >&2
 # Optional Matt Pocock companion skills: print what is missing and one command; never download.
 echo
 node "$PLUGIN_DEST/scripts/cm-matt-skills.mjs" hint </dev/null || true

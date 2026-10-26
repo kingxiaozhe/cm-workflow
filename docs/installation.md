@@ -378,33 +378,107 @@ installed skills.
 A `UserPromptSubmit` hook that reads each message you type, matches it against a
 keyword table and, when a skill fits, shows you a one-line hint such as
 `💡 技能提醒：可以试 /grill-me——…`. The hint is shown to you directly
-(`systemMessage`) and is not added to the model's context. It only hints; it
-never runs a skill. Matching is local
-keyword and optional regex matching: nothing is sent anywhere and no tokens are
-spent on it. Messages over 2000 characters and text inside ``` fences are
+(`systemMessage`) and is not added to the model's context. For these hints,
+matching is local keyword and optional regex matching: nothing is sent anywhere
+and no tokens are spent on it. The three auto-started skills below are the
+exception: when a TypeSafe key is available, the first 500 characters of each
+message are sent to TypeSafe's Jev to judge them. Messages over 2000 characters and text inside ``` fences are
 skipped, at most two skills are hinted per message, and each skill at most once
 per session. Sessions that CM itself launches set `CM_SKILL_HINTS=off`.
 
-The installer does not enable it yet. To try it:
+Three author skills that the model cannot start on its own (they are marked
+`disable-model-invocation`) are started instead of hinted, when their pinned author
+version is installed for that host:
+
+- `handoff`: the hook adds one sentence to the model's context telling it to read
+  that skill's `SKILL.md` and follow it, and shows you
+  `🤖 技能自动调用：已让模型用 /handoff`.
+- `wayfinder` and `improve-codebase-architecture`: the model is told to ask you
+  first and to read the skill only after you agree
+  (`🤖 技能自动调用：已让模型先问你要不要用 /wayfinder`).
+
+Whether one of them fits is judged by TypeSafe's Jev when a TypeSafe key is
+available (`TYPESAFE_API_KEY`, or on macOS a keychain item named
+`TYPESAFE_API_KEY` for your user). Only the first 500 characters of the message
+are sent. A message is kept local, and the keyword table decides for it, when:
+
+- after folding it contains one of a fixed
+  list of credential words: password, passwd, pwd, passcode, token, secret, API key,
+  access key, private key, credential, `密码`, `密钥`, `口令`, `令牌`, `凭证`, `凭据`
+  and their traditional Chinese forms. Folding works character by character: a letter
+  or digit becomes its plain form (full-width and other compatibility forms made plain,
+  accents split off), a symbol stays only when it stands for exactly one letter or digit
+  (a circled letter), and everything else is dropped (spaces, punctuation, zero-width
+  and control characters, modifier letters, Hangul fillers, symbols such as `№`); then
+  lower case. So `API  key`, `api_key`, `ＡＰＩ ｋｅｙ` and a zero-width space inside the
+  word all count;
+- or it holds a known key shape (API keys, tokens, private keys), a long mixed-case run,
+  or the TypeSafe key itself.
+
+This is pattern matching, not a guarantee. It does not catch: a credential pasted with
+no recognisable shape and no credential word; look-alike letters from other scripts
+(a Cyrillic `а` in `pаssword`); letters with no decomposition (`tøken`); extra, missing,
+swapped or digit-for-letter characters (`passXword`, `t0ken`); escapes and encodings
+(`pass%77ord`); text reordered with bidirectional controls; other wording or languages. Jev gets at most 3
+seconds, with a second request when the first fails or has not answered within 1
+second. Without a key, on a credential-looking message, or when Jev fails, the
+same keyword table decides. A message that opens with a command (`/handoff …`) is
+left to the host. `"judge": false` in your local file keeps it to keywords even
+with a key. The log records which skill was started and whether Jev or keywords
+decided, never the message or the key.
+
+Installers turn it on by default. `install.sh` and `install.ps1` add the hook to
+`~/.claude/settings.json`, and `install-codex.sh` adds it to `~/.codex/hooks.json`,
+once per host; the output says so in one line, with how to turn hints off and the
+TypeSafe note above. Codex asks you to trust the new hook the first time it runs;
+CM does not trust it for you. A later install does not add it again.
+
+To turn hints off, write `"enabled": false` in
+`~/.cm-workflow/skill-hints.local.json`: the hook stays in place but does nothing
+and sends nothing. `--no-skill-hints` does not turn anything off; it only stops
+installs from adding the hook. An install does not wire the hook when:
+
+- you pass `--no-skill-hints` (`-NoSkillHints` for `install.ps1`) or set
+  `CM_SKILL_HINTS_INSTALL=off` (this also works for `cm-workflow install`). This
+  covers that run only: the next install without them wires the host as usual, and
+  a hook already there is kept;
+- `~/.cm-workflow/skill-hints.local.json` has `"enabled": false`; or it cannot be
+  read, is empty, or is not an object, or a known field has the wrong type (`enabled` and
+  `judge` must be `true`/`false`, `rules` a list, `disable` a list of strings). Then
+  it warns and changes nothing until you fix the file;
+- that host is settled: the hook was there before and you removed it. CM keeps the
+  hosts it has wired or found wired in
+  `~/.cm-workflow/skill-hints.auto.json` (`{"version": 1, "hosts": [...]}`), written
+  under the same lock as its other config writes and before any copy is made. If
+  `~/.cm-workflow/skill-hints/` exists but that file does not (you ran `enable`
+  before installers did this), both hosts count as settled, and nothing is added;
+- `skill-hints.auto.json` cannot be read or has another shape: it is kept as it is,
+  with a warning, and no install adds the hook until you fix or delete it;
+- the host config cannot be read or has the wrong shape: it is left untouched and
+  reported in one line, and the next install tries again.
+
+In every case the install itself still succeeds; a problem here is a warning. To add
+the hook by hand (for example to a settled host):
 
 ```bash
 node ~/.claude/scripts/cm-skill-hints.mjs enable
 ```
 
-This copies the script, CM's table and the author-skill checker
-(`cm-matt-skills.mjs`) to `~/.cm-workflow/skill-hints/` and adds
+This copies the script, CM's table, the author-skill checker
+(`cm-matt-skills.mjs`) and the Jev judge (`cm-skill-judge.mjs`) to
+`~/.cm-workflow/skill-hints/` and adds
 one `UserPromptSubmit` hook to `~/.claude/settings.json` and `~/.codex/hooks.json`
 (`--claude` or `--codex` for one side), keeping every other setting and hook. A
-file it cannot parse is left untouched. Codex asks you to trust the new hook the
-first time it runs; CM does not trust it for you. If the file changes while
+file it cannot parse is left untouched. If the file changes while
 `enable` is writing it, nothing is written and you are asked to run it again.
 
 Once hints are on (the hook is wired, or `~/.cm-workflow/skill-hints/` exists),
 every run of `install.sh`, `install-codex.sh` or `install.ps1` refreshes that copy
 (`node ~/.claude/scripts/cm-skill-hints.mjs refresh` does the same by hand). It
-replaces only the script, the table and the two helper scripts; host configs, Codex
-trust, session state and logs are left alone, and nothing is created for users who
-never enabled hints. A failed refresh is a warning, not an install failure.
+replaces only the script, the table and the three helper scripts; Codex
+trust, session state and logs are left alone, and a host config is only written
+when the hook is added as described above. A failed refresh is a warning, not an
+install failure.
 
 Your own rules live in `~/.cm-workflow/skill-hints.local.json`, which CM never
 overwrites. They take precedence over CM's table:
@@ -419,8 +493,13 @@ overwrites. They take precedence over CM's table:
 }
 ```
 
-`"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
-user rule with the same `id` as a CM rule replaces it. `patterns` (regular
+If the local file has any problem (it cannot be read, is empty or only whitespace,
+is not JSON or not an object, or a known field has the wrong type), hints pause as a whole: no hint, no skill started and
+nothing sent to Jev, so a valid `"enabled": false` next to a broken field still holds.
+`/cm-check` shows "本地配置格式异常，提醒已暂停" with the cause; a missing or valid file
+works as before. `"enabled": false` turns hints off; `disable` lists CM rule ids to switch off; a
+user rule with the same `id` as a CM rule replaces it, and a user rule only ever
+hints (it never starts a skill). `patterns` (regular
 expressions) share a 200 ms budget per message; past it they count as no match. An
 author skill (`grill-me`, `grill-with-docs`, `handoff`, `wayfinder`,
 `improve-codebase-architecture`, `prototype`) is only hinted when its pinned
@@ -431,8 +510,9 @@ resumed later does not repeat a hint.
 `~/.cm-workflow/logs/skill-hints.jsonl` records rule id, skill, host and time of
 each hint and of each adoption (you typed the skill within the next five
 messages), never message text; it drops its older half past 1 MB. `/cm-check`
-reports whether the hook is wired, the switch, the rule counts and whether the
-copy matches the installed version (with the `refresh` command when it does not).
+reports whether the hook is wired, the switch, whether installs wire it and which
+hosts are already settled, the rule counts and whether the copy matches the
+installed version (with the `refresh` command when it does not).
 
 ## Uninstall
 
