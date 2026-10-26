@@ -100,6 +100,13 @@ test('Codex 429 / Too Many Requests / rate limit ends as reviewer_rate_limited (
   }
 });
 
+test('Codex failure naming only the HTTP status 429 is a rate limit',async()=>{
+  for(const message of ['unexpected status HTTP 429','HTTP 429']){
+    const actual=await stream([...start,{type:'error',message},{type:'turn.failed',error:{message}}]);
+    assert.deepEqual(actual.result,{status:'failed',code:'reviewer_rate_limited'},message);
+  }
+});
+
 test('Codex non-rate-limit failures stay provider_failed; a 429 reconnect notice that recovers still succeeds',async()=>{
   for(const message of ['request failed','status 500 Internal Server Error','error 4290 unrelated id']){
     const actual=await stream([...start,{type:'error',message},{type:'turn.failed',error:{message}}]);

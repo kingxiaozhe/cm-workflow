@@ -308,6 +308,14 @@ export function normalizeNotifyText(value){
 // wins. Never built from free text other than that action, the session title and id.
 const USER_STAGES=new Set(['awaiting_user','awaiting_planning_user','awaiting_design_user','change_confirmation',
   'confirmation_required','self_check_needs_human']);
+// pendingAction exits the runner opens only with an explicit --allow-* (or
+// rebind) permission: the person confirms and authorizes them.
+const AUTHORIZED_RECOVERY=Object.freeze({
+  abandon_review:go=>`需要你确认旧审查进程已停后，${go}授权放弃这次审查再重派`,
+  abandon_effect:go=>`需要你确认上一步的进程已停后，${go}授权放弃这一步再重做`,
+  develop_redo:go=>`需要你确认会话已停止改代码后，${go}授权重做开发`,
+  bootstrap_review_recover:go=>`${go}，授权它恢复初始化规则的审查`,
+  spec_rebind:go=>`规格被改过：${go}确认改动后，授权它换绑规格`});
 const REVIEW_REDISPATCH=new Set(['review_provider_failed','review_transport_timeout','review_verdict_invalid','review_abandoned']);
 const REVIEWER_WAIT=Object.freeze({reviewer_rate_limited:'审查被限流：过一刻钟后',reviewer_billing_error:'审查账号额度用完：恢复额度后',
   reviewer_auth_failed:'审查 CLI 要重新登录：登录后',reviewer_server_error:'审查服务暂时出错：稍后'});
@@ -315,12 +323,16 @@ export function noticeAction(fields={}){
   const explicit=clean(fields.action,200);if(explicit)return explicit;
   const name=clean(fields.sessionTitle,40)||clean(fields.session,24),go=name?`回到会话「${name}」`:'回到对应会话';
   const code=clean(fields.code,96),stage=clean(fields.stage,48);
+  const pendingAction=clean(fields.pendingAction,32);
   // The driver's own automatic review retries (drive-core.mjs) for a rate limit.
-  if(fields.reviewFailure==='reviewer_rate_limited'){
+  // "继续即可" only when the real exit is still the original run's redispatch.
+  if(fields.reviewFailure==='reviewer_rate_limited'&&code==='review_provider_failed'&&pendingAction==='resume'){
     const retries=fields.rateLimitRetries;
     if(Number.isSafeInteger(retries)&&retries>0)return `审查被限流，已自动重试 ${retries} 次仍失败；过半小时后${go}说「继续」即可`;
     if(fields.rateLimitWaiting===true)return `审查被限流，自动重试没有接上；${go}说「继续」即可`;
   }
+  // Exits that need the person's explicit authorization (an --allow-* recovery).
+  if(Object.hasOwn(AUTHORIZED_RECOVERY,pendingAction))return AUTHORIZED_RECOVERY[pendingAction](go);
   if(['awaiting_spec_approval','spec_approval_required'].includes(code)||stage==='awaiting_spec_approval')
     return `打开规格确认内容，再${go}说「批准」`;
   if(code==='spec_drift')return `规格被改过：${go}，确认这些改动要不要保留`;
@@ -330,6 +342,8 @@ export function noticeAction(fields={}){
   if(['review_redispatch_limit','review_abandon_budget_exhausted'].includes(code))
     return `审查多次没给结论：${go}，让它查清登录或额度后新建运行重做`;
   if(/_(retry|redo|recheck)_limit$/.test(code))return `自动重试次数已用完：${go}，决定要不要重开这项任务`;
+  // The classifier saw a question or decision only the person can answer.
+  if(fields.ask===true||code==='confirm_reask_decision_required'||USER_STAGES.has(stage))return `${go}，回答它的问题或做决定`;
   if(REVIEW_REDISPATCH.has(code))return `${REVIEWER_WAIT[fields.reviewFailure]??''}${go}说「继续」，让它重派审查`;
   if(code==='qa_triggered')return `${go}说「继续」，让它执行 QA`;
   if(['qa_decision_required','qa_mandatory_required'].includes(code))return `${go}说「继续」，让它做 QA 判定`;
@@ -337,7 +351,6 @@ export function noticeAction(fields={}){
   if(code.startsWith('host_'))return `宿主中途停了：${go}说「继续」，让它查状态后恢复`;
   if(code==='waiting_session_answer')return `${go}看看它是否卡住，需要时说「继续」`;
   if(['waiting_for_you','no_next_step'].includes(code))return `${go}说「继续」，让它做下一步`;
-  if(code==='confirm_reask_decision_required'||USER_STAGES.has(stage))return `${go}，回答它的问题`;
   if(code==='checks_not_passed'||code.startsWith('develop_'))return `${go}说「继续」，让它修好后重新提交`;
   if(code==='cancelled')return `已取消：要继续就${go}说明`;
   return `${go}，让它说明停在哪、需要你做什么`;
@@ -486,20 +499,45 @@ function withState(home,update){
 // is still the pending one; progress, a new step, a newer stop of the same
 // session or an immediate notice about it removes or replaces the file.
 const PENDING_DIR='notify-pending';
-const pendingFile=(home,hash)=>path.join(home,PENDING_DIR,`${hash}.json`);
-// {missing:true} | null (unreadable: treated as cancelled) | {token,at}
+// The directory itself must be a real 0700 directory of this user inside the
+// notify home: never a symbolic link (a link could point the writes, renames
+// and deletes below anywhere). Anything else: nothing is read, written or
+// removed there. {missing:true} | {dir} | null (unsafe).
+function pendingDir(home,create=false){
+  const dir=path.join(home,PENDING_DIR);
+  let info;
+  try{info=fs.lstatSync(dir);}
+  catch(error){
+    if(error?.code!=='ENOENT')return null;
+    if(!create)return {missing:true};
+    try{fs.mkdirSync(dir,{mode:0o700});fs.chmodSync(dir,0o700);info=fs.lstatSync(dir);}catch{return null;}
+  }
+  if(info.isSymbolicLink()||!info.isDirectory())return null;
+  if(process.platform!=='win32'&&((info.mode&0o777)!==0o700||typeof process.getuid==='function'&&info.uid!==process.getuid()))return null;
+  try{if(fs.realpathSync(dir)!==path.join(fs.realpathSync(home),PENDING_DIR))return null;}catch{return null;}
+  return {dir};
+}
+const pendingFile=(dir,hash)=>path.join(dir,`${hash}.json`);
+// {missing:true} | null (unreadable or unsafe: treated as cancelled) | {token,at}
 function readPending(home,hash){
-  const read=readBounded(pendingFile(home,hash),4096);if(read===null||read.missing)return read;
+  const place=pendingDir(home);if(place===null||place.missing)return place;
+  const read=readBounded(pendingFile(place.dir,hash),4096);if(read===null||read.missing)return read;
   try{const value=JSON.parse(read.text);return typeof value?.token==='string'&&Number.isFinite(value.at)?value:null;}catch{return null;}
 }
-function removePending(home,hash){try{fs.unlinkSync(pendingFile(home,hash));return true;}catch{return false;}}
+function removePending(home,hash){
+  const place=pendingDir(home);if(place===null||place.missing)return false;
+  try{fs.unlinkSync(pendingFile(place.dir,hash));return true;}catch{return false;}
+}
 function writePending(home,hash,value){
-  const dir=path.join(home,PENDING_DIR),file=pendingFile(home,hash),temp=`${file}.${process.pid}.${randomUUID()}.tmp`;
-  try{fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(temp,JSON.stringify(value),{mode:0o600});fs.renameSync(temp,file);return true;}
+  const place=pendingDir(home,true);if(place===null||place.missing)return false;
+  const file=pendingFile(place.dir,hash),temp=`${file}.${process.pid}.${randomUUID()}.tmp`;
+  try{fs.writeFileSync(temp,JSON.stringify(value),{mode:0o600,flag:'wx'});fs.renameSync(temp,file);return true;}
   catch{try{fs.unlinkSync(temp);}catch{}return false;}
 }
-// Removes a pending stop recorded at or before `before` (an unreadable one too).
+// Removes a pending stop recorded at or before `before` (an unreadable one too),
+// only inside a safe pending directory.
 function dropPending(home,hash,before){
+  const place=pendingDir(home);if(place===null||place.missing)return false;
   const pending=readPending(home,hash);
   if(pending?.missing||pending&&pending.at>before)return false;
   return removePending(home,hash);
@@ -602,7 +640,10 @@ export async function notifyLater(fields,{env=process.env,delayMs=null,extraDela
       else if(attempt<attempts)await new Promise(resolve=>setTimeout(resolve,retryMs));
     }
     const workflow=clean(fields.workflow,24)||'cm';
-    if(!written){appendNotifyLog(home,now,{event:'later',workflow,hash,result:'failed pending_write'});return {scheduled:false,reason:'pending_write'};}
+    if(!written){
+      const reason=pendingDir(home)===null?'pending_dir_unsafe':'pending_write';
+      appendNotifyLog(home,now,{event:'later',workflow,hash,result:`failed ${reason}`});return {scheduled:false,reason};
+    }
     const job={fields:{...fields,delivery:undefined,sessionTitle:fields.sessionTitle===undefined?sessionTitle(env):fields.sessionTitle},token,delayMs:delay};
     const child=spawn(process.execPath,[LATER_RUNNER],{detached:true,stdio:'ignore',windowsHide:true,
       env:{...env,CM_NOTIFY_LATER:JSON.stringify(job)}});
@@ -747,8 +788,10 @@ export function scheduleIdleNotice({workflow,project,sessionKey,seq,row,since=Da
 // other stop is deferred (notifyLater): the session may well move on by itself.
 const IMMEDIATE_CODES=new Set(['permission_denied','awaiting_spec_approval','spec_approval_required','spec_drift',
   'review_limit','review_blocked','review_redispatch_limit','review_abandon_budget_exhausted','confirm_reask_decision_required']);
-export function immediateStop({codes=[],state=null,stage=null,pendingAction=null}={}){
-  if(state==='awaiting_spec_approval'||pendingAction==='spec_approval'||USER_STAGES.has(stage))return true;
+// `ask` is the classifier's own finding that the person must answer or decide
+// (the same facts it used to call the stop stuck), so the two cannot drift.
+export function immediateStop({codes=[],state=null,pendingAction=null,ask=false}={}){
+  if(ask===true||state==='awaiting_spec_approval'||pendingAction==='spec_approval'||Object.hasOwn(AUTHORIZED_RECOVERY,pendingAction))return true;
   return codes.some(code=>typeof code==='string'&&(IMMEDIATE_CODES.has(code)||/(^|_)(authorization|approval)_required$/.test(code)
     ||/_(retry|redo|recheck)_limit$/.test(code)));
 }
@@ -773,9 +816,10 @@ const FIX_FLOW=new Set(['reproduce','diagnose','cause_review_required','test_aut
 function classifyFix(r){
   const stage=text(r.stage);if(!stage)return null;
   if(stage==='completed')return 'done';
-  if(r.progress&&typeof r.progress==='object'){if(r.progress.finished===true)return 'done';if(r.progress.requiresUser===true)return 'stuck';}
+  // requiresUser: the owner hands the decision to the person (progress.mjs, host.mjs).
+  if(r.progress&&typeof r.progress==='object'){if(r.progress.finished===true)return 'done';if(r.progress.requiresUser===true)return 'ask';}
   // A refused review authorization keeps the stage (execution.mjs) but waits on a person.
-  if(text(r.reason)==='permission_denied')return 'stuck';
+  if(text(r.reason)==='permission_denied')return 'ask';
   return FIX_FLOW.has(stage)||FIX_FLOW.has(stage.replace(/^revision_/,''))?null:'stuck';
 }
 // cm-ai conversation entry (runtime/js/cm-ai/cm-ai-conversation-entry.mjs, operator-guidance.mjs,
@@ -800,6 +844,9 @@ function classifyAi(r){
   if(code==='qa_fix_incomplete')return classifyFix({stage:r.fixStage});
   if(['qa_fix_completed','qa_fix_active','qa_fix_owner_busy'].includes(code)||outcome==='abandoned')return null;
   if(r.pendingAction==='start_next_task'||AI_PROGRESS_CODES.has(code))return null;
+  // Spec approval and authorizations: only the person can give them.
+  if(state==='awaiting_spec_approval'||r.pendingAction==='spec_approval'||code==='permission_denied'
+    ||/(^|_)authorization_required$/.test(code??''))return 'ask';
   if(['rejected','denied','cancelled','blocked','awaiting'].includes(outcome)||AI_STUCK_STATES.has(state)
     ||AI_STUCK_ACTIONS.has(r.pendingAction)||AI_STUCK_CODES.has(code))return 'stuck';
   return null;
@@ -815,10 +862,11 @@ const CLASSIFY={
     const stage=text(r.stage),status=text(r.status),review=obj(r.reviewState);
     if(stage==='awaiting_review'||status==='awaiting_review')return 'done';
     if(STUCK_COMMON.has(stage)||STUCK_COMMON.has(status))return 'stuck';
-    if(['awaiting_user','awaiting_planning_user','awaiting_design_user','self_check_needs_human','change_confirmation',
-      'change_rejected','inputs_replaced'].includes(stage))return 'stuck';
+    // A question or confirmation put to the person.
+    if(['awaiting_user','awaiting_planning_user','awaiting_design_user','self_check_needs_human','change_confirmation'].includes(stage))return 'ask';
+    if(['change_rejected','inputs_replaced'].includes(stage))return 'stuck';
     if(stage==='change_check_failed'&&Number(r.round)>=2)return 'stuck';
-    if(/^change_(requirements|design|tasks|check)$/.test(stage??'')&&text(r.question))return 'stuck';
+    if(/^change_(requirements|design|tasks|check)$/.test(stage??'')&&text(r.question))return 'ask';
     if(status&&(/_unknown$/.test(status)||['correction_recovery_required','correction_recovery_conflict','disposition_details_need_verification'].includes(status)))return 'stuck';
     if(status==='human_summary_prepared'&&r.readyForAwaitingReview===false)return 'stuck';
     if(status==='review_findings_ready'&&r.verdict==='blocked')return 'stuck';
@@ -835,21 +883,27 @@ const CLASSIFY={
     // resume, abandon or discard; an interrupted save waits on reconciliation.
     if(recovery.writing===true||['unknown','recorded'].includes(obj(recovery.call).status))return 'stuck';
     if(stage==='draft_ready')return r.confirmationRequired===true?null:'stuck';
-    return ['awaiting_user','save_unknown','save_blocked',...STUCK_COMMON].includes(stage)?'stuck':null;
+    // awaiting_user: the interview asked the person a question (cm-idea-host.mjs).
+    if(stage==='awaiting_user')return 'ask';
+    return ['save_unknown','save_blocked',...STUCK_COMMON].includes(stage)?'stuck':null;
   },
   // scripts/cm-init-host.mjs, runtime/js/cm-init/draft-generation.mjs (generation returns status, no stage).
   'cm-init'(r){
     const stage=text(r.stage)??(r.status==='blocked'?'blocked':null),recovery=obj(r.recovery);
     if(['rules_written','rules_present'].includes(stage))return 'done';
     if(recovery.writing===true||['unknown','recorded'].includes(obj(recovery.call).status))return 'stuck';
-    return ['analysis_blocked','verification_blocked','confirmation_required','confirmation_rejected','review_changes_requested',
+    // confirmation_required: the rules wait for the person's init_confirm (cm-init-host.mjs).
+    if(stage==='confirmation_required')return 'ask';
+    return ['analysis_blocked','verification_blocked','confirmation_rejected','review_changes_requested',
       'review_blocked','write_incomplete','write_unknown',...STUCK_COMMON].includes(stage)?'stuck':null;
   },
   // runtime/js/cm-refactor/workflow.mjs.
   'cm-refactor'(r){
     const stage=text(r.stage);
     if(['done','not_needed','rejected'].includes(stage))return 'done';
-    return ['awaiting_finish','rulebook_rejected','correction_required',...STUCK_COMMON].includes(stage)?'stuck':null;
+    // awaiting_finish: the finish confirmation was not given (workflow.mjs confirm 'finish').
+    if(stage==='awaiting_finish')return 'ask';
+    return ['rulebook_rejected','correction_required',...STUCK_COMMON].includes(stage)?'stuck':null;
   },
   // runtime/js/cm-test/host.mjs: verdict in result.overall when stage is reported.
   'cm-test'(r){
@@ -871,15 +925,20 @@ const CLASSIFY={
 const READ_ONLY=new Set(['status','fix_status','cancel','qa_result','context_refresh','read_batch','inspect_correction',
   'final_review_package','review_findings','completion_evidence','cause_review_package']);
 export const NOTIFY_WORKFLOWS=Object.freeze(Object.keys(CLASSIFY));
-export function classifyDriveResult(workflow,row){
+// 'ask' (the person must answer or decide) is a stuck stop; only its delivery differs.
+function classifyRaw(workflow,row){
   if(row?.error)return 'stuck';
   const classify=CLASSIFY[workflow];
   return classify?classify(obj(row?.result)):null;
 }
+export function classifyDriveResult(workflow,row){
+  const kind=classifyRaw(workflow,row);
+  return kind==='ask'?'stuck':kind;
+}
 export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   if(READ_ONLY.has(operation))return null;
   const workflow=path.basename(String(host??'')).replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
-  const kind=failure?'stuck':classifyDriveResult(workflow,row);
+  const raw=failure?'stuck':classifyRaw(workflow,row),kind=raw==='ask'?'stuck':raw,ask=raw==='ask';
   if(!kind)return null;
   const done=kind==='done',result=obj(row?.result),progress=obj(result.progress),nested=obj(result.result);
   const code=text(failure)??text(row?.error?.code)??text(result.code)??text(result.reason)??text(result.blocker)
@@ -891,15 +950,16 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   const run=runId??launchRunKey(args);
   const project=cwd?path.resolve(cwd):null,session=notifySessionLabel(args),feature=text(result.feature)??text(result.identity?.feature);
   const reviewFailure=typeof result.reviewFailure==='string'&&/^reviewer_[a-z_]{1,48}$/.test(result.reviewFailure)?result.reviewFailure:null;
+  const pendingAction=typeof result.pendingAction==='string'&&/^[a-z_]{1,32}$/.test(result.pendingAction)?result.pendingAction:null;
   const delivery=done||immediateStop({codes:[failure,row?.error?.code,result.code,result.reason,result.blocker,progress.blocker],
-    state:text(result.state),stage:text(result.stage),pendingAction:text(result.pendingAction)})?'now':'later';
+    state:text(result.state),pendingAction,ask})?'now':'later';
   return {key:[workflow,run,task??'',attempt??'',stage??'',done?'done':code??''].join('|'),
     ...(done?{}:{attentionKey:attentionKeyFor({project,session,workflow,runId:run})}),
     event:kind,workflow,project,runId,feature,task,stage,session,
     code:done?(text(result.code)??text(result.overall)??text(nested.overall)??'done'):code,
     // A finished unit is the natural point to start a fresh session (runtime/model-efficiency.md).
     nextAction:done?'会话边界：换新会话，下一项在新会话里运行':text(result.guidance?.nextStep)??text(progress.nextAction)??text(result.nextAction),
-    ...(reviewFailure?{reviewFailure}:{}),delivery};
+    ...(reviewFailure?{reviewFailure}:{}),...(pendingAction&&!done?{pendingAction}:{}),...(ask?{ask:true}:{}),delivery};
 }
 
 // The attention record a successful, non-read-only step clears (see clearAttention).

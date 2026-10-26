@@ -747,7 +747,7 @@ test('driver classification follows each workflow contract (table)',()=>{
       guidance:{nextStep:'修复后 advance'}})}});
   assert.deepEqual({...blocked},{key:'cm-ai|run-1|T-001|1|blocked|develop_checks_not_passed',attentionKey:'attn|work/demo-app|4f9fa27f',event:'stuck',workflow:'cm-ai',
     project:'/work/demo-app',runId:'run-1',feature:'1.login',task:'T-001',stage:'blocked',session:'4f9fa27f',code:'develop_checks_not_passed',nextAction:'修复后 advance',
-    delivery:'later'});
+    pendingAction:'resume',delivery:'later'});
   // Without --host-context the attention record is per project, workflow and run; a non-UUID context is kept as given.
   assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',args:['serve'],operation:'advance',row:{requestId:'drive',result:ai({state:'blocked',code:'x'})}}).attentionKey,'attn|w/p|cm-ai|run-1');
   assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',args:['--host-context','claude-session-e2e'],operation:'advance',failure:'host_exited'}).session,'claude-session-e2e');
@@ -772,6 +772,13 @@ test('compact layout adds a 你要做 line: mapped actions, rate limit, fallback
   assert.equal(line({code:'review_provider_failed'}),'你要做：回到会话「分析 skills 库」说「继续」，让它重派审查');
   assert.equal(line({code:'review_provider_failed',reviewFailure:'reviewer_rate_limited'}),
     '你要做：审查被限流：过一刻钟后回到会话「分析 skills 库」说「继续」，让它重派审查');
+  // "继续即可" only while the real exit is still the original run's redispatch.
+  assert.equal(line({code:'review_provider_failed',reviewFailure:'reviewer_rate_limited',pendingAction:'resume',rateLimitRetries:2}),
+    '你要做：审查被限流，已自动重试 2 次仍失败；过半小时后回到会话「分析 skills 库」说「继续」即可');
+  assert.equal(line({code:'review_provider_failed',reviewFailure:'reviewer_rate_limited',pendingAction:'abandon_review',rateLimitRetries:1}),
+    '你要做：需要你确认旧审查进程已停后，回到会话「分析 skills 库」授权放弃这次审查再重派');
+  assert.equal(line({code:'review_redispatch_limit',reviewFailure:'reviewer_rate_limited',pendingAction:'none',rateLimitRetries:1}),
+    '你要做：审查多次没给结论：回到会话「分析 skills 库」，让它查清登录或额度后新建运行重做');
   assert.equal(line({code:'qa_triggered'}),'你要做：回到会话「分析 skills 库」说「继续」，让它执行 QA');
   assert.equal(line({code:'awaiting_spec_approval'}),'你要做：打开规格确认内容，再回到会话「分析 skills 库」说「批准」');
   assert.equal(line({code:'provider_development_authorization_required'}),'你要做：回到会话「分析 skills 库」，看它要你授权什么；同意就说「授权」');
@@ -813,7 +820,11 @@ test('driver notices: only a person\'s decision or authorization is sent at once
     [{state:'pending_review',code:'review_provider_failed',pendingAction:'resume',reviewFailure:'reviewer_rate_limited'},'later'],
     [{state:'blocked',code:'develop_checks_not_passed',pendingAction:'resume'},'later'],
     [{state:'fixture_completed',code:'qa_triggered',pendingAction:'qa_execution'},'later'],
-    [{state:'unknown',code:'call_timeout',pendingAction:'abandon_effect'},'later'],
+    [{state:'unknown',code:'call_timeout',pendingAction:'reconcile'},'later'],
+    // Exits that need an explicit --allow-* authorization are the person's to give.
+    [{state:'unknown',code:'call_timeout',pendingAction:'abandon_effect'},'now'],
+    [{state:'blocked',code:'review_provider_failed',pendingAction:'abandon_review',reviewFailure:'reviewer_rate_limited',reviewRedispatchStopRequired:true},'now'],
+    [{state:'blocked',code:'develop_redo_required',pendingAction:'develop_redo'},'now'],
     [{state:'awaiting_spec_approval',code:null,pendingAction:'spec_approval'},'now'],
     [{state:'blocked',code:'provider_development_authorization_required',pendingAction:'none'},'now'],
     [{outcome:'denied',state:'blocked',code:'permission_denied',pendingAction:'none'},'now'],
@@ -827,7 +838,20 @@ test('driver notices: only a person\'s decision or authorization is sent at once
   assert.equal(notice({state:'pending_review',code:'review_provider_failed',pendingAction:'resume',reviewFailure:'reviewer_rate_limited'}).reviewFailure,'reviewer_rate_limited');
   assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',operation:'advance',failure:'host_exited'}).delivery,'later');
   assert.equal(driveNotice({host:'cm-ai-host.mjs',cwd:'/w/p',operation:'advance',failure:'confirm_reask_decision_required'}).delivery,'now');
-  assert.equal(driveNotice({host:'cm-prd-host.mjs',cwd:'/w/p',operation:'advance',row:{requestId:'drive',result:{stage:'awaiting_user'}}}).delivery,'now');
+  // Every stop the classifier calls a question or decision for the person is sent at once (same facts, one table).
+  const other=(workflow,result)=>driveNotice({host:`${workflow}-host.mjs`,cwd:'/w/p',args:['--host-context','s1'],operation:'advance',row:{requestId:'drive',result}});
+  for(const [workflow,result] of [['cm-prd',{stage:'awaiting_user'}],['cm-prd',{stage:'awaiting_design_user'}],['cm-prd',{stage:'change_confirmation'}],
+    ...['change_requirements','change_design','change_tasks','change_check'].map(stage=>['cm-prd',{stage,question:'是否保留旧功能？'}]),
+    ['cm-idea',{stage:'awaiting_user'}],['cm-init',{stage:'confirmation_required'}],['cm-refactor',{stage:'awaiting_finish'}],
+    ['cm-fix',{stage:'blocked',progress:{requiresUser:true}}]]){
+    const notice=other(workflow,result);
+    assert.equal(notice.event,'stuck',`${workflow} ${JSON.stringify(result)}`);
+    assert.equal(notice.delivery,'now',`${workflow} ${JSON.stringify(result)}`);
+    assert.equal(notice.ask,true);
+    assert.match(buildNotifyMessage(notice,{now:NOW,layout:'compact'}).body.split('\n')[1],/^你要做：回到会话「s1」，回答它的问题或做决定$/);
+  }
+  for(const [workflow,result] of [['cm-prd',{stage:'change_check_failed',round:2}],['cm-prd',{stage:'change_rejected'}],['cm-idea',{stage:'save_blocked'}]])
+    assert.equal(other(workflow,result).delivery,'later',`${workflow} ${JSON.stringify(result)}`);
   assert.equal(driveNotice({host:'cm-fix-host.mjs',cwd:'/w/p',operation:'advance',row:{requestId:'drive',result:{stage:'blocked',reason:'repair_authorization_required'}}}).delivery,'now');
 });
 
@@ -860,6 +884,26 @@ test('deferred notice: off without config; sent after the delay when nothing mov
   // A clear only removes a pending stop from before the step; a newer one stays.
   await later('f1','s-f',600);assert.equal(await cancelPendingNotice(attn('s-f'),{env:h.env,before:Date.now()-60000}),false);
   assert.equal(pending().length,1);
+});
+
+// The pending directory is used only when it is a real 0700 directory inside the
+// notify home: a link or a widened directory is never read, written or emptied.
+test('deferred notice refuses a linked or widened notify-pending directory and reports it unscheduled',{skip:process.platform==='win32'},async t=>{
+  const h=home(t),outside=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-outside-')));
+  t.after(()=>fs.rmSync(outside,{recursive:true,force:true}));
+  const dir=path.join(h.dir,'notify-pending'),key=`attn|work/demo-app|s-link`;
+  fs.symlinkSync(outside,dir);
+  fs.writeFileSync(path.join(outside,'keep.json'),'{"token":"x","at":0}');
+  assert.deepEqual(await notifyLater(fields('l1',{attentionKey:key}),{env:h.env,delayMs:50}),{scheduled:false,reason:'pending_dir_unsafe'});
+  assert.equal(await cancelPendingNotice(key,{env:h.env}),false);
+  assert.equal(await clearAttention(key,{env:h.env}),false);
+  assert.deepEqual(fs.readdirSync(outside),['keep.json'],'nothing written, renamed or removed through the link');
+  fs.unlinkSync(dir);fs.mkdirSync(dir,{mode:0o755});fs.chmodSync(dir,0o755);
+  assert.deepEqual(await notifyLater(fields('l2',{attentionKey:key}),{env:h.env,delayMs:50}),{scheduled:false,reason:'pending_dir_unsafe'});
+  assert.deepEqual(fs.readdirSync(dir),[]);
+  fs.chmodSync(dir,0o700);
+  assert.equal((await notifyLater(fields('l3',{attentionKey:key}),{env:h.env,delayMs:50})).scheduled,true);
+  assert(await h.until(()=>h.rows().length===1));
 });
 
 // Shared driver core (scripts/*-drive.mjs all use driveHost) with a host that

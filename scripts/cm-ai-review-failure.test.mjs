@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {EventEmitter} from 'node:events';
 import {PassThrough} from 'node:stream';
-import {spawnSync} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {projectedRunnerStatus} from '../runtime/js/cm-ai/durable-runner-state.mjs';
@@ -22,6 +22,7 @@ import {inspectProviderReview,inspectProviderReviewFailure} from '../runtime/js/
 import {buildReviewPrompt,VERDICT_RULES} from '../runtime/js/cm-ai/codex-review-adapter.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
+import {rateLimitRetryEligible} from '../runtime/js/cm-ai/drive-rate-limit.mjs';
 import {guardFixtureSource,killFixtureProcesses} from './fixtures/process-cleanup.mjs';
 
 // Native V3 runner fixtures require Node 24.14+ on macOS/Linux. Preserve the
@@ -137,7 +138,15 @@ process.stdin.on('end',()=>{fs.appendFileSync(${JSON.stringify(sent)},JSON.strin
     const pending=()=>{const dir=path.join(home,'notify-pending');return fs.existsSync(dir)?fs.readdirSync(dir).filter(name=>name.endsWith('.json')):[];};
     return {rows,pending};
   };
-  return {root,specsDir,codeProject,answers,write,behave,plan,drive,store,records,replay,calls,review,awaitingReview,decide,lastResult,intents,notices};
+  // The same driver started without waiting for it (a timed retry in the background).
+  const driveAsync=(file,operation,env={})=>{
+    const child=spawn(process.execPath,[DRIVER,'--plan',file,operation],{env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,
+      CM_WORKFLOW_HOME:path.join(root,'home'),CM_WORKFLOW_LOG_HOME:path.join(root,'logs'),...env}});
+    let stdout='',stderr='';child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);
+    return {stderr:()=>stderr,done:new Promise(resolve=>child.on('close',status=>{
+      let result=null;try{result=JSON.parse(stdout).result;}catch{}resolve({status,stdout,stderr,result});}))};
+  };
+  return {root,specsDir,codeProject,answers,write,behave,plan,drive,driveAsync,store,records,replay,calls,review,awaitingReview,decide,lastResult,intents,notices};
 }
 
 const apiErrors=[
@@ -246,6 +255,52 @@ test('#8 a rate-limited review is redispatched by the driver after a wait, in th
   assert.deepEqual(notices.pending(),[],'the backstop notice was cancelled by the re-run');
 });
 
+// advance (not only decision) dispatches the pending review again: the retry
+// must show a new review effect and a second reviewer call.
+test('#8 advance on a rate-limited review is retried and the review is really redispatched',async t=>{
+  const f=fixture(t);f.awaitingReview();
+  f.behave(rateLimited,{mode:'ok'});
+  const run=f.drive(f.plan({mode:'resume'}),'advance',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'300,300,300'});
+  assert.match(run.stderr,/自动重派审查（第 1\/3 次）/);
+  assert.match(run.stderr,/原运行仍停在这次限流，重派审查（第 1\/3 次）/);
+  assert.deepEqual(f.intents().slice(0,3),['develop-1','review-1','review-1-retry-1']);
+  assert.equal(f.calls().length,2);assert.notEqual(run.result?.state,'pending_review',run.stderr);
+  // resume only reports a pending_review state, so it is never retried; decision and advance are.
+  assert.deepEqual(['advance','decision','resume','status'].map(op=>rateLimitRetryEligible(op,{permissions:[]})),[true,true,false,false]);
+});
+
+// The timed re-run is bound to the stop it waited for: if another driver moved
+// the run on, or the PLAN now names something else, nothing is dispatched.
+test('#8 a timed rate-limit retry does nothing when another driver moved the run on meanwhile',async t=>{
+  const f=fixture(t),packageDigest=f.awaitingReview();
+  f.behave(rateLimited,{mode:'ok'},{mode:'ok'});
+  const file=f.plan({mode:'resume',permissions:f.review(1),packageDigest,answers:undefined,checks:undefined});
+  const waiting=f.driveAsync(file,'decision',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'4000'});
+  assert(await until(()=>/秒后在原运行自动重派审查/.test(waiting.stderr()),20000),'the first driver is waiting');
+  // Meanwhile the session resumes the run itself (without the retry wait) and the review passes.
+  const other=f.decide(packageDigest,1,{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'1'});
+  assert.equal(other.result.state,'approved',other.stderr);assert.equal(f.calls().length,2);
+  const first=await waiting.done;
+  assert.match(first.stderr,/状态已变，未自动重试：运行已不停在这次限流（现在是 approved\/-）/);
+  assert.equal(first.result.state,'pending_review','the original result is printed');
+  assert.equal(f.calls().length,2,'no third reviewer call');assert.equal(f.replay().state.state,'approved');
+});
+
+test('#8 a timed rate-limit retry does nothing when the PLAN was changed to name another run',async t=>{
+  const f=fixture(t),packageDigest=f.awaitingReview();
+  f.behave(rateLimited,{mode:'ok'});
+  const file=f.plan({mode:'resume',permissions:f.review(1),packageDigest,answers:undefined,checks:undefined});
+  const waiting=f.driveAsync(file,'decision',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'2000'});
+  assert(await until(()=>/秒后在原运行自动重派审查/.test(waiting.stderr()),20000),'the first driver is waiting');
+  const definition=JSON.parse(fs.readFileSync(path.join(f.root,'run.json'),'utf8'));
+  fs.writeFileSync(path.join(f.root,'run-other.json'),JSON.stringify({...definition,identity:{...definition.identity,runId:'review-failure-other'}}));
+  fs.writeFileSync(file,JSON.stringify({...JSON.parse(fs.readFileSync(file,'utf8')),config:'run-other.json'}));
+  const first=await waiting.done;
+  assert.match(first.stderr,/状态已变，未自动重试：PLAN 文件在等待期间被改过/);
+  assert.equal(first.result.state,'pending_review');assert.equal(f.calls().length,1,'nothing was dispatched');
+  assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews','.execution','review-failure-other')),false);
+});
+
 test('#8 a review still rate limited after the automatic retry is returned and notified at once with what to do',async t=>{
   const f=fixture(t),packageDigest=f.awaitingReview(),notices=f.notices();
   f.behave(rateLimited,rateLimited,{mode:'ok'});
@@ -257,7 +312,8 @@ test('#8 a review still rate limited after the automatic retry is returned and n
   assert.equal((run.stderr.match(/自动重派审查（第 /g)??[]).length,1);
   assert(await until(()=>notices.rows().length===1),'notified at once');
   const [sent]=notices.rows();
-  assert.equal(sent.body.split('\n')[1],'你要做：审查被限流，已自动重试 1 次仍失败；过半小时后回到会话「review-host-a」说「继续」即可');
+  // The real exit is the round's stop confirmation, not "继续": the notice says so.
+  assert.equal(sent.body.split('\n')[1],'你要做：需要你确认旧审查进程已停后，回到会话「review-host-a」授权放弃这次审查再重派');
   assert.equal(sent.stdin.code,'review_provider_failed');
   // Without the automatic retry budget (no eligible operation), status never retries.
   const status=f.drive(f.plan({mode:'resume',answers:undefined,checks:undefined}),'status',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'200'});

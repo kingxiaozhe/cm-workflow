@@ -171,14 +171,21 @@ Claude 诊断只做回环请求捕获，`stopped_by_probe` 表示诊断自身终
 结果另带结构化字段 `reviewFailure`（同一类别，如 `reviewer_rate_limited`），驾驶员和提醒按它判断，不解析 `reason` 文字。
 Codex 审查返回 429／Too Many Requests／rate limit 时同样记为 `reviewer_rate_limited`（只记类别，不存原始报错）。
 
-**审查被限流时自动等待重试**：`cm-ai-drive.mjs`（`advance`、`resume`、`decision`）和 `cm-ai-batch-drive.mjs`（`advance`）
+**审查被限流时自动等待重试**：`cm-ai-drive.mjs`（`advance`、`decision`）和 `cm-ai-batch-drive.mjs`（`advance`）——只有这几个操作在 `pending_review` 时真的重派审查，`resume` 只报告状态、不派发，所以不重试
 拿到 `pending_review/review_provider_failed` 且 `reviewFailure` 为 `reviewer_rate_limited`、`pendingAction: resume` 时，
 不打印这次结果、不推送，在 stderr 写一行「审查被限流……分钟后在原运行自动重派审查（第 n/3 次）」，等待后用同一 PLAN
-以 `resume` 模式（create 的 PLAN 自动改为 resume，`originalHostContext` 取 `hostContext`）重跑同一条驾驶命令；
+以 `resume` 模式（create 的 PLAN 自动改为 resume，`originalHostContext` 取 `hostContext`）重跑同一条驾驶命令。
+重跑前先核对它属于原来那次限流：开始等待时记下 PLAN 文件字节的 SHA-256、`runId`、`taskId`、`attempt`、`packageDigest`、
+批次的 `batchId`，以及 `code`/`reviewFailure`/`pendingAction`；到点先比 PLAN 字节，再用同一命令跑一次只读 `status`，
+必须仍是同一运行、同一轮、同一审查包，且仍停在 `pending_review/review_provider_failed/reviewer_rate_limited/resume`。
+任一不符（例如等待期间别的驾驶员已推进，或 PLAN 改指别的运行）就不发任何操作，打印「状态已变，未自动重试：原因」
+和限流时的原结果，按平常规则判断推送；重跑本身读到的 PLAN 字节不同也直接退出 2。重试次数只在真的重跑时增加；
 stdout 只输出重跑的结果，退出码也取重跑的。默认依次等 15、10、5 分钟，最多 3 次、合计 30 分钟（`CM_DRIVE_RATE_LIMIT_DELAYS_MS`
 可写逗号分隔的毫秒数，1–3 项、合计不超过 1800000，否则用默认值）。重跑走的就是本节的自动重派：不算审查轮次，
 不发送 `abandon_review`，不加任何授权参数；同一轮第二次限流按下文停在 `blocked`（`pendingAction: abandon_review`），
-驾驶员不再重试，把结果原样返回并立即推送「已自动重试 n 次仍失败；过半小时后回到会话说继续即可」。PLAN 带 `--supersede*` 参数时不自动重试。
+驾驶员不再重试，把结果原样返回并立即推送，动作按真实出口写：要你确认旧审查进程已停后授权 `abandon_review` 再重派；
+次数用完（`review_redispatch_limit`）写成新建运行重做。只有真实出口仍是原运行重派（`pendingAction: resume`）、3 次都用完时，
+才写「已自动重试 n 次仍失败；过半小时后回到会话说继续即可」。PLAN 带 `--supersede*` 参数时不自动重试。
 等待中的驾驶员被杀时，等待时长再加 `waitMinutes` 后会补发一次提醒；重跑一启动就取消这条补发。
 审查答复违反 verdict 规则（`contradictory_verdict`、`invalid_finding_path`、`missing_material`、`review_package_mismatch`、
 `invalid_finding_severity/id/shape`）时不产生回执，停在 `pending_review/review_verdict_invalid`，`reason` 以该代码开头。
