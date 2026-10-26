@@ -5,6 +5,18 @@
 
 ## 未发布
 
+- **`/cm-ai` 默认每个任务都在自己的 worktree 里开发**（**行为变化**）：以前只有能两两并行的任务进 worktree，其余在主目录串行。现在凑不成对的任务也单独开一个 worktree 开发，做完按任务顺序合回主目录，再开下一个任务的 worktree。
+  - 照旧在主目录串行的：功能最后一个任务、批次里最后执行的任务、标了 `- 设备: 需要` 的任务；有任务没写范围、脚手架功能等整个功能串行的情况也不变。
+  - 功能的测试用例里有浏览器等交互式验收（`test-cases.json` 里 blocking 或策略启用的 `browser` 用例）时，这个功能不单独开 worktree：交互式验收可能连的是主目录启动的服务或 App，在 worktree 里跑会测到没合并的旧代码。能同组并行的任务照旧进 worktree（它们的 QA 本来就延后到主目录的最后一个任务）；手写这种 1 人组会被批次宿主以 `parallel_solo_interactive_qa` 拒绝。
+  - 批次里没有 QA 修复出口，所以可能在中途触发 QA 的任务不单独开 worktree，照旧在主目录串行：范围里的文件（或 `AGENTS.md`）命中项目登记的关键路径（迁移、鉴权、授权、支付、接口），或按日志推算可能成为连续第 5 个没跑 QA 的任务。判断和 QA 判定用同一套规则；关键路径写在工作流配置里，生成批次时用 `cm-ai-batch-plan.mjs --workflow-config` 传入，批次宿主启动时还会按实际 `workflows` 再核一遍，不符就以 `parallel_solo_qa_checkpoint` 拒绝。
+  - 单独进 worktree 的任务 QA 不延后：仍按固定检查点判定，万一触发就在它的 worktree 里跑，通过才合回。万一真的没通过，批次以 `batch_solo_qa_failed` 停下，不合并；该任务的已审交付提交在它的分支上，出口是：在主目录合并该分支、用 `/cm-fix` 按 QA 报告修复、删除 worktree 和分支、剩余任务用新批次 ID 重新生成批次继续。只有同组一起开发的多个任务才把 QA 延后到功能最后一个任务。
+  - 主目录的项目配置文件（`.cm-workflow.yml` 等）必须和当前提交里的那份逐字节相同，否则不单独开 worktree：worktree 是从提交检出的，拿不到被忽略、未跟踪或用 `skip-worktree`／`assume-unchanged` 藏起来的本地改动，QA 会按另一套策略跑。手写的会被拒：不在提交里报 `parallel_solo_config_untracked`，内容不同报 `parallel_solo_config_diverged`。这只是预筛：最终以 worktree 建好后两边实际加载出的配置为准，开发前逐一比对，不同（例如 Git 检出过滤器改写了配置，或提交里有两份配置文件、主目录藏掉了一份）就不开发，批次以 `batch_member_config_diverged` 停下。批次从不自动删除这个 worktree 和分支（`git status` 可能看不到被 `assume-unchanged` 之类藏起来的改动），提示里给出路径、分支名和手动清理命令（`git worktree remove`、`git branch -d`，不加 `--force`／`-D`）；worktree 还在时，下次 advance 会复用它并重新比对。手动清理中途被打断留下的空分支，下次 advance 会用 `git branch -d` 安全删掉重建；分支上有独有提交时批次以 `batch_member_branch_exists` 停下，不删；把配置改成一致后对同一批次 advance 即可继续，或设 `parallel.worktree_all: false` 用新批次继续。
+  - 测试覆盖范围：QA 失败出口的测试走通了「合并分支 → 新批次继续到结束」，没有实际执行 `/cm-fix` 的修复、审查和回归。
+  - Git 历史变成「任务提交 + 合并提交」两条一组；成员分支和 worktree 合并后自动删除。被阻断的任务照旧保留 WIP 分支，改到主目录重做。
+  - 每个进 worktree 的任务开工前各跑一次审查预检（结果按批次缓存）；主目录必须在一个分支上（不能是 detached HEAD），否则开工前的隔离检查会失败。
+  - 项目配置新增 `parallel.worktree_all`（默认 `true`）。写 `parallel: {worktree_all: false}` 恢复以前的做法（只有能并行的任务进 worktree）；`parallel: {enabled: false}` 仍然完全不建 worktree。
+  - 升级前已开始的批次按原配置恢复，不受影响；新批次用 `cm-ai-batch-plan.mjs` 生成时才按新规则分组。
+
 - **安装时默认挂上技能提醒钩子**：以前要自己跑 `cm-skill-hints.mjs enable` 才有技能提醒（包括 `grill-me` 这些作者技能的提醒和自动调用）；现在 `install.sh`、Windows 安装脚本默认给 Claude 挂上，`install-codex.sh` 默认给 Codex 挂上，每端只挂一次。
   - 装完会打一行说明：已挂上；想关掉提醒就在本地文件写 `"enabled": false`（钩子还在，但什么都不做、不外发）；以及有 TypeSafe 密钥时三个作者技能会把消息前 500 字发给 TypeSafe 判断。Codex 首次运行这条钩子会请你确认信任，CM 不替你点。
   - 这次安装不想挂：加 `--no-skill-hints`（Windows 用 `-NoSkillHints`）或设 `CM_SKILL_HINTS_INSTALL=off`。只管这一次，下次不带它安装照常挂；它不会摘掉已经挂着的钩子，关提醒仍要写 `"enabled": false`。

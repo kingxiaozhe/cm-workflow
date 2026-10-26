@@ -160,7 +160,7 @@ function preflight(){
       if(bundle.workflows[key]!==null)validateHostWorkflowConfiguration(bundle.workflows[key]);
     }
     // Use the batch owner's selection/parallel-group validator without opening a run.
-    createCmAiBatch({configuration:batch,executionFor:async()=>({}),bootstrapKeys:Object.keys(bundle.bootstraps??{}),
+    createCmAiBatch({configuration:batch,executionFor:async()=>({}),bootstrapKeys:Object.keys(bundle.bootstraps??{}),workflows:bundle.workflows,
       logHome:path.join(batch.specsDir,'.reviews','host-log-mirror')});
   }catch(error){stop(2,`批次定义、scope 或 workflow 无效: ${error.code??error.message}${error.code==='protected_scope'&&typeof error.reason==='string'?`；${error.reason}`:''}`);}
   const log=path.join(batch.specsDir,'运行日志.jsonl');
@@ -263,9 +263,10 @@ function preflight(){
     }
     // v2 成员没有 workflow 配置时宿主也会隐式补上 QA 判定（implicit-qa-decision.mjs）。
     if(control||workflow?.qa){
-      // A rescheduled second generation runs serially and asks qa_assess like a serial task.
+      // A rescheduled second generation runs serially and asks qa_assess like a serial task;
+      // so does a one-member worktree group, whose QA keeps the fixed checkpoints.
       // 策略 qa:"disabled" 时宿主自己确认，不再问（host-workflow-capabilities.mjs）。
-      if((!batch.parallel?.some(group=>group.includes(key))||rescheduled.has(key))&&control?.policy.qa!=='disabled')kinds.push('qa_assess');
+      if((!batch.parallel?.some(group=>group.length>1&&group.includes(key))||rescheduled.has(key))&&control?.policy.qa!=='disabled')kinds.push('qa_assess');
       if(workflow?.qa&&(!control||control.policy.qa==='run')){
         const cases=readJson(path.join(batch.specsDir,task.feature,'test-cases.json'),'test-cases');
         for(const kind of ['logic','browser'])if(cases?.cases?.some(item=>item.kind===kind))kinds.push(`qa_${kind}`);

@@ -1405,7 +1405,7 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 
 | 约束 | 失败码 |
 | --- | --- |
-| 每组 2–4 个任务，成员不重复、不跨组复用 | `invalid_parallel_group` |
+| 每组 1–4 个任务，成员不重复、不跨组复用（1 个成员即该任务单独在自己的工作树开发） | `invalid_parallel_group` |
 | 组内全部任务属于同一 feature | `parallel_feature_mismatch` |
 | 组内任意两任务之间不存在依赖路径（按 `tasks.md` 依赖图的传递闭包判定） | `parallel_dependency_conflict` |
 | 组内各任务 `scope` 两两不含相同路径 | `parallel_scope_overlap` |
@@ -1418,6 +1418,33 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 升级前已开始的批次按原规则恢复。
 
 末任务被排除，是因为成员 QA 会延后到它那里统一执行。
+
+**1 人组。** `cm-ai-batch-plan.mjs` 默认（项目配置 `parallel.worktree_all`，默认 `true`）让凑不成对、但满足上表其余
+约束的任务单独成组，例如 `[["1.work/T-001"],["1.work/T-002","1.work/T-003"]]`。它与多人组一样在自己的工作树开发、
+按任务顺序合回、合并冲突停下、被阻断时改排为主目录串行第二代；**QA 不延后**：成员以 `soloMember` 运行（写进运行指纹），
+N6 与串行任务相同、按固定检查点判定，触发时在该工作树里执行 QA，通过后才封存合并。批次没有 QA 修复出口，所以生成器只把
+不会在中途触发固定检查点的任务单独成组：范围（加 `AGENTS.md` 与 `applicableAgentFiles`）不命中工作流 `qa.criticalPaths`
+（`cm-ai-batch-plan.mjs --workflow-config` 传入），且按日志推算（假设前面的任务都不触发 QA）不会成为连续第 5 个未 QA 的任务；
+判断复用 `host-qa-policy.mjs` 的 `decideHostQaPolicy` 与同一份日志计数。新批次宿主按实际 `workflows` 再核，不符报
+`parallel_solo_qa_checkpoint`。工作树从 HEAD 检出，所以主目录的项目配置文件（`.cm-workflow.yml` 等）必须与 HEAD 中该路径的 blob
+（`git cat-file blob HEAD:./<文件>`，不经过滤器）逐字节相同才产生 1 人组；只看「已跟踪且 `git status` 干净」不够，`skip-worktree`／
+`assume-unchanged` 下的本地改动不会显示。不在提交里报 `parallel_solo_config_untracked`，内容不同报 `parallel_solo_config_diverged`；
+生成器与新批次宿主（`validateGroups`）调用同一个函数 `soloWorktreeBlocker`。这只是预筛（Git 检出过滤器、或提交里有两份配置文件而
+主目录藏掉一份时它会放行）：**以 worktree 建好后两边实际加载的配置为准**。`prepareGroup` 在建树后、任何开发派发前，用 QA 与浏览器判定
+同一个 `loadConfig` 分别加载主目录与 1 人组成员目录，比较有效配置摘要；不同或成员目录加载报错时不开发，批次以
+`batch_member_config_diverged` 停下（不写停止记录）。批次**从不自动删除**该工作树与分支：`assume-unchanged`／`skip-worktree`
+下的改动 `git status` 看不到，没有检查能证明目录里没有要保留的内容。结果与指引给出工作树路径、分支名和手动清理命令
+（确认没有要保留的内容后 `git worktree remove <路径>`、`git branch -d <分支>`，不加 `--force`／`-D`）。工作树还在时，下次 advance
+复用它并重新比对配置，一致就继续，不一致继续停。建树时目标分支已存在而工作树不在（手动清理在两条命令之间中断）：分支没有 HEAD 以外的提交就 `git branch -d` 后重建，有独有提交就以 `batch_member_branch_exists` 停下，从不 `-D`。修正到两边一致后对同一批次 advance 即重新建树继续；或设
+`parallel.worktree_all: false`，剩余任务用新批次 ID 继续。2 人及以上组的成员不做这项比对（其 QA 延后到主目录的末任务）。
+预测落空、1 人组 QA 真失败时（安全网），成员不就绪、不合并：宿主把它的已审交付提交到成员分支，记 `batch_member_qa_failed`，
+批次以 `batch_solo_qa_failed` 停止，之后每次 advance/status 重复指引——在主目录 `git merge --no-ff` 该分支、用 `/cm-fix` 按
+QA 报告修复、删除工作树与分支、剩余任务用 `cm-ai-batch-plan.mjs` 以新批次 ID 继续（功能末任务会重跑整个功能的 QA）。
+回归测试验证了停止、分支上的交付、合并分支与新批次走到 `run_done`；其中 `/cm-fix` 的修复、独立审查与回归没有实际执行。功能的 `test-cases.json` 有 blocking 或被 `policies.tests` 选中的
+`browser`（交互式）用例时不产生 1 人组：交互式 QA 可能连主目录启动的服务或 App，在工作树里会测到未合并的代码；
+新批次手写这种 1 人组以 `parallel_solo_interactive_qa` 拒绝，2 人及以上的组不受影响。功能最后一个任务、
+批次最后执行的任务和设备任务仍在主目录串行。`worktree_all: false` 只保留 2 人及以上的组；升级前已开始的批次配置里
+没有 1 人组，恢复不受影响。
 
 **执行方式。** 每个成员分到一个 Git 工作树与独立分支，由调度器创建：
 
@@ -1451,17 +1478,18 @@ key 形如 `1.work/T-001`，与 `tasks` 的 `feature/taskId` 一致。省略该�
 
 在合好的主目录上把该任务串行重做需要重开一个已完成、已审查的任务，暂不自动执行。
 
-**QA 延后。** 成员的 N6 自动记为 `skipped`（`reason: parallel_member_deferred`，`score: null`），
-不逐任务跑 QA；整个 feature 的 QA 在末任务触发一次，覆盖合并后的结果。
+**QA 延后。** 2 人及以上组的成员的 N6 自动记为 `skipped`（`reason: parallel_member_deferred`，`score: null`），
+不逐任务跑 QA；整个 feature 的 QA 在末任务触发一次，覆盖合并后的结果。1 人组不延后，见上文「1 人组」。
 
 **并行的边界。** 当前会话通道一次只接一个工具调用，成员的开发请求按序排队，
 第二个成员的 `develop` 只在第一个被应答之后才发出。真正重叠的是成员 runner 的状态推进
 与各自的独立审查进程，**不是写代码本身**；使用者不应据此预期成倍提速。要让编码真正并发，
 需要为成员配置各自的 provider 开发派发，而不是依赖当前会话。
 
-**前置条件。** 并行成员会在各自工作树里单独跑一次 review preflight，因此 `--review-config`
+**前置条件。** 并行成员（含 1 人组）会在各自工作树里单独跑一次 review preflight，因此 `--review-config`
 是并行的硬前置：缺它整批立即以 `review_preflight_failed` 停止，一行代码都不会开发。
-串行批次没有这个要求。
+串行批次没有这个要求。组里只剩一个未合并成员时（1 人组从一开始就是），`check-parallel-write`
+会把主目录作为第二个分配一起检查，主目录必须在一个分支上（不是 detached HEAD）。
 
 **提议方。** 由 N1 决定哪些任务成组，规则见 `skills/cm-ai/references/js-host.md` 第 3.1 条。
 组不起来就省略该字段，正常串行；不为组而组。

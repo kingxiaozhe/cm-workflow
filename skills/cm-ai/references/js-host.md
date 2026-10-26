@@ -202,13 +202,14 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
    项目最后一个功能完成时照旧返回 `run_done`（或 `run_done_degraded`）。
    `batch` 时把 `config` 原样写成批次配置文件交给 `cm-ai-batch-host.mjs`（能并行的任务已分好组，不再手写 `parallel`）；
    `serial`（有任务没写范围、脚手架功能等）时照旧逐个任务用 `cm-ai-admission.mjs --print-run-definition` 加 `cm-ai-host.mjs`。
-   项目 `.cm-workflow.json` / `.cm-workflow.yml` 的 `parallel: {enabled, max}` 控制开关和每组人数（不写=开启、每组最多 2；
-   `enabled: false` 时只排串行批次，不分组）。单代码根适用；多代码根仍按下文手写。
+   项目 `.cm-workflow.json` / `.cm-workflow.yml` 的 `parallel: {enabled, max, worktree_all}` 控制开关、每组人数和「每个任务都进 worktree」
+   （不写=开启、每组最多 2、`worktree_all: true`；`worktree_all: false` 只保留 2 人及以上的组；
+   `enabled: false` 时只排串行批次，不建 worktree）。单代码根适用；多代码根仍按下文手写。
    任务列表只包含该运行计划内的任务；恢复必须使用原身份、配置和真实当前会话身份，
    单任务同会话恢复用 `--mode resume --host-context {当前真实会话ID}` 加创建时的同一组启动输入（`--review-config`、`--runtime`、`--workflow-config` 等）；换会话恢复再加 `--original-host-context {创建运行的会话ID}`；
    两个 ID 相同等同未传新参数，create 传它报 `original_host_context_unavailable`。不能冒用旧 host-context。
 3.1 并行组由生成器按下列规则算出（多代码根等仍手写时照同一规则），写进 batch 配置的可选 `parallel`（任务 key 的数组的数组）。
-   只组同时满足以下全部条件的任务，任一不满足就不进组；一个组都成立不了就**不写该字段**，正常串行：
+   只组同时满足以下全部条件的任务，任一不满足就不进组；一个组都成立不了就**不写该字段**，正常串行（手写时按「每组 1–4 个」那条决定是否给单个任务成组）：
    - **scope 来自 tasks.md**：新批次只把 `tasks.md` 写了 `- 范围:` 的任务放进组，batch 配置里的 scope
      照抄它（不一致报 `task_scope_mismatch`）；没写范围或写 `串行` 的任务报 `parallel_scope_undeclared`，
      标了 `- 设备: 需要` 的报 `parallel_device_task`。范围应写全：任务可能改动的每个文件，包括已有文件
@@ -220,10 +221,20 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
      runner 也按传递闭包校验并以 `parallel_dependency_conflict` 拒绝，此处自行判定是为了
      提出合法的组而不是被拒后返工。
    - **同一 feature**，且排除该 feature 最后一个未 DROPPED 的任务（它承担合并后的统一 QA），也排除批次里该功能最后执行的任务。
-   - **每组 2–4 个**，不足 2 个不成组；生成器按项目 `parallel.max`（默认 2）封顶。
+   - **每组 1–4 个**：生成器按项目 `parallel.max`（默认 2）封顶；凑不成对的候选任务（满足上面除「两两」以外的全部条件）
+     默认单独成 1 人组，即在自己的 worktree 里开发、按任务顺序合回（`parallel.worktree_all: false` 时不足 2 个不成组）。
+     1 人组和多人组都是合并冲突停下、被阻断时改排主目录串行第二代；但 1 人组 QA 不延后，按固定检查点判定，
+     触发就在它的 worktree 里跑，通过才合回（驾驶员要为它准备 `qa-assess.json`）。功能有交互式（browser 类）
+     blocking 或策略启用的用例时不给 1 人组（交互式 QA 可能连主目录的服务或 App），新批次手写的会被拒为 `parallel_solo_interactive_qa`。
+     批次没有 QA 修复出口，所以生成器还把可能在中途触发固定检查点的任务留在主目录：范围（加 `AGENTS.md` 与工作流的
+     `applicableAgentFiles`）命中 `qa.criticalPaths`，或按日志推算可能是连续第 5 个未 QA 的任务；关键路径来自工作流配置，
+     生成时用 `--workflow-config 同一份单任务工作流 JSON` 传入，宿主启动时按实际 `workflows` 再核，不符报 `parallel_solo_qa_checkpoint`。
+     主目录项目配置文件与 HEAD 中的不逐字节相同时不给 1 人组（不在提交里 `parallel_solo_config_untracked`，内容不同 `parallel_solo_config_diverged`）。
+     这只是预筛，以 worktree 建好后两边实际加载的配置为准：开发前比对不同就停在 `batch_member_config_diverged`；批次从不自动删除 worktree 与分支，指引给出路径、分支名和手动清理命令（`git worktree remove`、`git branch -d`，不加 `--force`／`-D`），worktree 还在时下次 advance 复用并重新比对。手动清理中断留下的空分支下次安全删除重建，有独有提交停在 `batch_member_branch_exists`。1 人组 QA 仍失败时批次停在 `batch_solo_qa_failed`：
+     交付已提交在成员分支，出口是在主目录合并该分支、`/cm-fix` 按 QA 报告修复、删除工作树与分支、剩余任务用新批次 ID 重新生成。
    - **每个成员的前置任务都排在组内第一个成员之前**：整组在第一个成员处同时开工。功能最后一个任务已完成时不分组。
-   能并行才并行，不为组而组；判定不确定时按串行处理。成员在各自 Git 工作树开发、串行合并回
-   主分支，成员 QA 自动延后到末任务；当前会话模式下开发请求仍逐个应答，重叠的是审查与流程开销，
+   能并行才并行，不为组而组（1 人组只是隔离开发，不算并行）；判定不确定时按串行处理。成员在各自 Git 工作树开发、串行合并回
+   主分支，2 人及以上组的成员 QA 自动延后到末任务；当前会话模式下开发请求仍逐个应答，重叠的是审查与流程开销，
    不是写代码本身，不得据此承诺成倍提速。
 
 4. 核对任务所需能力后才启动。QA 使用原测试合同与已授权命令/环境；无 QA 配置不能宣称

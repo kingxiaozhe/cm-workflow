@@ -496,6 +496,8 @@ export function explainCmAiTaskSelection(admission,{feature,taskId,selection=nul
 }
 
 // Trusted caller selection is data bound by openControlRun, never message authority.
+// A batch group may have one member (a task alone in its own worktree); every member,
+// alone or not, must still be an eligible task of the feature.
 export function matchesCmAiTaskSelection(admission,feature,taskId,parallelSelection=null){
   if(parallelSelection===null)return admission.state==='ready'
     &&admission.nextTask?.feature===feature&&admission.nextTask.id===taskId;
@@ -505,7 +507,7 @@ export function matchesCmAiTaskSelection(admission,feature,taskId,parallelSelect
       &&admission.eligibleTasks?.some(task=>task.feature===feature&&task.id===taskId)===true;
   return admission.state==='ready'&&value?.version===1
     &&Object.keys(value).sort().join(',')==='group,version'&&Array.isArray(value.group)
-    &&value.group.length>=2&&new Set(value.group).size===value.group.length
+    &&value.group.length>=1&&new Set(value.group).size===value.group.length
     &&value.group.every(isTaskId)&&value.group.includes(taskId)
     &&admission.eligibleTasks?.some(task=>task.feature===feature&&task.id===taskId)===true;
 }

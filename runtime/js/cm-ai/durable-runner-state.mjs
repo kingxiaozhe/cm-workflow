@@ -1237,7 +1237,7 @@ function completionConfig(config,version){
   if(Object.hasOwn(config,'controlPolicy')){same(config.controlPolicy,readControlPolicy(config.controlPolicy));need(version===3,'runner_version');}
   if(Object.hasOwn(config,'parallelSelection')){
     shape(config.parallelSelection,['version','group']);need(config.parallelSelection.version===1&&Array.isArray(config.parallelSelection.group)
-      &&config.parallelSelection.group.length>=2&&config.parallelSelection.group.includes(config.identity.taskId),'runner_config');
+      &&config.parallelSelection.group.length>=1&&config.parallelSelection.group.includes(config.identity.taskId),'runner_config');
     for(const task of config.parallelSelection.group)id(task);
   }
   if(Object.hasOwn(config,'knowledgeCloseout'))readCloseoutPolicy(config.knowledgeCloseout);

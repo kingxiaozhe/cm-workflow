@@ -90,6 +90,8 @@ export function createHostWorkflowCapabilities({definition,configuration,bridge,
     // decision, its triggers and its record are unchanged.
     const assess=controlPolicy?.qa==='disabled'?async()=>({confirmed:true})
       :(request,signal)=>bridge.call('qa_assess',request,signal,requestTimeout);
+    // parallelMember: a member developed alongside others, whose QA is deferred. A
+    // one-member worktree group passes false and keeps the fixed checkpoints.
     result.qaDecisionProvider=parallelMember?createParallelMemberQaDecisionProvider():createHostQaDecisionProvider({timeoutMs:60000,
       criticalPaths:configuration.qa?.criticalPaths??{},assess});
   }
