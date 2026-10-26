@@ -402,13 +402,16 @@ available (`TYPESAFE_API_KEY`, or on macOS a keychain item named
 `TYPESAFE_API_KEY` for your user). Only the first 500 characters of the message
 are sent. A message is kept local, and the keyword table decides for it, when:
 
-- after folding (compatibility forms made plain, accents split off, lower case, and
-  every character other than a letter or digit dropped, including spaces, punctuation,
-  zero-width characters, modifier letters and Hangul fillers) it contains one of a fixed
+- after folding it contains one of a fixed
   list of credential words: password, passwd, pwd, passcode, token, secret, API key,
   access key, private key, credential, `密码`, `密钥`, `口令`, `令牌`, `凭证`, `凭据`
-  and their traditional Chinese forms — so `API  key`, `api_key`, `ＡＰＩ ｋｅｙ` and a
-  zero-width space inside the word all count;
+  and their traditional Chinese forms. Folding works character by character: a letter
+  or digit becomes its plain form (full-width and other compatibility forms made plain,
+  accents split off), a symbol stays only when it stands for exactly one letter or digit
+  (a circled letter), and everything else is dropped (spaces, punctuation, zero-width
+  and control characters, modifier letters, Hangul fillers, symbols such as `№`); then
+  lower case. So `API  key`, `api_key`, `ＡＰＩ ｋｅｙ` and a zero-width space inside the
+  word all count;
 - or it holds a known key shape (API keys, tokens, private keys), a long mixed-case run,
   or the TypeSafe key itself.
 

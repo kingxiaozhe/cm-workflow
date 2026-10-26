@@ -80,7 +80,9 @@ test('any message naming a credential stays local, however it is written',async(
     'API\u200B'+'key=!Ab12','pass\u2060'+'word=!Ab12','API\u00AD'+'key=!Ab12','API\u0085'+'key=!Ab12','pa\u0301ss'+'word=x',
     // Round 8: Hangul fillers, a modifier letter, a symbol NFKD expands, traditional Chinese.
     'API\u115F'+'key=!Ab12','API\u1160'+'key=!Ab12','API\u3164'+'key=!Ab12','API\uFFA0'+'key=!Ab12',
-    'API\u02BC'+'key=!Ab12','API\u2116'+'key=!Ab12','ⓟⓐⓢⓢⓦⓞⓡⓓ=x','密'+'碼是 1','密'+'鑰：x','憑'+'證=x'];
+    'API\u02BC'+'key=!Ab12','API\u2116'+'key=!Ab12','ⓟⓐⓢⓢⓦⓞⓡⓓ=x','密'+'碼是 1','密'+'鑰：x','憑'+'證=x',
+    // Round 9: compatibility letters and an expanding symbol together; a ligature.
+    '写个交接，ⓐⓟⓘ№'+'key=!Ab12','ⓐⓟⓘ\u200B'+'ｋｅｙ=x','pass'+'ｗｏｒｄ=x','api™'+'key=x'];
   for(const text of named){
     assert.equal(hasSecret(text),true,text);
     const {calls,fetchImpl}=recorder(reply(HANDOFF));
