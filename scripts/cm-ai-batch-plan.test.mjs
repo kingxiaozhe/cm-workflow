@@ -209,9 +209,24 @@ test('one-member groups need the project configuration a worktree gets from Git'
   const plan=f.plan();
   assert.deepEqual(plan.groups,[['T-002','T-003']]);
   assert.throws(()=>host(f,{...plan.config.batch,parallel:[['1.work/T-001'],['1.work/T-002','1.work/T-003']]}),{code:'parallel_solo_config_untracked'});
-  // Tracked, the same configuration reaches every worktree: one-member groups are back.
+  // Committed as it is, the same bytes reach every worktree: one-member groups are back.
   fs.writeFileSync(path.join(f.codeProject,'.gitignore'),'');git('add','-A');git('commit','-qm','track config');
   assert.deepEqual(f.plan().groups,[['T-001'],['T-002','T-003']]);
+  // Review r3: tracked and `git status` clean is not enough. With skip-worktree the main
+  // checkout keeps a local override that a worktree (checked out from HEAD) never sees.
+  fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),'version: 1\n');git('commit','-qam','default config in HEAD');
+  git('update-index','--skip-worktree','.cm-workflow.yml');
+  fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),'version: 1\npolicies:\n  tests: [commands]\n');
+  assert.equal(git('status','--porcelain'),'');
+  const diverged=f.plan();
+  assert.deepEqual(diverged.groups,[['T-002','T-003']]);
+  assert.throws(()=>host(f,{...diverged.config.batch,parallel:[['1.work/T-001'],['1.work/T-002','1.work/T-003']]}),{code:'parallel_solo_config_diverged'});
+  // The same holds for assume-unchanged.
+  git('update-index','--no-skip-worktree','.cm-workflow.yml');git('checkout','--','.cm-workflow.yml');
+  git('update-index','--assume-unchanged','.cm-workflow.yml');
+  fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),'version: 1\npolicies:\n  tests: [commands]\n');
+  assert.equal(git('status','--porcelain'),'');
+  assert.deepEqual(f.plan().groups,[['T-002','T-003']]);
 });
 
 test('a scaffold feature is serial; a finished project is complete; settings are validated',t=>{

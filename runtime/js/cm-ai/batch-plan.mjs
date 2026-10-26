@@ -32,16 +32,23 @@ import {findConfig} from '../../../scripts/cm-workflow-config.mjs';
 // host (cm-ai-batch-run.mjs validateGroups) apply these two checks alike.
 //
 // Feature-wide: the worktree must see the same project configuration as the main
-// checkout (a Git-ignored local config does not reach it, and QA reloads it there),
+// checkout (QA reloads it there). A worktree is checked out from HEAD, so the main
+// checkout's configuration file must be byte-identical to its HEAD blob: an ignored
+// or untracked file never reaches the worktree, and a skip-worktree/assume-unchanged
+// local override hides from `git status` while the worktree gets the committed one;
 // and no interactive (browser/simulator) case may apply, since that QA may target a
 // server or app built from the main checkout. null, or {code,reason}.
 export function soloWorktreeBlocker({specsDir,codeProject,feature}){
   const file=findConfig(codeProject);
   if(file){
-    const tracked=spawnSync('git',['-c','core.fsmonitor=false','-C',codeProject,'ls-files','--error-unmatch','--',path.basename(file)],
-      {encoding:'utf8',timeout:10000,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
-    if(tracked.error||tracked.status!==0)return {code:'parallel_solo_config_untracked',
-      reason:`项目配置 ${path.basename(file)} 没有被 Git 跟踪（例如被 .gitignore 忽略），worktree 里拿不到同一份配置，QA 会按另一套策略执行；提交该配置后再生成批次，或让这些任务在主目录串行`};
+    const name=path.basename(file);
+    // cat-file reads the raw committed blob: no filters, no textconv.
+    const committed=spawnSync('git',['-c','core.fsmonitor=false','-C',codeProject,'cat-file','blob',`HEAD:./${name}`],
+      {timeout:10000,maxBuffer:4*1024*1024,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
+    if(committed.error||committed.status!==0)return {code:'parallel_solo_config_untracked',
+      reason:`项目配置 ${name} 不在当前提交里（未跟踪，例如被 .gitignore 忽略），worktree 里拿不到这份配置，QA 会按另一套策略执行；提交该配置后再生成批次，或让这些任务在主目录串行`};
+    if(!committed.stdout.equals(fs.readFileSync(file)))return {code:'parallel_solo_config_diverged',
+      reason:`主目录的项目配置 ${name} 与当前提交里的不同（可能用了 skip-worktree 或 assume-unchanged 保留本地改动），worktree 拿到的是提交里的那份，QA 会按另一套策略执行；让两者一致后再生成批次，或让这些任务在主目录串行`};
   }
   if(featureHasBrowserCases(specsDir,feature,codeProject))return {code:'parallel_solo_interactive_qa',
     reason:`功能 ${feature} 有浏览器等交互式 QA 用例，可能连接主目录启动的服务或 App；单独开 worktree 会验收到未合并的代码`};

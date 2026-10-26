@@ -1426,11 +1426,14 @@ N6 与串行任务相同、按固定检查点判定，触发时在该工作树�
 不会在中途触发固定检查点的任务单独成组：范围（加 `AGENTS.md` 与 `applicableAgentFiles`）不命中工作流 `qa.criticalPaths`
 （`cm-ai-batch-plan.mjs --workflow-config` 传入），且按日志推算（假设前面的任务都不触发 QA）不会成为连续第 5 个未 QA 的任务；
 判断复用 `host-qa-policy.mjs` 的 `decideHostQaPolicy` 与同一份日志计数。新批次宿主按实际 `workflows` 再核，不符报
-`parallel_solo_qa_checkpoint`。项目配置文件（`.cm-workflow.yml` 等）没被 Git 跟踪时不产生 1 人组，手写报 `parallel_solo_config_untracked`：
-工作树里只有 Git 跟踪的配置，而首次推进要求主目录干净，跟踪的配置因此与主目录一致。
+`parallel_solo_qa_checkpoint`。工作树从 HEAD 检出，所以主目录的项目配置文件（`.cm-workflow.yml` 等）必须与 HEAD 中该路径的 blob
+（`git cat-file blob HEAD:./<文件>`，不经过滤器）逐字节相同才产生 1 人组；只看「已跟踪且 `git status` 干净」不够，`skip-worktree`／
+`assume-unchanged` 下的本地改动不会显示。不在提交里报 `parallel_solo_config_untracked`，内容不同报 `parallel_solo_config_diverged`；
+生成器与新批次宿主（`validateGroups`）调用同一个函数 `soloWorktreeBlocker`。
 预测落空、1 人组 QA 真失败时（安全网），成员不就绪、不合并：宿主把它的已审交付提交到成员分支，记 `batch_member_qa_failed`，
 批次以 `batch_solo_qa_failed` 停止，之后每次 advance/status 重复指引——在主目录 `git merge --no-ff` 该分支、用 `/cm-fix` 按
-QA 报告修复、删除工作树与分支、剩余任务用 `cm-ai-batch-plan.mjs` 以新批次 ID 继续（功能末任务会重跑整个功能的 QA）。功能的 `test-cases.json` 有 blocking 或被 `policies.tests` 选中的
+QA 报告修复、删除工作树与分支、剩余任务用 `cm-ai-batch-plan.mjs` 以新批次 ID 继续（功能末任务会重跑整个功能的 QA）。
+回归测试验证了停止、分支上的交付、合并分支与新批次走到 `run_done`；其中 `/cm-fix` 的修复、独立审查与回归没有实际执行。功能的 `test-cases.json` 有 blocking 或被 `policies.tests` 选中的
 `browser`（交互式）用例时不产生 1 人组：交互式 QA 可能连主目录启动的服务或 App，在工作树里会测到未合并的代码；
 新批次手写这种 1 人组以 `parallel_solo_interactive_qa` 拒绝，2 人及以上的组不受影响。功能最后一个任务、
 批次最后执行的任务和设备任务仍在主目录串行。`worktree_all: false` 只保留 2 人及以上的组；升级前已开始的批次配置里
