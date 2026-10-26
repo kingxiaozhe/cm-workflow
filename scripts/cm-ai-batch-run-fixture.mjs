@@ -271,11 +271,50 @@ export async function batchFixture(mode,options={}){
         assert.equal(result.code,'batch_member_config_diverged',JSON.stringify(result));
         assert.equal(result.currentTask,`${feature}/T-001`);
         assert.match(result.reason,options.configDivergence==='two-files'?/multiple CM workflow configs/:/有效配置不同/);
-        assert.match(result.guidance.nextStep,/worktree_all: false/);
+        assert.match(result.guidance.nextStep,/worktree_all: false/);assert.match(result.reason,/已移除尚未改动的 worktree 与分支/);
         assert.deepEqual(calls,[]);assert(!fs.existsSync(worktree));
         assert.equal(git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']),'');
         assert(!fs.existsSync(path.join(specsDir,'.reviews','.execution',`task-${digest({batchId:config.batchId,task:`${feature}/T-001`}).slice(0,48)}`)));
         result=await open().handle({operation:'advance',requestId});
+      }
+      const branch=`cm/${segment}/work/T-001`,unsetFilter=()=>{git(codeProject,['config','--unset','filter.swap.smudge']);git(codeProject,['config','--unset','filter.swap.clean']);};
+      if(options.cleanup==='user-edits'){
+        // Review r5 (P1): a worktree that exists without a member run may hold the operator's
+        // work (here: after an earlier stop, edits and an untracked file). It is never
+        // deleted: the batch only stops and says why.
+        git(codeProject,['worktree','add','-b',branch,worktree,'HEAD']);
+        fs.writeFileSync(path.join(worktree,'notes.txt'),'operator work\n');fs.writeFileSync(path.join(worktree,'base.js'),'edited\n');
+        for(const requestId of ['user-edits-1','user-edits-2']){
+          result=await open().handle({operation:'advance',requestId});
+          assert.equal(result.code,'batch_member_config_diverged',JSON.stringify(result));
+          assert.match(result.reason,/有改动，未删除/);assert.doesNotMatch(result.reason,/已移除/);
+          assert.equal(fs.readFileSync(path.join(worktree,'notes.txt'),'utf8'),'operator work\n');
+          assert.equal(fs.readFileSync(path.join(worktree,'base.js'),'utf8'),'edited\n');
+          assert.equal(git(codeProject,['rev-parse','--abbrev-ref',branch]),branch);assert.deepEqual(calls,[]);
+        }
+        return;
+      }
+      if(options.cleanup==='interrupted'){
+        // Review r5 (P2): stopped between removing the worktree and deleting its branch. A
+        // leftover branch with nothing beyond the main checkout's HEAD is deleted safely
+        // and the worktree rebuilt, so the same batch goes on once the configuration agrees.
+        git(codeProject,['branch',branch,'HEAD']);unsetFilter();
+        result=await open().handle({operation:'advance',requestId:'after-interrupted-cleanup'});
+        assert.equal(result.code,'run_done',JSON.stringify(result));assert.deepEqual(calls,['T-001','T-002','T-003']);
+        return;
+      }
+      if(options.cleanup==='unique-commit'){
+        // A leftover branch with its own commit is somebody's work: never deleted.
+        const elsewhere=path.join(root,'elsewhere');
+        git(codeProject,['worktree','add','-b',branch,elsewhere,'HEAD']);fs.writeFileSync(path.join(elsewhere,'kept.txt'),'kept\n');
+        git(elsewhere,['add','kept.txt']);git(elsewhere,['commit','-qm','kept work']);git(codeProject,['worktree','remove',elsewhere]);
+        const tip=git(codeProject,['rev-parse',branch]);unsetFilter();
+        for(const requestId of ['unique-1','unique-2']){
+          result=await open().handle({operation:'advance',requestId});
+          assert.equal(result.code,'batch_member_branch_exists',JSON.stringify(result));assert.match(result.reason,new RegExp(branch));
+          assert.equal(git(codeProject,['rev-parse',branch]),tip);assert(!fs.existsSync(worktree));assert.deepEqual(calls,[]);
+        }
+        return;
       }
       if(options.configDivergence==='smudge'){
         // The exit: once both checkouts load the same configuration, the same batch goes on.

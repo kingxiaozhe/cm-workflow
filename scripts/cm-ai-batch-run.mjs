@@ -330,6 +330,14 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       const {worktree,branch}=location(key);
       if(!fs.existsSync(worktree)){
         need(!state.ready.has(key),'batch_worktree_missing');
+        // A branch left without its worktree (a cleanup stopped between removing the
+        // worktree and deleting the branch) is deleted only when it holds nothing beyond
+        // the main checkout's HEAD (`branch -d`, never -D); one with its own commits is
+        // somebody's work and stops the batch.
+        if(branchExists(branch)){
+          if(batchGit(config.codeProject,['rev-list',`HEAD..refs/heads/${branch}`])!=='')return memberBranchExists(key,branch);
+          batchGit(config.codeProject,['branch','-d',branch],'batch_worktree_failed');
+        }
         fs.mkdirSync(path.dirname(worktree),{recursive:true});
         batchGit(config.codeProject,['worktree','add','-b',branch,worktree,'HEAD'],'batch_worktree_failed');
       }
@@ -347,22 +355,40 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     // after the worktree exists and before any develop dispatch.
     for(const key of remaining.filter(key=>soloMember(key)&&!state.ready.has(key))){
       const diverged=memberConfigDivergence(key);if(!diverged)continue;
-      const {worktree,branch}=location(key),definition=plans.get(key);
-      const started=fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json'));
-      // Nothing was developed yet: drop the untouched worktree and branch. A member that
-      // already has a run (its configuration changed later) keeps its worktree.
-      if(!started){
-        batchGit(config.codeProject,['worktree','remove','--force',worktree]);batchGit(config.codeProject,['branch','-d',branch]);
+      const {worktree,branch}=location(key);
+      // Removed only when provably untouched: no member run, nothing in the worktree
+      // (changes, untracked or ignored files) and no commit beyond the main checkout's
+      // HEAD. Never --force and never -D: anything else is the operator's to handle.
+      const removed=memberUntouched(key);
+      if(removed){
+        batchGit(config.codeProject,['worktree','remove',worktree]);batchGit(config.codeProject,['branch','-d',branch]);
         plans.set(key,originalPlans.get(key));
       }
       const nextStep=`让主目录与 worktree 加载出同一份项目配置（取消改写配置的 Git 检出过滤器、删掉多余的配置文件并提交、去掉藏起本地改动的 skip-worktree/assume-unchanged），再对本批次 advance；`
         +`或在项目配置里设 parallel.worktree_all: false，剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次`;
       return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_member_config_diverged',batchId:config.batchId,currentTask:key,
-        reason:`任务 ${key} 单独在 worktree 里开发，但 ${diverged}；QA 会按另一套配置执行，所以不开发${started?'':'，已移除尚未改动的 worktree 与分支'}。出口：${nextStep}。`,
+        reason:`任务 ${key} 单独在 worktree 里开发，但 ${diverged}；QA 会按另一套配置执行，所以不开发`
+          +(removed?'，已移除尚未改动的 worktree 与分支':`；worktree ${worktree}（分支 ${branch}）里有改动，未删除，请先处理其中的内容`)+`。出口：${nextStep}。`,
         guidance:stopGuidance(`任务 ${key} 的 worktree 与主目录加载出的项目配置不一致，未开发。`,`${nextStep}。`,
-          ['以 worktree 建好后两边实际加载的配置为准','主目录与已完成的任务不受影响'])});
+          ['以 worktree 建好后两边实际加载的配置为准','主目录与已完成的任务不受影响',
+            ...(removed?[]:[`worktree ${worktree} 与分支 ${branch} 有改动，未删除：先保存或处理其中的内容，再删除它们（批次不会代为删除）`])])});
     }
     return null;
+  }
+  function branchExists(branch){
+    return spawnSync('git',['-C',config.codeProject,'rev-parse','--verify','--quiet',`refs/heads/${branch}`],gitOptions()).status===0;
+  }
+  function memberUntouched(key){
+    const {worktree,branch}=location(key),definition=originalPlans.get(key);
+    if(fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json')))return false;
+    if(batchGit(worktree,['status','--porcelain','--untracked-files=all','--ignored'])!=='')return false;
+    return batchGit(config.codeProject,['rev-list',`HEAD..refs/heads/${branch}`])==='';
+  }
+  function memberBranchExists(key,branch){
+    const nextStep=`核对分支 ${branch} 上的提交：要保留就合并或另存，不要就在确认后自行删除；然后对本批次 advance`;
+    return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_member_branch_exists',batchId:config.batchId,currentTask:key,
+      reason:`任务 ${key} 的成员分支 ${branch} 已存在且有主目录 HEAD 以外的提交，但对应的 worktree 不在；批次不删除它，也不在它上面开发。出口：${nextStep}。`,
+      guidance:stopGuidance(`任务 ${key} 的成员分支已存在且有独有提交，批次停下。`,`${nextStep}。`,['批次不会代为删除有独有提交的分支'])});
   }
   // Both checkouts' effective configurations, loaded the way QA and the browser check
   // load them (loadConfig). A reason, or null when they are the same.

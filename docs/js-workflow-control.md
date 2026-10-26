@@ -1431,8 +1431,11 @@ N6 与串行任务相同、按固定检查点判定，触发时在该工作树�
 `assume-unchanged` 下的本地改动不会显示。不在提交里报 `parallel_solo_config_untracked`，内容不同报 `parallel_solo_config_diverged`；
 生成器与新批次宿主（`validateGroups`）调用同一个函数 `soloWorktreeBlocker`。这只是预筛（Git 检出过滤器、或提交里有两份配置文件而
 主目录藏掉一份时它会放行）：**以 worktree 建好后两边实际加载的配置为准**。`prepareGroup` 在建树后、任何开发派发前，用 QA 与浏览器判定
-同一个 `loadConfig` 分别加载主目录与 1 人组成员目录，比较有效配置摘要；不同或成员目录加载报错时不开发，删除这个尚未改动的工作树与分支，
-批次以 `batch_member_config_diverged` 停下（不写停止记录）。修正到两边一致后对同一批次 advance 即重新建树继续；或设
+同一个 `loadConfig` 分别加载主目录与 1 人组成员目录，比较有效配置摘要；不同或成员目录加载报错时不开发，批次以
+`batch_member_config_diverged` 停下（不写停止记录）。只有同时满足「该成员没有运行存档、工作树 `git status --porcelain
+--untracked-files=all --ignored` 为空、成员分支没有主目录 HEAD 以外的提交」时，才用不带 `--force` 的 `git worktree remove` 与
+`git branch -d` 删除工作树与分支；任一不满足就什么都不删，结果写明「有改动，未删除」，由操作者先处理。建树时目标分支已存在而工作树不在
+（清理在两条命令之间中断）：分支没有 HEAD 以外的提交就 `git branch -d` 后重建，有独有提交就以 `batch_member_branch_exists` 停下，从不 `-D`。修正到两边一致后对同一批次 advance 即重新建树继续；或设
 `parallel.worktree_all: false`，剩余任务用新批次 ID 继续。2 人及以上组的成员不做这项比对（其 QA 延后到主目录的末任务）。
 预测落空、1 人组 QA 真失败时（安全网），成员不就绪、不合并：宿主把它的已审交付提交到成员分支，记 `batch_member_qa_failed`，
 批次以 `batch_solo_qa_failed` 停止，之后每次 advance/status 重复指引——在主目录 `git merge --no-ff` 该分支、用 `/cm-fix` 按
