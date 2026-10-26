@@ -46,7 +46,23 @@ export async function batchFixture(mode,options={}){
     fs.writeFileSync(path.join(codeProject,'requirements.md'),'# Fixture\n');
     const git=(cwd,args)=>{const result=spawnSync('git',['-C',cwd,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);return result.stdout.trim();};
     {git(codeProject,['init','-b','main']);git(codeProject,['config','user.name','Fixture']);git(codeProject,['config','user.email','fixture@example.invalid']);
-      fs.writeFileSync(path.join(codeProject,parallel?'base.js':'file0.js'),'base\n');git(codeProject,['add','-A']);git(codeProject,['commit','-m','fixture baseline']);}
+      fs.writeFileSync(path.join(codeProject,parallel?'base.js':'file0.js'),'base\n');
+      // configDivergence (review r4): the main checkout's file equals its HEAD blob, yet a
+      // worktree checked out from HEAD loads another configuration.
+      if(options.configDivergence==='smudge'){
+        // A checkout filter rewrites the policy in every new checkout; clean maps it back.
+        fs.writeFileSync(path.join(codeProject,'.cm-workflow.yml'),'version: 1\npolicies:\n  tests: [commands]\n');
+        fs.writeFileSync(path.join(codeProject,'.gitattributes'),'.cm-workflow.yml filter=swap\n');
+        git(codeProject,['config','filter.swap.smudge','sed s/commands/logic/']);git(codeProject,['config','filter.swap.clean','sed s/logic/commands/']);
+      }
+      if(options.configDivergence==='two-files')for(const name of ['.cm-workflow.yml','.cm-workflow.yaml'])
+        fs.writeFileSync(path.join(codeProject,name),'version: 1\n');
+      git(codeProject,['add','-A']);git(codeProject,['commit','-m','fixture baseline']);
+      if(options.configDivergence==='two-files'){
+        // HEAD has both files; the main checkout hides one, so it sees a single config.
+        git(codeProject,['update-index','--skip-worktree','.cm-workflow.yaml']);fs.unlinkSync(path.join(codeProject,'.cm-workflow.yaml'));
+      }
+      if(options.configDivergence)assert.equal(git(codeProject,['status','--porcelain']),'');}
     const config={version:1,repositoryId:'batch-fixture',batchId:'batch-fixture',specsDir,codeProject,
       ...(options.executionPolicy?{executionPolicy:EXECUTION_POLICY_V1}:{}),
       ...(parallel?{parallel:each?[[`${feature}/T-001`],[`${feature}/T-002`]]:[[`${feature}/T-001`,`${feature}/T-002`]]}:{}),
@@ -246,6 +262,29 @@ export async function batchFixture(mode,options={}){
     }
     let result;
     try{result=await pending;}catch(error){if(!(mode==='parallel-resume'||mode==='parallel-old-merge'||mode==='final-commit'||recovery&&options.crashAt)||error.code!=='simulated_interrupt')throw error;}finally{fs.existsSync=originalExists;}
+    if(options.configDivergence){
+      // Compared where it counts: after the worktree is created and before any develop
+      // dispatch, both checkouts' effective configurations as loaded. A difference (or a
+      // member that cannot load one) stops the batch and removes the untouched worktree.
+      const segment=batchSegment(config.batchId),worktree=path.join(root,'.cm-worktrees',segment,'T-001');
+      for(const requestId of ['diverged-1','diverged-2']){
+        assert.equal(result.code,'batch_member_config_diverged',JSON.stringify(result));
+        assert.equal(result.currentTask,`${feature}/T-001`);
+        assert.match(result.reason,options.configDivergence==='two-files'?/multiple CM workflow configs/:/有效配置不同/);
+        assert.match(result.guidance.nextStep,/worktree_all: false/);
+        assert.deepEqual(calls,[]);assert(!fs.existsSync(worktree));
+        assert.equal(git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']),'');
+        assert(!fs.existsSync(path.join(specsDir,'.reviews','.execution',`task-${digest({batchId:config.batchId,task:`${feature}/T-001`}).slice(0,48)}`)));
+        result=await open().handle({operation:'advance',requestId});
+      }
+      if(options.configDivergence==='smudge'){
+        // The exit: once both checkouts load the same configuration, the same batch goes on.
+        git(codeProject,['config','--unset','filter.swap.smudge']);git(codeProject,['config','--unset','filter.swap.clean']);
+        result=await open().handle({operation:'advance',requestId:'after-config-fix'});
+        assert.equal(result.code,'run_done',JSON.stringify(result));assert.deepEqual(calls,['T-001','T-002','T-003']);
+      }
+      return;
+    }
     if(mode==='worktree-each-qa'&&options.qaFail){
       // The safety net: the member's own QA failed in its worktree. It is not merged; the
       // batch stops with the reviewed delivery committed on the member branch and names

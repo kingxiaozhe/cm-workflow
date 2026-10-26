@@ -1429,7 +1429,11 @@ N6 与串行任务相同、按固定检查点判定，触发时在该工作树�
 `parallel_solo_qa_checkpoint`。工作树从 HEAD 检出，所以主目录的项目配置文件（`.cm-workflow.yml` 等）必须与 HEAD 中该路径的 blob
 （`git cat-file blob HEAD:./<文件>`，不经过滤器）逐字节相同才产生 1 人组；只看「已跟踪且 `git status` 干净」不够，`skip-worktree`／
 `assume-unchanged` 下的本地改动不会显示。不在提交里报 `parallel_solo_config_untracked`，内容不同报 `parallel_solo_config_diverged`；
-生成器与新批次宿主（`validateGroups`）调用同一个函数 `soloWorktreeBlocker`。
+生成器与新批次宿主（`validateGroups`）调用同一个函数 `soloWorktreeBlocker`。这只是预筛（Git 检出过滤器、或提交里有两份配置文件而
+主目录藏掉一份时它会放行）：**以 worktree 建好后两边实际加载的配置为准**。`prepareGroup` 在建树后、任何开发派发前，用 QA 与浏览器判定
+同一个 `loadConfig` 分别加载主目录与 1 人组成员目录，比较有效配置摘要；不同或成员目录加载报错时不开发，删除这个尚未改动的工作树与分支，
+批次以 `batch_member_config_diverged` 停下（不写停止记录）。修正到两边一致后对同一批次 advance 即重新建树继续；或设
+`parallel.worktree_all: false`，剩余任务用新批次 ID 继续。2 人及以上组的成员不做这项比对（其 QA 延后到主目录的末任务）。
 预测落空、1 人组 QA 真失败时（安全网），成员不就绪、不合并：宿主把它的已审交付提交到成员分支，记 `batch_member_qa_failed`，
 批次以 `batch_solo_qa_failed` 停止，之后每次 advance/status 重复指引——在主目录 `git merge --no-ff` 该分支、用 `/cm-fix` 按
 QA 报告修复、删除工作树与分支、剩余任务用 `cm-ai-batch-plan.mjs` 以新批次 ID 继续（功能末任务会重跑整个功能的 QA）。

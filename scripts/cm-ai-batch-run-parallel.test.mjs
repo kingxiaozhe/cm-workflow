@@ -12,3 +12,9 @@ test('one-member groups develop in their own worktree, merge back in order and c
 // triggers QA at once, in its worktree, and only a passing QA lets it merge.
 test('a one-member group runs its triggered QA in its worktree before merging',()=>batchFixture('worktree-each-qa'));
 test('a one-member group whose own QA fails is not merged and the batch stops',()=>batchFixture('worktree-each-qa',{qaFail:true}));
+// Review r4: the effective configuration is compared after the worktree exists, before any
+// develop dispatch: a checkout filter, or a second config file hidden in the main checkout.
+test('a one-member group whose worktree loads another configuration stops before developing (checkout filter)',
+  ()=>batchFixture('worktree-each',{configDivergence:'smudge'}));
+test('a one-member group whose worktree loads another configuration stops before developing (two config files)',
+  ()=>batchFixture('worktree-each',{configDivergence:'two-files'}));

@@ -13,6 +13,7 @@ import {batchOperatorGuidance} from '../runtime/js/cm-ai/operator-guidance.mjs';
 import {digest,json,shape,need,id,hex} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {scanRows,findCmAiQaDecision,latestCmAiQaRun} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {checkParallelWrite} from './cm-task-gate.mjs';
+import {loadConfig} from './cm-workflow-config.mjs';
 import {parseFeatureTaskText} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {approvedTaskGrammar} from '../runtime/js/spec-task-line.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
@@ -339,6 +340,38 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const assignments=remaining.map(key=>`${plans.get(key).identity.taskId}=${location(key).worktree}`);
     if(assignments.length===1)assignments.push(`T-batch-main=${config.codeProject}`);
     if(assignments.length)checkParallelWrite({repo:config.codeProject,assignment:assignments});
+    // A one-member group decides and runs its own QA in its worktree, which reloads the
+    // project configuration there. The planner's blob check is only a pre-filter (a
+    // checkout filter or a second config file hidden in the main checkout pass it), so
+    // the effective configurations both checkouts actually load are compared here,
+    // after the worktree exists and before any develop dispatch.
+    for(const key of remaining.filter(key=>soloMember(key)&&!state.ready.has(key))){
+      const diverged=memberConfigDivergence(key);if(!diverged)continue;
+      const {worktree,branch}=location(key),definition=plans.get(key);
+      const started=fs.existsSync(path.join(config.specsDir,'.reviews','.execution',definition.identity.runId,'state.json'));
+      // Nothing was developed yet: drop the untouched worktree and branch. A member that
+      // already has a run (its configuration changed later) keeps its worktree.
+      if(!started){
+        batchGit(config.codeProject,['worktree','remove','--force',worktree]);batchGit(config.codeProject,['branch','-d',branch]);
+        plans.set(key,originalPlans.get(key));
+      }
+      const nextStep=`让主目录与 worktree 加载出同一份项目配置（取消改写配置的 Git 检出过滤器、删掉多余的配置文件并提交、去掉藏起本地改动的 skip-worktree/assume-unchanged），再对本批次 advance；`
+        +`或在项目配置里设 parallel.worktree_all: false，剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次`;
+      return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_member_config_diverged',batchId:config.batchId,currentTask:key,
+        reason:`任务 ${key} 单独在 worktree 里开发，但 ${diverged}；QA 会按另一套配置执行，所以不开发${started?'':'，已移除尚未改动的 worktree 与分支'}。出口：${nextStep}。`,
+        guidance:stopGuidance(`任务 ${key} 的 worktree 与主目录加载出的项目配置不一致，未开发。`,`${nextStep}。`,
+          ['以 worktree 建好后两边实际加载的配置为准','主目录与已完成的任务不受影响'])});
+    }
+    return null;
+  }
+  // Both checkouts' effective configurations, loaded the way QA and the browser check
+  // load them (loadConfig). A reason, or null when they are the same.
+  function memberConfigDivergence(key){
+    const load=root=>{try{return {value:digest(json(loadConfig({projectRoot:root})))};}catch(error){return {error:error.message??String(error)};}};
+    const main=load(config.codeProject),member=load(location(key).worktree);
+    if(main.error)return `主目录的项目配置无法加载（${main.error}）`;
+    if(member.error)return `worktree 里的项目配置无法加载（${member.error}）`;
+    return main.value===member.value?null:'worktree 与主目录加载出的有效配置不同';
   }
   function preserveBlockedMember(row){
     const {worktree,branch}=location(row.from_key);
@@ -480,7 +513,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       ready:group.filter(key=>initial.ready.has(key)),merged:group.filter(key=>initial.done.has(key))};
     if(!initial.rows.length)record('batch_start',{from_key:liveKey,[BATCH_SEGMENT_FIELD]:batchSegment(config.batchId)});
     if(request.operation==='cancel'){record('batch_cancel',{from_key:liveKey});return {outcome:'cancelled',code:'cancelled',batchId:config.batchId};}
-    prepareGroup(group);
+    const prepared=prepareGroup(group);if(prepared)return prepared;
     // Resolve every member's actual worktree preflight before any start dispatch.
     for(const key of group.filter(key=>membership.has(key)&&!initial.done.has(key))){
       try{await executionForKey(key);}catch(cause){
