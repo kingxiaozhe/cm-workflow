@@ -32,14 +32,26 @@ const KEY_NAME='TYPESAFE_API_KEY';
 // mentions a credential has no such gap. It costs little: such a message only falls back
 // to keywords, and none of the 50 exam phrasings mentions one. A credential pasted with
 // no recognisable shape and no credential word can still pass, which the docs say.
-// Matched on a folded copy of the message that keeps letters and digits only: full-width
-// forms made plain and accents split off (NFKD), lower case, and every other character dropped (spaces,
-// punctuation, underscores, zero-width and other invisible characters, combining marks),
-// so "API  key", "api_key", "ＡＰＩ ｋｅｙ", "pass word" and "API\u200Bkey" all read the
-// same. Dropping them can join two words into a credential word by accident; that only
-// costs the Jev call.
-const CREDENTIAL_WORD=/apikey|secret|token|passwd|password|pwd|passcode|accesskey|privatekey|credential|密钥|秘钥|密码|口令|令牌|凭证|凭据/;
-const fold=text=>text.normalize('NFKD').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'');
+// Matched on two folded copies of the message, letters and digits only, lower case:
+// - NFKD first, then everything else dropped: full-width and other compatibility forms
+//   become plain letters ("ＡＰＩ ｋｅｙ", circled letters) and accents split off;
+// - everything but letters, digits and marks dropped first, then NFKD: a symbol that
+//   NFKD would expand into letters ("API№key" -> "apinokey") goes before it can.
+// Both drop spaces, punctuation, control and zero-width characters, modifier letters
+// (U+02BC looks like an apostrophe) and the invisible Hangul fillers, so "API  key",
+// "api_key", "pass word" and "API\u200Bkey" read the same. Dropping them can join two
+// words into a credential word by accident; that only costs the Jev call.
+// Known limits, stated in the docs (review round 8 listed them): look-alike letters
+// from other scripts ("pаssword" with a Cyrillic a), letters with no decomposition
+// ("tøken"), extra or swapped letters and digits ("passXword", "t0ken"), escapes and
+// encodings ("pass%77ord"), reordering through bidirectional controls, and wording
+// outside the word list. Traditional Chinese forms of the listed words are included.
+const CREDENTIAL_WORD=/apikey|secret|token|passwd|password|pwd|passcode|accesskey|privatekey|credential|密钥|秘钥|密码|口令|令牌|凭证|凭据|密鑰|祕鑰|秘鑰|密碼|憑證|憑據/;
+const DROP=/[^\p{L}\p{N}]|\p{Lm}|[\u115F\u1160\u3164\uFFA0]/gu;
+const folds=text=>[
+  text.normalize('NFKD').toLowerCase().replace(DROP,''),
+  text.replace(/[^\p{L}\p{N}\p{M}]/gu,'').normalize('NFKD').toLowerCase().replace(DROP,''),
+];
 const SECRET_PATTERNS=[
   /\bsk-[A-Za-z0-9_-]{16,}/,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/,
@@ -53,7 +65,7 @@ const SECRET_PATTERNS=[
 // A long run of letters and digits mixing cases and digits looks like a token; plain hex
 // (commit ids, hashes) does not.
 const tokenLike=word=>word.length>=32&&!/^[0-9a-f]+$/i.test(word)&&/[a-z]/.test(word)&&/[A-Z]/.test(word)&&/\d/.test(word);
-export const hasSecret=text=>CREDENTIAL_WORD.test(fold(text))
+export const hasSecret=text=>folds(text).some(folded=>CREDENTIAL_WORD.test(folded))
   ||SECRET_PATTERNS.some(pattern=>pattern.test(text))
   ||(text.match(/[A-Za-z0-9_+/=-]{32,}/g)??[]).some(tokenLike);
 

@@ -77,7 +77,10 @@ test('any message naming a credential stays local, however it is written',async(
     // Round 6: separators and full-width forms inside a compound word.
     '写个交接，API  '+'key=!Ab12','写个交接，api\tkey=!Ab12','ＡＰＩ ｋｅｙ'+'=!Ab12','my pass '+'word is x','access-'+'-key: x','private.'+'key=x',
     // Round 7: invisible characters inside the word.
-    'API\u200B'+'key=!Ab12','pass\u2060'+'word=!Ab12','API\u00AD'+'key=!Ab12','API\u0085'+'key=!Ab12','pa\u0301ss'+'word=x'];
+    'API\u200B'+'key=!Ab12','pass\u2060'+'word=!Ab12','API\u00AD'+'key=!Ab12','API\u0085'+'key=!Ab12','pa\u0301ss'+'word=x',
+    // Round 8: Hangul fillers, a modifier letter, a symbol NFKD expands, traditional Chinese.
+    'API\u115F'+'key=!Ab12','API\u1160'+'key=!Ab12','API\u3164'+'key=!Ab12','API\uFFA0'+'key=!Ab12',
+    'API\u02BC'+'key=!Ab12','API\u2116'+'key=!Ab12','ⓟⓐⓢⓢⓦⓞⓡⓓ=x','密'+'碼是 1','密'+'鑰：x','憑'+'證=x'];
   for(const text of named){
     assert.equal(hasSecret(text),true,text);
     const {calls,fetchImpl}=recorder(reply(HANDOFF));

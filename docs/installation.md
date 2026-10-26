@@ -400,14 +400,23 @@ version is installed for that host:
 Whether one of them fits is judged by TypeSafe's Jev when a TypeSafe key is
 available (`TYPESAFE_API_KEY`, or on macOS a keychain item named
 `TYPESAFE_API_KEY` for your user). Only the first 500 characters of the message
-are sent. A message that names a credential at all (password, token, API key,
-secret, `密码`, `密钥` and similar words, read case-insensitively with full-width
-forms made plain and every character other than a letter or digit ignored (spaces,
-punctuation, invisible characters), so `API  key`, `api_key` and `ＡＰＩ ｋｅｙ` all count) is kept local, as
-is one holding a known key shape (API keys, tokens, private keys), a long mixed-case
-run, or the TypeSafe key itself; for such a message the keyword table decides. This
-is pattern matching, not a guarantee: a credential pasted with no recognisable shape
-and no credential word can still be sent. Jev gets at most 3
+are sent. A message is kept local, and the keyword table decides for it, when:
+
+- after folding (compatibility forms made plain, accents split off, lower case, and
+  every character other than a letter or digit dropped, including spaces, punctuation,
+  zero-width characters, modifier letters and Hangul fillers) it contains one of a fixed
+  list of credential words: password, passwd, pwd, passcode, token, secret, API key,
+  access key, private key, credential, `密码`, `密钥`, `口令`, `令牌`, `凭证`, `凭据`
+  and their traditional Chinese forms — so `API  key`, `api_key`, `ＡＰＩ ｋｅｙ` and a
+  zero-width space inside the word all count;
+- or it holds a known key shape (API keys, tokens, private keys), a long mixed-case run,
+  or the TypeSafe key itself.
+
+This is pattern matching, not a guarantee. It does not catch: a credential pasted with
+no recognisable shape and no credential word; look-alike letters from other scripts
+(a Cyrillic `а` in `pаssword`); letters with no decomposition (`tøken`); extra, missing,
+swapped or digit-for-letter characters (`passXword`, `t0ken`); escapes and encodings
+(`pass%77ord`); text reordered with bidirectional controls; other wording or languages. Jev gets at most 3
 seconds, with a second request when the first fails or has not answered within 1
 second. Without a key, on a credential-looking message, or when Jev fails, the
 same keyword table decides. A message that opens with a command (`/handoff …`) is
