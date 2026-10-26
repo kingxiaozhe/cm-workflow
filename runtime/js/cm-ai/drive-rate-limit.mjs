@@ -8,9 +8,11 @@
 // second rate limit in the same round comes back as blocked, which stops here.
 export const RATE_LIMIT_RETRY_ENV='CM_DRIVE_RATE_LIMIT_RETRY';
 export const RATE_LIMIT_DELAYS_ENV='CM_DRIVE_RATE_LIMIT_DELAYS_MS';
-// At most three waits of 10 minutes, about 30 minutes in all (2026-10-26: the
-// review succeeded when resumed about 15 minutes after the 429).
-export const RATE_LIMIT_DEFAULT_DELAYS_MS=Object.freeze([600000,600000,600000]);
+// At most three waits, 15, 10 and 5 minutes, 30 minutes in all. The first is the
+// longest: on 2026-10-26 the review succeeded when resumed about 15 minutes after
+// the 429, and a round has only one automatic redispatch, so it should not be spent
+// too early.
+export const RATE_LIMIT_DEFAULT_DELAYS_MS=Object.freeze([900000,600000,300000]);
 export const RATE_LIMIT_MAX_TOTAL_MS=1800000;
 // Operations that can dispatch a review of the current round.
 export const RATE_LIMIT_RETRY_OPERATIONS=Object.freeze(['advance','resume','decision']);

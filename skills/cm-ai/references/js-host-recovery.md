@@ -175,7 +175,7 @@ Codex 审查返回 429／Too Many Requests／rate limit 时同样记为 `reviewe
 拿到 `pending_review/review_provider_failed` 且 `reviewFailure` 为 `reviewer_rate_limited`、`pendingAction: resume` 时，
 不打印这次结果、不推送，在 stderr 写一行「审查被限流……分钟后在原运行自动重派审查（第 n/3 次）」，等待后用同一 PLAN
 以 `resume` 模式（create 的 PLAN 自动改为 resume，`originalHostContext` 取 `hostContext`）重跑同一条驾驶命令；
-stdout 只输出重跑的结果，退出码也取重跑的。默认每次等 10 分钟、最多 3 次、合计不超过 30 分钟（`CM_DRIVE_RATE_LIMIT_DELAYS_MS`
+stdout 只输出重跑的结果，退出码也取重跑的。默认依次等 15、10、5 分钟，最多 3 次、合计 30 分钟（`CM_DRIVE_RATE_LIMIT_DELAYS_MS`
 可写逗号分隔的毫秒数，1–3 项、合计不超过 1800000，否则用默认值）。重跑走的就是本节的自动重派：不算审查轮次，
 不发送 `abandon_review`，不加任何授权参数；同一轮第二次限流按下文停在 `blocked`（`pendingAction: abandon_review`），
 驾驶员不再重试，把结果原样返回并立即推送「已自动重试 n 次仍失败；过半小时后回到会话说继续即可」。PLAN 带 `--supersede*` 参数时不自动重试。

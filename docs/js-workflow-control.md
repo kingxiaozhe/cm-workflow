@@ -1562,7 +1562,7 @@ cm-ai 批次直接派发当前任务的 fresh 审查；review.json 绑定模型�
 | `state: "unknown"` + 已登记且无结果的 review invocation | 审查调用未完成 | `pendingAction: "abandon_review"`；核对旧 host 和 reviewer 进程后在原 run 显式退出 |
 | `state: "unknown"` + `transport_timeout`，结果已入 journal 且有最终消息 | reviewer 给出最终消息后被超时截断，结论从未被接收 | `pendingAction: "abandon_review"`；确认 reviewer 已退出后在原 run 显式放弃这条结果，再按一次重派恢复 |
 | `state: "blocked"` + `develop_retry_limit` | 可重试的开发阻断反复出现，剩余调用名额已不够再交付一次并送审，或剩余 effect 名额已不够交付并送审（complete、QA 与文档不占 effect，已批准的运行总能进入完成）；运行器在派发开发前写入 `develop-retry-limit`，没有 intent、没有开发调用 | 终态；按 `reason` 中上次阻断原因修好根因，用 `--supersede-reviewed-evidence` 新建运行 |
-| `state: "pending_review"` + `review_provider_failed` | 审查 CLI 没给结论就失败（`reason` 首段为类别，如 `reviewer_auth_failed`；结构化字段 `reviewFailure` 同值） | 按 `reason` 先登录或等额度，沿原运行恢复直接重派；同一 attempt 只重派一次。`reviewFailure: reviewer_rate_limited` 时 cm-ai 驾驶员自己等待后重派（默认 10 分钟、最多 3 次），见 `skills/cm-ai/references/js-host-recovery.md` |
+| `state: "pending_review"` + `review_provider_failed` | 审查 CLI 没给结论就失败（`reason` 首段为类别，如 `reviewer_auth_failed`；结构化字段 `reviewFailure` 同值） | 按 `reason` 先登录或等额度，沿原运行恢复直接重派；同一 attempt 只重派一次。`reviewFailure: reviewer_rate_limited` 时 cm-ai 驾驶员自己等待后重派（默认依次等 15、10、5 分钟，最多 3 次），见 `skills/cm-ai/references/js-host-recovery.md` |
 | `state: "pending_review"` + `review_verdict_invalid` | 审查答复违反 verdict 规则（`reason` 首段为具体代码） | 沿原运行恢复直接重派；同一 attempt 只重派一次 |
 | `state: "fixture_completed"` + `code: "qa_execution_unknown"` | 一次 QA 调用没拿到终态，工具可能还在跑或已被中断 | `--rerun-unknown-qa` |
 | `state: "blocked"` + `code: "review_package_changed"` | 独立审查已返回 verdict，但代码根在调用期间漂移；reason 列出路径 | 清理或还原后在原 run 继续 `advance`，不再调用 reviewer |
