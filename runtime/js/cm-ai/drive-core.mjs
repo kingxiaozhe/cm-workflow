@@ -4,8 +4,8 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import readline from 'node:readline';
 import {guidanceText} from './operator-guidance.mjs';
-import {applyRateLimitResume,nextRateLimitRetry,rateLimitedReview,rateLimitRetriesDone,RATE_LIMIT_RETRY_ENV,RATE_LIMIT_CHECK_ENV,
-  RATE_LIMIT_PLAN_DIGEST_ENV,planFileFromArgv,planDigest,digestBytes,argvWithOperation,rateLimitBinding,rateLimitBindingMismatch} from './drive-rate-limit.mjs';
+import {applyRateLimitResume,nextRateLimitRetry,rateLimitedReview,rateLimitRetriesDone,RATE_LIMIT_RETRY_ENV,RATE_LIMIT_EXPECTED_ENV,
+  RATE_LIMIT_PLAN_DIGEST_ENV,planFileFromArgv,planDigest,digestBytes,expectedReviewStop,readExpectedReviewStop} from './drive-rate-limit.mjs';
 
 export const stderr=line=>process.stderr.write(`[drive] ${line}\n`);
 const waitWords=ms=>ms<60000?`${Math.max(1,Math.ceil(ms/1000))} 秒`:`${Math.round(ms/60000)} 分钟`;
@@ -34,8 +34,15 @@ export function loadPlanFile({argv=process.argv.slice(2),name,known}){
   // A rate-limit check or re-run is bound to the PLAN bytes the waiting driver started from.
   const bound=process.env[RATE_LIMIT_PLAN_DIGEST_ENV];
   if(bound&&digestBytes(bytes)!==bound)stop(2,'状态已变，未自动重试：PLAN 文件在限流等待期间被改过');
-  // A rate-limit re-run (driveHost below) resumes the run its first command created.
+  // A rate-limit re-run (driveHost below) resumes the run its first command created,
+  // and is only ever a decision bound to the frozen review stop it waited for.
   if(plan&&typeof plan==='object')applyRateLimitResume(plan);
+  const expected=rateLimitRetriesDone()>0?readExpectedReviewStop():null;
+  if(rateLimitRetriesDone()>0){
+    if(!expected||!known.has('decision'))stop(2,'状态已变，未自动重试：缺少等待时冻结的审查限流前置条件');
+    plan.packageDigest=expected.packageDigest;
+    return {operation:'decision',plan,base,expectedReviewStop:expected};
+  }
   return {operation,plan,base};
 }
 
@@ -98,12 +105,16 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
   const sendNotice=(fields,mod)=>{
     if(!failureCode&&rateLimitedReview(finalRow)&&retriesDone>0)fields={...fields,rateLimitRetries:retriesDone,delivery:'now'};
     if(fields.delivery!=='later')return mod.notify(fields);
-    // A deferral that could not be scheduled (unsafe pending directory, busy
-    // state) is sent at once rather than lost.
-    return mod.notifyLater(fields).then(result=>result.scheduled||['off','sent_now','invalid_key'].includes(result.reason)?result:mod.notify(fields));
+    // An unsafe pending directory already produced its once-a-day fault notice
+    // and the stop is not sent; any other failure to schedule (state busy, write
+    // failed) sends the stop at once rather than losing it.
+    return mod.notifyLater(fields).then(result=>result.scheduled||['off','sent_now','invalid_key','pending_dir_unsafe'].includes(result.reason)?result:mod.notify(fields));
   };
   const notice=failure=>{
     if(noticed)return;noticed=true;
+    // A timed retry the host refused as stale dispatched nothing: the run moved
+    // on without it, so there is nothing new to tell the person.
+    if(!failure&&retriesDone>0&&finalRow?.result?.staleRetry===true)return;
     if(retry!==null&&!failure){waitAndRetry();return;}
     if(retry!==null)releaseRetry();
     if(rejected!==null)failure='host_response_rejected';else if(!failure&&unanswered&&!finalRow)failure='host_request_unanswered';
@@ -129,11 +140,13 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
   };
   // A host failure after the result was chosen for a retry: show it as usual.
   const releaseRetry=()=>{printFinal(finalRow);retry=null;};
-  // The stop the timed re-run belongs to, recorded when the wait starts.
+  // The timed re-run: after the wait, the same driver command is run again as a
+  // decision carrying the frozen stop (round identity, reviewed package, failed
+  // invocation). The host checks it under the run's writer lock and either
+  // redispatches exactly that review or answers staleRetry without any effect.
   const planFile=planFileFromArgv();
-  const STATUS_CHECK_MS=120000;
   const waitAndRetry=()=>{
-    const pending=retry,binding=rateLimitBinding(finalRow,planFile?planDigest(planFile):null);
+    const pending=retry,frozenPlan=planFile?planDigest(planFile):null,expected=expectedReviewStop(finalRow);
     // Backstop: if this waiting driver is killed, the stop is still sent once
     // the wait and waitMinutes have passed; the re-run's start cancels it.
     import('../notify.mjs').then(mod=>{
@@ -147,12 +160,13 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       import('../notify.mjs').then(mod=>{const fields=mod.driveNotice({host,cwd,args,operation,row:finalRow,failure:null});
         return fields?sendNotice(fields,mod):null;}).catch(()=>{});
     };
-    const bound={...process.env,[RATE_LIMIT_PLAN_DIGEST_ENV]:binding.planDigest??''};
-    const rerun=()=>{
-      stderr(`审查限流等待结束，原运行仍停在这次限流，重派审查（第 ${pending.attempt}/${pending.max} 次）`);
+    setTimeout(()=>{
+      if(!frozenPlan||!expected||planDigest(planFile)!==frozenPlan){giveUp('PLAN 文件在等待期间被改过或读不了');return;}
+      stderr(`审查限流等待结束，按等待时那次限流重派这一次审查（第 ${pending.attempt}/${pending.max} 次）；运行已变时宿主不派发任何操作`);
       let child;
       try{child=spawn(process.execPath,[...process.execArgv,process.argv[1],...process.argv.slice(2)],{cwd:process.cwd(),stdio:'inherit',
-        env:{...bound,[RATE_LIMIT_RETRY_ENV]:String(pending.attempt)}});}
+        env:{...process.env,[RATE_LIMIT_PLAN_DIGEST_ENV]:frozenPlan,[RATE_LIMIT_EXPECTED_ENV]:JSON.stringify(expected),
+          [RATE_LIMIT_RETRY_ENV]:String(pending.attempt)}});}
       catch{child=null;}
       const failed=()=>{
         stderr('自动重派没能启动：下面是限流时的原结果，请回到会话说「继续」');
@@ -163,32 +177,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       if(!child){failed();return;}
       child.once('error',failed);
       child.once('exit',(code,signal)=>{process.exitCode=code??(signal?1:0);});
-    };
-    // Before anything is dispatched: the PLAN bytes, then a read-only status of
-    // the same command must still show exactly the bound rate-limited stop.
-    const check=()=>{
-      if(!planFile||planDigest(planFile)!==binding.planDigest){giveUp('PLAN 文件在等待期间被改过或读不了');return;}
-      const statusArgv=argvWithOperation(process.argv.slice(2),'status');
-      if(!statusArgv){giveUp('无法构造只读 status 命令');return;}
-      let child;
-      try{child=spawn(process.execPath,[...process.execArgv,process.argv[1],...statusArgv],{cwd:process.cwd(),stdio:['ignore','pipe','pipe'],
-        env:{...bound,[RATE_LIMIT_CHECK_ENV]:'1'}});}
-      catch{giveUp('只读 status 启动失败');return;}
-      let out='',settled=false;
-      const killer=setTimeout(()=>{try{child.kill('SIGKILL');}catch{}},STATUS_CHECK_MS);
-      child.stdout.on('data',chunk=>{if(out.length<4*1024*1024)out+=chunk;});
-      child.stderr.resume();
-      const finish=code=>{
-        if(settled)return;settled=true;clearTimeout(killer);
-        let row=null;try{row=JSON.parse(out);}catch{}
-        const mismatch=code!==0&&!row?`只读 status 失败（退出码 ${code}）`
-          :rateLimitBindingMismatch(binding,row,planDigest(planFile));
-        if(mismatch)giveUp(mismatch);else rerun();
-      };
-      child.once('error',()=>finish(-1));
-      child.once('close',code=>finish(code));
-    };
-    setTimeout(check,pending.delayMs);
+    },pending.delayMs);
   };
   const signalOwnHost=(signal,cleanup=false)=>{
     if((closed&&!cleanup)||!child.pid)return;
@@ -308,6 +297,7 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
       }
       done=true;finalRow=row;finalAt=Date.now();control.abort();
       retry=rateLimitRetry&&!deliberateStop&&!refused&&!unanswered&&rejected===null?nextRateLimitRetry(row):null;
+      if(retriesDone>0&&row.result?.staleRetry===true)stderr('状态已变，未自动重试：宿主核对运行已不停在等待时那次审查限流，没有派发任何操作');
       if(retry)stderr(`审查被限流（reviewer_rate_limited），${waitWords(retry.delayMs)}后在原运行自动重派审查（第 ${retry.attempt}/${retry.max} 次）；等待期间不推送，也不用你处理`);
       else printFinal(row);
       process.exitCode=deliberateStop||refused?2:hostResponseFailed(row)||rejected!==null||unanswered?1:0;

@@ -11,8 +11,6 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 
 export const RATE_LIMIT_RETRY_ENV='CM_DRIVE_RATE_LIMIT_RETRY';
-// The read-only status check before a re-run (resume mode, nothing dispatched).
-export const RATE_LIMIT_CHECK_ENV='CM_DRIVE_RATE_LIMIT_CHECK';
 // SHA-256 of the PLAN bytes the waiting driver started from; a re-run reading
 // other bytes stops before launching anything.
 export const RATE_LIMIT_PLAN_DIGEST_ENV='CM_DRIVE_RATE_LIMIT_PLAN_DIGEST';
@@ -23,9 +21,12 @@ export const RATE_LIMIT_DELAYS_ENV='CM_DRIVE_RATE_LIMIT_DELAYS_MS';
 // too early.
 export const RATE_LIMIT_DEFAULT_DELAYS_MS=Object.freeze([900000,600000,300000]);
 export const RATE_LIMIT_MAX_TOTAL_MS=1800000;
-// Operations that dispatch the review of a pending_review round (cm-ai-conversation-entry.mjs:
-// advance and decision run it; resume only reports the state and never dispatches).
-// Batch advance runs the member's decision (cm-ai-batch-run.mjs reviewRetryable).
+// Operations whose rate-limited stop is retried (cm-ai-conversation-entry.mjs: advance and
+// decision dispatch the review; resume only reports the state and never dispatches).
+// Single-task driver only: the batch host has no operation that checks such a
+// precondition and redispatches just that review under its lock.
+// The retry itself is always a decision bound to the frozen stop (never the
+// original advance), so it can only redispatch that one review.
 export const RATE_LIMIT_RETRY_OPERATIONS=Object.freeze(['advance','decision']);
 
 const obj=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -47,17 +48,19 @@ export const rateLimitedReview=row=>!row?.error&&obj(row?.result).reviewFailure=
 // Only the runner's own automatic redispatch state qualifies.
 export const rateLimitRetryable=row=>{
   const result=obj(row?.result);
-  return rateLimitedReview(row)&&result.state==='pending_review'&&result.code==='review_provider_failed'&&result.pendingAction==='resume';
+  // A refused (e.g. stale) request dispatched nothing and is never retried.
+  return rateLimitedReview(row)&&result.outcome!=='rejected'&&result.staleRetry!==true
+    &&result.state==='pending_review'&&result.code==='review_provider_failed'&&result.pendingAction==='resume';
 };
 // {attempt,max,delayMs} for the next wait, or null.
 export function nextRateLimitRetry(row,env=process.env){
-  if(!rateLimitRetryable(row))return null;
+  if(!rateLimitRetryable(row)||expectedReviewStop(row)===null)return null;
   const delays=rateLimitDelays(env),done=rateLimitRetriesDone(env);
   return done<delays.length?{attempt:done+1,max:delays.length,delayMs:delays[done]}:null;
 }
 // The re-run resumes the run the first command created (same session).
 export function applyRateLimitResume(plan,env=process.env){
-  if(rateLimitRetriesDone(env)===0&&env[RATE_LIMIT_CHECK_ENV]!=='1'||plan?.mode!=='create')return plan;
+  if(rateLimitRetriesDone(env)===0||plan?.mode!=='create')return plan;
   plan.mode='resume';plan.originalHostContext=plan.hostContext;
   return plan;
 }
@@ -76,33 +79,21 @@ export function planFileFromArgv(argv=process.argv.slice(2),cwd=process.cwd()){
   return at!==-1&&typeof argv[at+1]==='string'&&argv[at+1]?path.resolve(cwd,argv[at+1]):null;
 }
 export function planDigest(file){try{return digestBytes(fs.readFileSync(file));}catch{return null;}}
-// The same command with another operation (the read-only status check).
-export function argvWithOperation(argv,operation){
-  const at=argv.indexOf('--plan'),index=argv.findIndex((arg,i)=>i!==at&&i!==at+1&&!arg.startsWith('--'));
-  if(index===-1)return null;
-  const next=[...argv];next[index]=operation;return next;
-}
 const text=value=>typeof value==='string'&&value?value:null;
-// What the timed re-run must find unchanged: the PLAN bytes, the run, task,
-// round and reviewed package, and the rate-limited automatic-redispatch stop.
-export function rateLimitBinding(row,digest){
+// The frozen precondition a timed retry sends with its decision (the cm-ai host
+// checks it under the run's writer lock, cm-ai-conversation-entry.mjs
+// rateLimitStopMatches): the round's identity, the reviewed package and the
+// failed review invocation. null when the result does not carry all of them.
+export const RATE_LIMIT_EXPECTED_ENV='CM_DRIVE_RATE_LIMIT_EXPECTED';
+export function expectedReviewStop(row){
   const result=obj(row?.result),identity=obj(result.identity);
-  return Object.freeze({planDigest:digest,repositoryId:text(identity.repositoryId),runId:text(identity.runId),
-    taskId:text(identity.taskId),attempt:Number.isSafeInteger(identity.attempt)?identity.attempt:null,
-    packageDigest:text(result.packageDigest),batchId:text(result.batchId),taskKey:text(result.taskKey),
-    code:text(result.code),reviewFailure:text(result.reviewFailure),pendingAction:text(result.pendingAction)});
+  if(!['repositoryId','runId','taskId'].every(key=>text(identity[key]))||!Number.isSafeInteger(identity.attempt)
+    ||!/^[a-f0-9]{64}$/.test(result.packageDigest??'')||!text(result.reviewInvocationId))return null;
+  return {identity:{repositoryId:identity.repositoryId,runId:identity.runId,taskId:identity.taskId,attempt:identity.attempt},
+    packageDigest:result.packageDigest,invocationId:result.reviewInvocationId};
 }
-// null when the status row still shows exactly the bound stop; else why not.
-export function rateLimitBindingMismatch(binding,statusRow,digestNow){
-  if(!binding||!binding.planDigest||!binding.runId||!binding.taskId||binding.attempt===null||!binding.packageDigest)
-    return '限流时的结果缺少运行、任务、轮次或审查包标识';
-  if(digestNow!==binding.planDigest)return 'PLAN 文件在等待期间被改过';
-  if(!statusRow||statusRow.error)return `只读 status 没有拿到结果${statusRow?.error?.code?`（${statusRow.error.code}）`:''}`;
-  const now=rateLimitBinding(statusRow,digestNow);
-  for(const key of ['repositoryId','runId','taskId','attempt','packageDigest','batchId','taskKey'])
-    if(now[key]!==binding[key])return `运行已不是限流时那一个（${key} 变了）`;
-  if(obj(statusRow.result).state!=='pending_review'||now.code!=='review_provider_failed'
-    ||now.reviewFailure!=='reviewer_rate_limited'||now.pendingAction!=='resume')
-    return `运行已不停在这次限流（现在是 ${text(obj(statusRow.result).state)??'-'}/${now.code??'-'}）`;
-  return null;
+export function readExpectedReviewStop(env=process.env){
+  const raw=env[RATE_LIMIT_EXPECTED_ENV];if(typeof raw!=='string'||!raw)return null;
+  let value;try{value=JSON.parse(raw);}catch{return null;}
+  return expectedReviewStop({result:{identity:value?.identity,packageDigest:value?.packageDigest,reviewInvocationId:value?.invocationId}});
 }

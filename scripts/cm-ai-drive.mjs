@@ -931,7 +931,11 @@ async function main(){
     stop(2,`${operation} 需要 packageDigest（64 位十六进制）`);
   if(TEST_RUN_OPERATIONS.has(operation)&&!(operation==='qa_result'?nonempty(plan.testRunId)
     :plan.testRunId===null||nonempty(plan.testRunId)))stop(2,`${operation} 需要 testRunId（可为 null）`);
-  const request=buildCmAiDriveRequest(operation,plan,definition,loaded.identity);
+  // A timed rate-limit retry (drive-core.mjs) is a decision bound to the frozen
+  // stop: the host redispatches that review only if the run is still exactly there.
+  const expected=loaded.expectedReviewStop??null;
+  const request=expected?{...buildCmAiDriveRequest('decision',plan,definition,expected.identity),
+    expectedReviewStop:{invocationId:expected.invocationId}}:buildCmAiDriveRequest(operation,plan,definition,loaded.identity);
   if(operation.startsWith('fix_')&&(!nonempty(plan.packageDigest)||!nonempty(plan.testRunId)))
     stop(2,`${operation} 需要 packageDigest 和 testRunId`);
   // Rules init_verify commands really run once the host has accepted the launch

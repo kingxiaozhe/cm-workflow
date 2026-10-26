@@ -238,7 +238,8 @@ const CODE_WORDS=Object.freeze({qa_decision_required:'在等 QA 判定',qa_manda
   checks_not_passed:'检查没通过',develop_checks_not_passed:'开发检查没通过',qa_failed:'QA 没通过',qa_blocked:'QA 被阻断',
   qa_result_blocked:'QA 结果被阻断',qa_execution_unknown:'QA 执行结果不明',project_qa_not_passed:'项目 QA 没通过',
   correction_review_required:'需要重新审查改动',documentation_sync_blocked:'文档同步被阻断',handoff_exists:'交接记录已存在',
-  provider_development_authorization_required:'需要你授权外部开发',host_process_gone:'宿主进程已退出',run_done:'跑完了'});
+  provider_development_authorization_required:'需要你授权外部开发',host_process_gone:'宿主进程已退出',run_done:'跑完了',
+  notify_pending_unsafe:'延后提醒不可用'});
 // Codes without an entry: "subject + outcome" from the words in the code, so
 // the reason is still in Chinese; null when the code says neither.
 const CODE_SUBJECTS=[['qa_fix','QA 修复'],['qa','QA'],['review','审查'],['develop','开发'],['checks','检查'],['check','检查'],
@@ -499,6 +500,11 @@ function withState(home,update){
 // is still the pending one; progress, a new step, a newer stop of the same
 // session or an immediate notice about it removes or replaces the file.
 const PENDING_DIR='notify-pending';
+const CONFIG_NOTICE_MS=24*3600*1000;
+// One fixed configuration-fault notice (at most once a day) replaces every
+// deferred stop while the pending directory is unsafe: those stops are not
+// sent one by one at once (that would bring back the noise deferral removes).
+export const PENDING_UNSAFE_ACTION='延后提醒不可用：.cm-workflow 目录下的 notify-pending 权限或类型不安全（要求本人所有、权限 700 的普通目录，不能是链接），修好前普通停顿不会提醒';
 // The directory itself must be a real 0700 directory of this user inside the
 // notify home: never a symbolic link (a link could point the writes, renames
 // and deletes below anywhere). Anything else: nothing is read, written or
@@ -551,11 +557,13 @@ function reserve(home,{hash,attention=null,event,code=null,pendingToken},now,lim
       if(!pending||pending.missing||pending.token!==pendingToken)return {status:'cancelled'};
       removePending(home,attention);
     }else if(attention!==null)dropPending(home,attention,Infinity);
-    const keys=Object.fromEntries(Object.entries(state.keys).filter(([,at])=>now-at<NOTIFY_LIMITS.sameKeyMs&&at<=now));
+    // Configuration-fault notices repeat at most once a day; other keys once per sameKeyMs.
+    const keys=Object.fromEntries(Object.entries(state.keys).filter(([,at])=>now-at<CONFIG_NOTICE_MS&&at<=now));
+    const sameKeyMs=event==='config'?CONFIG_NOTICE_MS:NOTIFY_LIMITS.sameKeyMs;
     const sends=state.sends.filter(at=>now-at<24*3600*1000&&at<=now);
     const records=Object.fromEntries(Object.entries(state.attention).filter(([,item])=>now-item.lastAt<NOTIFY_LIMITS.attentionTtlMs&&item.lastAt<=now));
     let followUp=false,next=null;
-    if(attention===null){if(Object.hasOwn(keys,hash))return {status:'duplicate'};}
+    if(attention===null){if(Object.hasOwn(keys,hash)&&now-keys[hash]<sameKeyMs)return {status:'duplicate'};}
     else{
       const level=ATTENTION_LEVEL[event]??2,record=records[attention];
       const changed=!record||level>record.level||(event==='stuck'&&code&&code!==record.code);
@@ -642,7 +650,13 @@ export async function notifyLater(fields,{env=process.env,delayMs=null,extraDela
     const workflow=clean(fields.workflow,24)||'cm';
     if(!written){
       const reason=pendingDir(home)===null?'pending_dir_unsafe':'pending_write';
-      appendNotifyLog(home,now,{event:'later',workflow,hash,result:`failed ${reason}`});return {scheduled:false,reason};
+      appendNotifyLog(home,now,{event:'later',workflow,hash,result:`failed ${reason}`});
+      if(reason==='pending_dir_unsafe'){
+        const fault=notify({key:'config|notify-pending-unsafe',event:'config',workflow,project:fields.project,session:fields.session,
+          sessionTitle:fields.sessionTitle,code:'notify_pending_unsafe',action:PENDING_UNSAFE_ACTION,nextAction:PENDING_UNSAFE_ACTION},{env,now});
+        return {scheduled:false,reason,faultNotice:fault.sent};
+      }
+      return {scheduled:false,reason};
     }
     const job={fields:{...fields,delivery:undefined,sessionTitle:fields.sessionTitle===undefined?sessionTitle(env):fields.sessionTitle},token,delayMs:delay};
     const child=spawn(process.execPath,[LATER_RUNNER],{detached:true,stdio:'ignore',windowsHide:true,

@@ -143,7 +143,7 @@ process.stdin.on('end',()=>{fs.appendFileSync(${JSON.stringify(sent)},JSON.strin
     const child=spawn(process.execPath,[DRIVER,'--plan',file,operation],{env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,
       CM_WORKFLOW_HOME:path.join(root,'home'),CM_WORKFLOW_LOG_HOME:path.join(root,'logs'),...env}});
     let stdout='',stderr='';child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);
-    return {stderr:()=>stderr,done:new Promise(resolve=>child.on('close',status=>{
+    return {child,stderr:()=>stderr,done:new Promise(resolve=>child.on('close',status=>{
       let result=null;try{result=JSON.parse(stdout).result;}catch{}resolve({status,stdout,stderr,result});}))};
   };
   return {root,specsDir,codeProject,answers,write,behave,plan,drive,driveAsync,store,records,replay,calls,review,awaitingReview,decide,lastResult,intents,notices};
@@ -262,7 +262,9 @@ test('#8 advance on a rate-limited review is retried and the review is really re
   f.behave(rateLimited,{mode:'ok'});
   const run=f.drive(f.plan({mode:'resume'}),'advance',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'300,300,300'});
   assert.match(run.stderr,/自动重派审查（第 1\/3 次）/);
-  assert.match(run.stderr,/原运行仍停在这次限流，重派审查（第 1\/3 次）/);
+  assert.match(run.stderr,/按等待时那次限流重派这一次审查（第 1\/3 次）/);
+  // The retry is a bound decision: it redispatched that review and did not go on to complete.
+  assert.equal(run.result.operation,'decision');assert.equal(f.intents().some(id=>id.startsWith('complete-')),false);
   assert.deepEqual(f.intents().slice(0,3),['develop-1','review-1','review-1-retry-1']);
   assert.equal(f.calls().length,2);assert.notEqual(run.result?.state,'pending_review',run.stderr);
   // resume only reports a pending_review state, so it is never retried; decision and advance are.
@@ -271,19 +273,52 @@ test('#8 advance on a rate-limited review is retried and the review is really re
 
 // The timed re-run is bound to the stop it waited for: if another driver moved
 // the run on, or the PLAN now names something else, nothing is dispatched.
+// Codex round 2 reproduction: the waiting command is advance; while it waits,
+// another driver's decision takes the review to approved. The timed retry is a
+// decision carrying the frozen stop, checked by the host under the run's writer
+// lock: it dispatches nothing (no complete, tasks.md untouched).
 test('#8 a timed rate-limit retry does nothing when another driver moved the run on meanwhile',async t=>{
   const f=fixture(t),packageDigest=f.awaitingReview();
   f.behave(rateLimited,{mode:'ok'},{mode:'ok'});
-  const file=f.plan({mode:'resume',permissions:f.review(1),packageDigest,answers:undefined,checks:undefined});
-  const waiting=f.driveAsync(file,'decision',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'4000'});
+  const tasks=path.join(f.specsDir,'1.work','tasks.md'),before=fs.readFileSync(tasks);
+  const waiting=f.driveAsync(f.plan({mode:'resume'}),'advance',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'4000'});
   assert(await until(()=>/秒后在原运行自动重派审查/.test(waiting.stderr()),20000),'the first driver is waiting');
-  // Meanwhile the session resumes the run itself (without the retry wait) and the review passes.
   const other=f.decide(packageDigest,1,{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'1'});
   assert.equal(other.result.state,'approved',other.stderr);assert.equal(f.calls().length,2);
+  const intents=f.intents();
   const first=await waiting.done;
-  assert.match(first.stderr,/状态已变，未自动重试：运行已不停在这次限流（现在是 approved\/-）/);
-  assert.equal(first.result.state,'pending_review','the original result is printed');
+  assert.match(first.stderr,/状态已变，未自动重试：宿主核对运行已不停在等待时那次审查限流，没有派发任何操作/);
+  assert.equal(first.result.staleRetry,true,first.stdout);assert.equal(first.result.outcome,'rejected');
+  assert.equal(first.result.state,'approved');
+  assert.deepEqual(f.intents(),intents,'no effect at all, complete-1 included');
+  assert.equal(f.intents().some(id=>id.startsWith('complete-')),false);
+  assert.deepEqual(fs.readFileSync(tasks),before,'tasks.md unchanged');
   assert.equal(f.calls().length,2,'no third reviewer call');assert.equal(f.replay().state.state,'approved');
+});
+
+// The host's own check of the frozen stop: another failed invocation is refused
+// without any effect; the exact frozen one is redispatched once.
+test('#8 the host redispatches a bound rate-limit retry only for the exact frozen review invocation',async t=>{
+  const f=fixture(t),packageDigest=f.awaitingReview();
+  f.behave(rateLimited,{mode:'ok'});
+  const file=f.plan({mode:'resume',permissions:f.review(1),packageDigest,answers:undefined,checks:undefined});
+  const waiting=f.driveAsync(file,'decision',{CM_DRIVE_RATE_LIMIT_DELAYS_MS:'600000'});
+  t.after(()=>{try{waiting.child.kill('SIGKILL');}catch{}});
+  assert(await until(()=>/分钟后在原运行自动重派审查/.test(waiting.stderr()),20000),'the first driver is waiting');
+  waiting.child.kill('SIGKILL');await waiting.done;
+  const invocationId=f.lastResult().invocationId,identity={repositoryId:'review-failure',runId:'review-failure-run',taskId:'T-001',attempt:1};
+  assert.equal(typeof invocationId,'string');
+  const bound=id=>f.drive(file,'decision',{CM_DRIVE_RATE_LIMIT_RETRY:'1',CM_DRIVE_RATE_LIMIT_EXPECTED:JSON.stringify({identity,packageDigest,invocationId:id})});
+  const intents=f.intents();
+  const stale=bound('another-invocation');
+  assert.equal(stale.result?.staleRetry,true,`${stale.status} ${stale.stderr}`);assert.equal(stale.result.state,'pending_review');
+  assert.deepEqual(f.intents(),intents);assert.equal(f.calls().length,1);
+  const exact=bound(invocationId);
+  assert.equal(exact.result.state,'approved',exact.stderr);assert.equal(f.calls().length,2);
+  assert.deepEqual(f.intents(),[...intents,'review-1-retry-1']);
+  // A retry without its frozen stop never falls back to a plain command.
+  const missing=f.drive(file,'decision',{CM_DRIVE_RATE_LIMIT_RETRY:'1'});
+  assert.equal(missing.status,2);assert.match(missing.stderr,/缺少等待时冻结的审查限流前置条件/);
 });
 
 test('#8 a timed rate-limit retry does nothing when the PLAN was changed to name another run',async t=>{

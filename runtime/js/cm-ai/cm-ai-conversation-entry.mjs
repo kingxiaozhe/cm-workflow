@@ -77,6 +77,17 @@ export const reviewFailureClass=status=>{
     &&inspection?.kind==='cm-provider-review-failure'&&inspection.category==='provider'
     &&typeof failure==='string'&&/^reviewer_[a-z_]{1,48}$/.test(failure)?failure:null;
 };
+const reviewInvocationId=status=>{const value=status?.reviewInvocation?.registration?.binding?.invocationId;
+  return typeof value==='string'&&/^[A-Za-z0-9_.:-]{1,128}$/.test(value)?value:null;};
+// The exact stop a timed rate-limit retry may redispatch: same round (identity is
+// checked by the caller), same reviewed package, the same failed invocation, and
+// still the runner's automatic redispatch of a rate-limited review.
+export const rateLimitStopMatches=(status,operation)=>status.packageDigest===operation.packageDigest
+  &&status.state==='pending_review'&&status.code==='review_provider_failed'&&reviewFailureClass(status)==='reviewer_rate_limited'
+  &&pendingAction(status)==='resume'&&reviewInvocationId(status)!==null
+  &&reviewInvocationId(status)===operation.expectedReviewStop.invocationId;
+const staleRetry=(operation,status)=>freeze({...summary(operation,status,'rejected'),staleRetry:true,
+  reason:'状态已变，未自动重试：运行已不停在等待时那次审查限流（轮次、审查包、审查调用或状态变了），本次没有派发任何操作'});
 const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',operation:operation.operation,
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
   packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
@@ -86,7 +97,8 @@ const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',ope
   ...(status.developRedoRequired===true?{developRedoRequired:true}:{}),
   ...(status.documentationSyncPending===true?{documentationSyncPending:true}:{}),
   ...(status.reviewRedispatchStopRequired===true?{reviewRedispatchStopRequired:true}:{}),
-  ...(reviewFailureClass(status)!==null?{reviewFailure:reviewFailureClass(status)}:{}),
+  ...(reviewFailureClass(status)!==null?{reviewFailure:reviewFailureClass(status),
+    ...(reviewInvocationId(status)?{reviewInvocationId:reviewInvocationId(status)}:{})}:{}),
   ...(typeof status.reviewAbandonRefusal==='string'?{reviewAbandonRefusal:status.reviewAbandonRefusal}:{}),
   ...(typeof status.reason==='string'?{reason:status.reason}:{}),
   ...(status.code==='handoff_exists'?{reason:REVIEWED_HANDOFF_HINT}:{}),
@@ -115,7 +127,11 @@ function readOperation(raw) {
   if(['abandon_review','abandon_effect','bootstrap_review_recover','develop_redo','completion_rework','development_rework','revise_scope'].includes(operation?.operation))keys.push('reason');
   if(operation?.operation==='reconcile_review')keys.push('invocationId');
   if(operation?.operation==='revise_scope')keys.push('scope');
+  // A driver's timed rate-limit retry (drive-core.mjs) names the review stop it
+  // waited for; the decision is refused unless the run is still exactly there.
+  if(operation?.operation==='decision'&&operation&&Object.hasOwn(operation,'expectedReviewStop'))keys.push('expectedReviewStop');
   shape(operation,keys);
+  if(Object.hasOwn(operation,'expectedReviewStop')){shape(operation.expectedReviewStop,['invocationId']);id(operation.expectedReviewStop.invocationId);}
   if(operation?.operation==='reconcile_review')id(operation.invocationId);
   need(operation.version===1&&['advance','start','status','decision','complete','qa','qa_result','context_refresh','finish','run_finalize','cancel','resume','reconcile_review','abandon_review','abandon_effect','bootstrap_review_recover','develop_redo','completion_rework','development_rework','revise_scope']
     .includes(operation.operation));
@@ -411,6 +427,11 @@ export function createCmAiConversationEntry(options) {
       admissionReports.add(report);return report;
     }
     const initialStatus=runner.status();
+    // Checked before anything else, in this host that holds the run's writer
+    // lock for its lifetime: a stale timed retry dispatches nothing.
+    if(operation.operation==='decision'&&Object.hasOwn(operation,'expectedReviewStop')
+      &&!(sameIdentity(operation.identity,initialStatus.identity)&&rateLimitStopMatches(initialStatus,operation)))
+      return staleRetry(operation,initialStatus);
     const identity=json(initialStatus.identity);validIdentity(identity);
     need(sameTask(identity,ownerIdentity)&&identity.attempt>=ownerIdentity.attempt,'identity_mismatch');
     // Stable run-definition identity can query/control or resume the current

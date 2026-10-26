@@ -894,16 +894,62 @@ test('deferred notice refuses a linked or widened notify-pending directory and r
   const dir=path.join(h.dir,'notify-pending'),key=`attn|work/demo-app|s-link`;
   fs.symlinkSync(outside,dir);
   fs.writeFileSync(path.join(outside,'keep.json'),'{"token":"x","at":0}');
-  assert.deepEqual(await notifyLater(fields('l1',{attentionKey:key}),{env:h.env,delayMs:50}),{scheduled:false,reason:'pending_dir_unsafe'});
+  assert.deepEqual(await notifyLater(fields('l1',{attentionKey:key}),{env:h.env,delayMs:50}),{scheduled:false,reason:'pending_dir_unsafe',faultNotice:true});
   assert.equal(await cancelPendingNotice(key,{env:h.env}),false);
   assert.equal(await clearAttention(key,{env:h.env}),false);
   assert.deepEqual(fs.readdirSync(outside),['keep.json'],'nothing written, renamed or removed through the link');
   fs.unlinkSync(dir);fs.mkdirSync(dir,{mode:0o755});fs.chmodSync(dir,0o755);
-  assert.deepEqual(await notifyLater(fields('l2',{attentionKey:key}),{env:h.env,delayMs:50}),{scheduled:false,reason:'pending_dir_unsafe'});
+  assert.deepEqual(await notifyLater(fields('l2',{attentionKey:key}),{env:h.env,delayMs:50}),{scheduled:false,reason:'pending_dir_unsafe',faultNotice:false});
   assert.deepEqual(fs.readdirSync(dir),[]);
   fs.chmodSync(dir,0o700);
   assert.equal((await notifyLater(fields('l3',{attentionKey:key}),{env:h.env,delayMs:50})).scheduled,true);
+  assert(await h.until(()=>h.rows().length===2));
+  assert.deepEqual(h.rows().map(row=>row.stdin.code),['notify_pending_unsafe','checks_not_passed']);
+});
+
+// While notify-pending is unsafe, ordinary stops are not sent one by one at
+// once: one fixed configuration-fault notice a day says deferred notices are off;
+// a stop that needs the person is still sent at once.
+test('unsafe notify-pending: many ordinary stops give one fault notice a day; a person\'s stop is still sent',{skip:process.platform==='win32'},async t=>{
+  const h=home(t,{config:{frequency:{perWindow:50}}}),dir=path.join(h.dir,'notify-pending');
+  fs.mkdirSync(dir,{mode:0o777});fs.chmodSync(dir,0o777);
+  for(const [index,code] of ['checks_not_passed','qa_triggered','develop_checks_not_passed','host_exited'].entries()){
+    const result=await notifyLater(fields(`u${index}`,{attentionKey:`attn|work/demo-app|s${index}`,code}),{env:h.env,delayMs:50});
+    assert.equal(result.reason,'pending_dir_unsafe');assert.equal(result.faultNotice,index===0);
+  }
   assert(await h.until(()=>h.rows().length===1));
+  assert.equal(notify(fields('a1',{attentionKey:'attn|work/demo-app|s9',code:'provider_development_authorization_required'}),{env:h.env}).sent,true);
+  assert(await h.until(()=>h.rows().length===2));
+  await new Promise(resolve=>setTimeout(resolve,400));
+  const rows=h.rows();assert.equal(rows.length,2);
+  assert.equal(rows[0].stdin.code,'notify_pending_unsafe');
+  assert.match(rows[0].body,/延后提醒不可用：\.cm-workflow 目录下的 notify-pending 权限或类型不安全/);
+  assert.equal(rows[1].stdin.code,'provider_development_authorization_required');
+  // Still unsafe a day later: one more fault notice.
+  const later=await notifyLater(fields('u9',{attentionKey:'attn|work/demo-app|s1'}),{env:h.env,delayMs:50,now:Date.now()+24*3600*1000+1000});
+  assert.equal(later.faultNotice,true);
+});
+
+test('driver with an unsafe notify-pending sends only the fault notice, never the ordinary stops at once',{skip:process.platform==='win32'},async t=>{
+  const h=home(t,{config:{frequency:{perWindow:50}}}),dir=path.join(h.dir,'notify-pending');
+  fs.mkdirSync(dir,{mode:0o755});fs.chmodSync(dir,0o755);
+  const host=path.join(h.dir,'cm-ai-host.mjs'),wrapper=path.join(h.dir,'cm-ai-drive.mjs'),project=path.join(h.dir,'demo-app');
+  fs.mkdirSync(project);
+  fs.writeFileSync(host,`process.stdout.write(JSON.stringify({type:'host_ready',sessionId:'s'})+'\\n');
+process.stdin.on('data',chunk=>{for(const line of String(chunk).split('\\n').filter(Boolean)){const row=JSON.parse(line);
+ if(row.requestId==='drive')process.stdout.write(JSON.stringify({requestId:'drive',result:{workflow:'cm-ai',outcome:'advanced',
+  state:'blocked',code:process.env.FIXTURE_CODE,pendingAction:'none',identity:{runId:'run-7',taskId:'T-001',attempt:1}}})+'\\n');}});
+process.stdin.on('end',()=>process.exit(0));`);
+  fs.writeFileSync(wrapper,`import {driveHost} from ${JSON.stringify(DRIVE_CORE)};
+driveHost({host:${JSON.stringify(host)},args:['serve','--host-context','4f9fa27f-6196-4f1f-9bb7-fe5bcd5614fa'],cwd:${JSON.stringify(project)},operation:'advance',answers:{},answerFor:()=>null});`);
+  const env={...h.env};delete env.NODE_TEST_CONTEXT;
+  for(const code of ['develop_checks_not_passed','qa_triggered','checks_not_passed']){
+    const run=spawnSync(process.execPath,[wrapper],{encoding:'utf8',env:{...env,FIXTURE_CODE:code},timeout:20000});
+    assert.equal(run.status,0,run.stderr);
+  }
+  assert(await h.until(()=>h.rows().length===1));
+  await new Promise(resolve=>setTimeout(resolve,800));
+  assert.deepEqual(h.rows().map(row=>row.stdin.code),['notify_pending_unsafe']);
 });
 
 // Shared driver core (scripts/*-drive.mjs all use driveHost) with a host that
