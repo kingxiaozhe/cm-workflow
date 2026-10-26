@@ -6,6 +6,9 @@ import {fileURLToPath} from 'node:url';
 import {commonArgs,cleanEnvironment,specsPermissionArgs} from './codex-config.mjs';
 import {need,text,validCallTimeout,json} from './effect-contract.mjs';
 import {CODEX_RECONNECT_NOTICE_LIMIT,isCodexReconnectNotice} from './codex-reconnect-notice.mjs';
+import {codexRateLimited} from './worker-codex.mjs';
+// A provider terminal (failed turn) still lets the usage of a later turn.failed through.
+const PROVIDER_ENDED=new Set(['provider_failed','developer_rate_limited']);
 
 export function developerArgs({cwd,model,effort,schemaPath,disabledSkills=[],specsRoot=null}) {
   text(cwd);text(schemaPath);
@@ -73,11 +76,11 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
       timer=setTimeout(()=>stop('timeout'),timeoutMs);
       if(signal.aborted)abort();
       const accept=line=>{
-        if(!line.trim()||failure&&failure!=='provider_failed')return;
+        if(!line.trim()||failure&&!PROVIDER_ENDED.has(failure))return;
         let event;try{event=JSON.parse(line);}catch{stop('invalid_event');return;}
         if(!event||Array.isArray(event)||typeof event.type!=='string'){stop('invalid_event');return;}
         if(event.type==='turn.failed'&&thread&&turnStarted&&!completed)usage.terminal(event.usage);
-        if(failure==='provider_failed')return;
+        if(PROVIDER_ENDED.has(failure))return;
         // Reconnects may precede thread initialization, but never bypass a
         // completed turn. Keep their budget separate from item notices.
         if(!completed&&isCodexReconnectNotice(event)&&reconnectNoticeCount<CODEX_RECONNECT_NOTICE_LIMIT){
@@ -85,7 +88,9 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
           try{if(typeof onNotice==='function')onNotice(event.message.slice(0,200));}catch{}
           return;
         }
-        if(event.type==='error'||event.type==='turn.failed'){stop('provider_failed');return;}
+        // A failed turn naming HTTP 429 / Too Many Requests / a rate limit (the Codex
+        // reviewer's rule) keeps that class; the provider text is never kept.
+        if(event.type==='error'||event.type==='turn.failed'){stop(codexRateLimited(event)?'developer_rate_limited':'provider_failed');return;}
         if(completed){
           stop(event.type==='item.completed'&&event.item?.type==='error'?'invalid_event':'event_after_terminal');return;
         }
@@ -121,7 +126,7 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
       child.stderr.resume();
       child.stdout.setEncoding('utf8');
       child.stdout.on('data',chunk=>{
-        if(failure&&failure!=='provider_failed'||closed)return;
+        if(failure&&!PROVIDER_ENDED.has(failure)||closed)return;
         bytes+=Buffer.byteLength(chunk);if(bytes>4*1024*1024){stop('output_limit');return;}
         buffer+=chunk;let index;
         while((index=buffer.indexOf('\n'))!==-1){accept(buffer.slice(0,index));buffer=buffer.slice(index+1);}

@@ -800,6 +800,23 @@ test('compact layout adds a 你要做 line: mapped actions, rate limit, fallback
   assert(Array.from(buildNotifyMessage(fields('k',{...s,sessionTitle:'长'.repeat(200),code:'x'.repeat(300)}),at).body).length<=NOTIFY_LIMITS.bodyChars);
 });
 
+// A provider develop that hit the API rate limit stops at develop_redo, which needs
+// the person's authorization: sent at once, and the action says to authorize the redo.
+test('provider develop rate limit: sent at once with the redo authorization as the action',()=>{
+  const notice=driveNotice({host:'/x/scripts/cm-ai-host.mjs',cwd:'/w/p',args:['--host-context','s1'],operation:'advance',
+    row:{requestId:'drive',result:ai({state:'blocked',code:'develop_answer_missing',pendingAction:'develop_redo',developRedoRequired:true,
+      failureCode:'developer_rate_limited',developFailure:'developer_rate_limited'})}});
+  assert.equal(notice.delivery,'now');assert.equal(notice.developFailure,'developer_rate_limited');
+  assert.equal(buildNotifyMessage(notice,{now:NOW,layout:'compact'}).body.split('\n')[1],
+    '你要做：开发进程被限流（429）：过一刻钟后回到会话「s1」，授权它重做这一轮开发（宿主会先核对旧开发进程已退出）');
+  const overloaded=driveNotice({host:'/x/scripts/cm-ai-host.mjs',cwd:'/w/p',args:['--host-context','s1'],operation:'advance',
+    row:{requestId:'drive',result:ai({state:'blocked',code:'develop_answer_missing',pendingAction:'develop_redo',developFailure:'developer_server_error'})}});
+  assert.match(buildNotifyMessage(overloaded,{now:NOW,layout:'compact'}).body,/开发服务过载或出错：稍后回到会话「s1」，授权它重做这一轮开发/);
+  // Without a class it stays the generic redo authorization.
+  assert.match(buildNotifyMessage(fields('k',{session:'s1',code:'develop_answer_missing',pendingAction:'develop_redo'}),{now:NOW,layout:'compact'}).body,
+    /需要你确认会话已停止改代码后，回到会话「s1」授权重做开发/);
+});
+
 test('full layout keeps a plain nextAction and replaces an empty, long or technical one with the action table',()=>{
   const at={now:NOW,timeZone:'UTC'},s={session:'4f9fa27f'};
   const first=over=>buildNotifyMessage(fields('k',{...s,...over}),at).body.split('\n')[0];

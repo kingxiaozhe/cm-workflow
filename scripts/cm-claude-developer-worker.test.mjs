@@ -307,3 +307,32 @@ test('developer stream treats a synthetic CLI reminder as a notice, except betwe
   assert.equal(pending.code,'unexpected_tool_or_content');
   assert.deepEqual(fs.readdirSync(root),[]);
 });
+
+// 2026-10-26: a provider developer hitting the API rate limit is recognised by class.
+// The stream shape is the one Claude CLI 2.1.274 prints for an API failure (see
+// cm-ai-review-failure.test.mjs): a synthetic assistant message carrying the error
+// class, then an is_error result with api_error_status. Only the class is kept.
+function apiErrorWorker(cwd,{error,status,text}){
+  const source=`${ownerGuardSource()}let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',()=>{
+    const session_id='synthetic-claude-developer',out=e=>process.stdout.write(JSON.stringify(e)+'\\n');
+    out({type:'system',subtype:'init',session_id});
+    out({type:'assistant',session_id,parent_tool_use_id:null,error:${JSON.stringify(error)},is_api_error_message:true,
+      message:{role:'assistant',content:[{type:'text',text:${JSON.stringify(text)}}]}});
+    out({type:'result',session_id,subtype:'success',is_error:true,num_turns:1,result:${JSON.stringify(text)},
+      terminal_reason:'api_error',api_error_status:${JSON.stringify(status)}});
+    process.exit(1);
+  });`;
+  return claudeDeveloperWorker({cwd,model:'fixture',timeoutMs:5000,spawnProcess:(cli,args,options)=>spawn(process.execPath,['-e',source],options)});
+}
+for(const [error,status,text,code] of [
+  ['rate_limit',429,'API Error: 429 rate limited','developer_rate_limited'],
+  ['server_error',529,'API Error: 529 Overloaded','developer_server_error'],
+  ['authentication_failed',401,'Invalid API key','developer_auth_failed'],
+  ['billing_error',402,'Credit balance too low','developer_billing_error'],
+  ['model_not_found',404,'model not found','developer_model_not_found'],
+  ['invalid_request',400,'API Error: 400 bad request','developer_api_error'],
+])test(`Claude developer API error ${error} ends as ${code} (class only, status unchanged)`,async t=>{
+  const root=fixture(t),result=await apiErrorWorker(root,{error,status,text})({prompt:prompt()},{signal:new AbortController().signal});
+  // Same terminal status as before (unknown): only the code names the class, never the text.
+  assert.deepEqual(result,{status:'unknown',code});assert.deepEqual(fs.readdirSync(root),[]);
+});

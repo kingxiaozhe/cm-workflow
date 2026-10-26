@@ -211,3 +211,22 @@ for(const mode of ['omitted','non-function','throwing'])test(`developer notice c
   assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),
     {status:'unavailable',code:'worker_dispatch_limit'});
 }));
+
+// 2026-10-26: a Codex developer that hits the API rate limit (429 / Too Many Requests /
+// rate limit, the same rule as the Codex reviewer) ends as developer_rate_limited;
+// other provider failures stay provider_failed. Only the class is kept.
+const limitedScript=message=>`${ownerGuardSource()}let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{
+const emit=x=>process.stdout.write(JSON.stringify(x)+'\\n');
+emit({type:'thread.started',thread_id:'isolated-fixture'});emit({type:'turn.started'});
+emit({type:'error',message:${JSON.stringify(message)}});emit({type:'turn.failed',error:{message:${JSON.stringify(message)}}});
+setTimeout(()=>process.exit(1),5000);
+});`;
+for(const [message,code] of [['exceeded retry limit, last status: 429 Too Many Requests','developer_rate_limited'],
+  ['unexpected status HTTP 429','developer_rate_limited'],['Rate limit reached','developer_rate_limited'],
+  ['request failed','provider_failed'],['error 4290 unrelated id','provider_failed']])
+test(`Codex developer failure "${message}" ends as ${code}`,()=>fixture(async cwd=>{
+  const worker=codexDeveloperWorker({cwd,model:'fixture',schemaPath:'/unused',
+    spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',limitedScript(message)],options)});
+  const result=await worker({prompt:'synthetic'},{signal:new AbortController().signal});
+  assert.deepEqual(result,{status:'unknown',code});
+}));
