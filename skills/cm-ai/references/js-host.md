@@ -226,6 +226,11 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
      1 人组和多人组都是合并冲突停下、被阻断时改排主目录串行第二代；但 1 人组 QA 不延后，按固定检查点判定，
      触发就在它的 worktree 里跑，通过才合回（驾驶员要为它准备 `qa-assess.json`）。功能有交互式（browser 类）
      blocking 或策略启用的用例时不给 1 人组（交互式 QA 可能连主目录的服务或 App），新批次手写的会被拒为 `parallel_solo_interactive_qa`。
+     批次没有 QA 修复出口，所以生成器还把可能在中途触发固定检查点的任务留在主目录：范围（加 `AGENTS.md` 与工作流的
+     `applicableAgentFiles`）命中 `qa.criticalPaths`，或按日志推算可能是连续第 5 个未 QA 的任务；关键路径来自工作流配置，
+     生成时用 `--workflow-config 同一份单任务工作流 JSON` 传入，宿主启动时按实际 `workflows` 再核，不符报 `parallel_solo_qa_checkpoint`。
+     项目配置文件没被 Git 跟踪时不给 1 人组（`parallel_solo_config_untracked`）。1 人组 QA 仍失败时批次停在 `batch_solo_qa_failed`：
+     交付已提交在成员分支，出口是在主目录合并该分支、`/cm-fix` 按 QA 报告修复、删除工作树与分支、剩余任务用新批次 ID 重新生成。
    - **每个成员的前置任务都排在组内第一个成员之前**：整组在第一个成员处同时开工。功能最后一个任务已完成时不分组。
    能并行才并行，不为组而组（1 人组只是隔离开发，不算并行）；判定不确定时按串行处理。成员在各自 Git 工作树开发、串行合并回
    主分支，2 人及以上组的成员 QA 自动延后到末任务；当前会话模式下开发请求仍逐个应答，重叠的是审查与流程开销，

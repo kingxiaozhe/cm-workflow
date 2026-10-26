@@ -67,7 +67,8 @@ taskIds 全部是 `[DROPPED]` 任务的用例（blocking 与否）不适用：�
 本版本不输出 `docs_only` 或类型定义专属理由；会话自报不能证明这类条件。
 每个任务均写 `qa` 事件，detail 为 `触发:{reason}` / `跳过:{reason}` / `阻塞:{reason}`，不可静默跳过。
 并行成员（2 人及以上同组开发）沿用原 `parallel_member_deferred` 延后合同，新行同样为 `score: null`；合并后末任务触发 feature QA。
-单独在 worktree 开发的 1 人组成员不适用该延后，按上表固定必跑点判定，触发时在其 worktree 执行，通过后才合并。
+单独在 worktree 开发的 1 人组成员不适用该延后，按上表固定必跑点判定，触发时在其 worktree 执行，通过后才合并。批次没有 QA 修复出口，
+生成器与宿主用本表规则预先把可能触发的任务留在主目录；预测落空且 QA 失败时批次停在 `batch_solo_qa_failed`（见 docs/js-workflow-control.md「1 人组」）。
 旧整数行继续按原 4–20 范围与状态约束读取；旧日志和旧 METRICS 不改写，已绑定决策不重新裁决。三种 status 的新行均可使用 null，不新增运行协议号。
 
 ## 触发格式

@@ -53,7 +53,7 @@ export async function batchFixture(mode,options={}){
       tasks:(parallel?['T-001','T-002','T-003']:['T-001','T-002']).map((taskId,index)=>({feature,taskId,scope:[`file${index}.js`],requirements:['requirements.md']}))};
     const calls=[],qaCalls=[],assessments=[],blockedEvidence=[],checkCalls=new Map();let qaReady=mode!=='qa-resume',started;
     const began=new Promise(resolve=>{started=resolve;});
-    let conflictHead=null,interrupted=false,reviewFailed=false,redoThrown=false;const eachSeen=[];
+    let conflictHead=null,interrupted=false,reviewFailed=false,redoThrown=false;const eachSeen=[];let activeBatchId=config.batchId;
     const developerModel=mode==='parallel-redo'?'current-session':'fixture';
     const qaSeen=[];
     const executionFor=async(definition,{parallelMember=false,soloMember=false}={})=>({configuration:{kind:'batch-fixture-v1',...(parallelMember?{parallelMember:true}:{}),...(soloMember?{soloMember:true}:{})},timeoutMs:3000,
@@ -89,7 +89,7 @@ export async function batchFixture(mode,options={}){
               await new Promise(resolve=>setTimeout(resolve,50));
           }
           if(each){
-            const id=definition.identity.taskId,worktree=path.join(root,'.cm-worktrees',batchSegment(config.batchId),id);
+            const id=definition.identity.taskId,worktree=path.join(root,'.cm-worktrees',batchSegment(activeBatchId),id);
             assert.equal(definition.codeProject,id==='T-003'?codeProject:worktree,`${id} code root`);
             assert.equal(parallelMember,id!=='T-003');
             // Each worktree starts from the main checkout after the earlier members merged.
@@ -247,19 +247,38 @@ export async function batchFixture(mode,options={}){
     let result;
     try{result=await pending;}catch(error){if(!(mode==='parallel-resume'||mode==='parallel-old-merge'||mode==='final-commit'||recovery&&options.crashAt)||error.code!=='simulated_interrupt')throw error;}finally{fs.existsSync=originalExists;}
     if(mode==='worktree-each-qa'&&options.qaFail){
-      // The member's own QA failed in its worktree: it is not sealed or merged and the
-      // batch stops; another advance neither redevelops nor reruns that QA.
-      const segment=batchSegment(config.batchId),worktree=path.join(root,'.cm-worktrees',segment,'T-001');
+      // The safety net: the member's own QA failed in its worktree. It is not merged; the
+      // batch stops with the reviewed delivery committed on the member branch and names
+      // the exit, which this test then follows through to the end of the feature.
+      const segment=batchSegment(config.batchId),worktree=path.join(root,'.cm-worktrees',segment,'T-001'),branch=`cm/${segment}/work/T-001`;
       const rows=()=>fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
-      for(const requestId of ['qa-failed-1','qa-failed-2']){
-        assert.equal(result.code,'qa_failed',JSON.stringify(result));
+      for(const requestId of ['qa-failed-1','qa-failed-2','qa-failed-3']){
+        assert.equal(result.code,'batch_solo_qa_failed',JSON.stringify(result));
+        assert.equal(result.currentTask,`${feature}/T-001`);assert.equal(result.guidance.authorizationGranted,false);
+        assert.match(result.guidance.nextStep,new RegExp(`git merge --no-ff ${branch}.*cm-fix.*cm-ai-batch-plan\\.mjs`));
         assert.deepEqual(calls,['T-001']);assert.deepEqual(qaCalls,['T-001']);
         assert.deepEqual(qaSeen,[{task:'T-001',codeProject:worktree,merged:false}]);
         assert.equal(rows().filter(row=>['batch_member_ready','batch_merge_started','batch_handoff'].includes(row.phase)).length,0);
-        assert(fs.existsSync(path.join(worktree,'file0.js')));assert(!fs.existsSync(path.join(codeProject,'file0.js')));
-        assert.equal(git(codeProject,['for-each-ref','--format=%(refname:short)','refs/heads/cm']),`cm/${segment}/work/T-001`);
-        result=await open().handle({operation:'advance',requestId});
+        assert.equal(rows().filter(row=>row.phase==='batch_member_qa_failed').length,1);
+        assert(!fs.existsSync(path.join(codeProject,'file0.js')));
+        assert.equal(git(codeProject,['show',`${branch}:file0.js`]),'implemented');
+        assert.equal(git(codeProject,['show','-s','--format=%s',branch]),'T-001: first');
+        result=await open().handle({operation:requestId==='qa-failed-2'?'status':'advance',requestId});
       }
+      // Follow the exit: merge the branch, (fix with /cm-fix: outside this fixture), remove
+      // the worktree and branch, and continue the remaining tasks as a new batch.
+      git(codeProject,['merge','--no-ff','--no-edit',branch]);
+      git(codeProject,['worktree','remove',worktree]);git(codeProject,['branch','-d',branch]);
+      const {planCmAiBatch}=await import('../runtime/js/cm-ai/batch-plan.mjs');
+      activeBatchId='batch-fixture-next';
+      const next=planCmAiBatch({specsDir,codeProject,repositoryId:config.repositoryId,batchId:activeBatchId});
+      assert.deepEqual(next.config.batch.tasks.map(task=>task.taskId),['T-002','T-003']);
+      const after=await createCmAiBatch({configuration:next.config.batch,executionFor,logHome:path.join(root,'logs')})
+        .handle({operation:'advance',requestId:'next-batch'});
+      assert.equal(after.code,'run_done',JSON.stringify(after));
+      assert.deepEqual(calls,['T-001','T-002','T-003']);assert.deepEqual(qaCalls,['T-001','T-003']);
+      for(const file of ['file0.js','file1.js','file2.js'])assert.equal(fs.readFileSync(path.join(codeProject,file),'utf8'),'implemented\n',file);
+      assert.equal(git(codeProject,['status','--porcelain']),'');
       return;
     }
     if(mode==='final-commit'){

@@ -8,7 +8,9 @@
 - **`/cm-ai` 默认每个任务都在自己的 worktree 里开发**（**行为变化**）：以前只有能两两并行的任务进 worktree，其余在主目录串行。现在凑不成对的任务也单独开一个 worktree 开发，做完按任务顺序合回主目录，再开下一个任务的 worktree。
   - 照旧在主目录串行的：功能最后一个任务、批次里最后执行的任务、标了 `- 设备: 需要` 的任务；有任务没写范围、脚手架功能等整个功能串行的情况也不变。
   - 功能的测试用例里有浏览器等交互式验收（`test-cases.json` 里 blocking 或策略启用的 `browser` 用例）时，这个功能不单独开 worktree：交互式验收可能连的是主目录启动的服务或 App，在 worktree 里跑会测到没合并的旧代码。能同组并行的任务照旧进 worktree（它们的 QA 本来就延后到主目录的最后一个任务）；手写这种 1 人组会被批次宿主以 `parallel_solo_interactive_qa` 拒绝。
-  - 单独进 worktree 的任务，QA 和以前在主目录串行时一样：改动命中项目登记的关键路径（迁移、鉴权、授权、支付、接口）或连续 5 个任务没跑 QA 时当场跑，就在它的 worktree 里跑，通过了才合回主目录；QA 没通过就不合并，批次停在这个任务。只有同组一起开发的多个任务才照旧把 QA 延后到功能最后一个任务。
+  - 批次里没有 QA 修复出口，所以可能在中途触发 QA 的任务不单独开 worktree，照旧在主目录串行：范围里的文件（或 `AGENTS.md`）命中项目登记的关键路径（迁移、鉴权、授权、支付、接口），或按日志推算可能成为连续第 5 个没跑 QA 的任务。判断和 QA 判定用同一套规则；关键路径写在工作流配置里，生成批次时用 `cm-ai-batch-plan.mjs --workflow-config` 传入，批次宿主启动时还会按实际 `workflows` 再核一遍，不符就以 `parallel_solo_qa_checkpoint` 拒绝。
+  - 单独进 worktree 的任务 QA 不延后：仍按固定检查点判定，万一触发就在它的 worktree 里跑，通过才合回。万一真的没通过，批次以 `batch_solo_qa_failed` 停下，不合并；该任务的已审交付提交在它的分支上，出口是：在主目录合并该分支、用 `/cm-fix` 按 QA 报告修复、删除 worktree 和分支、剩余任务用新批次 ID 重新生成批次继续。只有同组一起开发的多个任务才把 QA 延后到功能最后一个任务。
+  - 项目配置文件（`.cm-workflow.yml` 等）没被 Git 跟踪（例如被忽略）时不单独开 worktree：worktree 里拿不到这份配置，QA 会按另一套策略跑；手写的会被以 `parallel_solo_config_untracked` 拒绝。
   - Git 历史变成「任务提交 + 合并提交」两条一组；成员分支和 worktree 合并后自动删除。被阻断的任务照旧保留 WIP 分支，改到主目录重做。
   - 每个进 worktree 的任务开工前各跑一次审查预检（结果按批次缓存）；主目录必须在一个分支上（不能是 detached HEAD），否则开工前的隔离检查会失败。
   - 项目配置新增 `parallel.worktree_all`（默认 `true`）。写 `parallel: {worktree_all: false}` 恢复以前的做法（只有能并行的任务进 worktree）；`parallel: {enabled: false}` 仍然完全不建 worktree。

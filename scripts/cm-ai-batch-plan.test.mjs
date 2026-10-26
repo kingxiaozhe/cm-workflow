@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {createCmAiBatch} from './cm-ai-batch-run.mjs';
 import {main} from './cm-ai-batch-plan.mjs';
@@ -25,7 +26,7 @@ function project(t,tasks,{feature='1.work',emptyCode=false,caseKinds=null}={}){
         taskIds:['T-001'],title:`${kind} fixture`,preconditions:[],steps:['Observe fixture'],expected:['Fixture evidence'],cleanup:[]}))}));
   }
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
-  return {root,specsDir,codeProject,plan:(settings)=>planCmAiBatch({specsDir,codeProject,repositoryId:'r',batchId:'plan-batch-1',...(settings?{settings}:{})})};
+  return {root,specsDir,codeProject,plan:(settings,workflow)=>planCmAiBatch({specsDir,codeProject,repositoryId:'r',batchId:'plan-batch-1',...(settings?{settings}:{}),...(workflow?{workflow}:{})})};
 }
 // worktree_all:false keeps the earlier planner: only groups of two or more.
 const legacy=Object.freeze({enabled:true,max:2,worktree_all:false});
@@ -159,6 +160,60 @@ test('a feature with interactive QA cases keeps its unpaired tasks in the main c
   assert.deepEqual(project(t,diamond(),{caseKinds:['logic']}).plan().groups,[['T-001'],['T-002','T-003']]);
 });
 
+// A task alone in a worktree should not hit a fixed N6 checkpoint there: the batch has no
+// QA repair path. The planner predicts it with the same N6 rules (host-qa-policy.mjs) and
+// keeps such a task in the main checkout; the batch host refuses a hand-written one.
+const chainOf=(count,done=0)=>Array.from({length:count},(_,index)=>`- [${index<done?'x':' '}] T-00${index+1}: t${index+1}${scope(`f${index+1}.js`)}\n`).join('')
+  +'\n'+Array.from({length:count-1},(_,index)=>`- T-00${index+2} 依赖 T-00${index+1}\n`).join('');
+const host=(f,batch,workflows={})=>createCmAiBatch({configuration:batch,workflows,executionFor:async()=>({}),logHome:path.join(f.root,`log-${Math.random()}`)});
+test('one-member groups stop before a task could be the fifth without QA',t=>{
+  // Nothing assessed yet: tasks 1-4 may run alone; task 5 could trigger five_tasks_without_qa.
+  const f=project(t,chainOf(7)),plan=f.plan();
+  assert.deepEqual(plan.groups,[['T-001'],['T-002'],['T-003'],['T-004']]);
+  assert.ok(host(f,plan.config.batch));
+  assert.throws(()=>host(f,{...plan.config.batch,parallel:[['1.work/T-005']]}),{code:'parallel_solo_qa_checkpoint'});
+  // Two tasks already completed without a QA row count, as the decision counts them.
+  assert.deepEqual(project(t,chainOf(7,2)).plan().groups,[['T-003'],['T-004']]);
+  // Real groups defer their QA and are unaffected.
+  assert.deepEqual(project(t,chainOf(7)).plan({enabled:true,max:2,worktree_all:false}).groups,[]);
+});
+test('one-member groups skip a task whose scope hits a registered QA critical path',t=>{
+  const workflow={qa:{criticalPaths:{authentication:['a.js']}},applicableAgentFiles:[]};
+  const f=project(t,diamond());
+  // T-001 changes a.js (authentication): it stays in the main checkout.
+  assert.deepEqual(f.plan(undefined,workflow).groups,[['T-002','T-003']]);
+  // A registered path a real group member changes does not matter: that QA is deferred.
+  assert.deepEqual(f.plan(undefined,{qa:{criticalPaths:{payment:['b.js']}},applicableAgentFiles:[]}).groups,[['T-001'],['T-002','T-003']]);
+  // The batch host checks the workflows it is launched with, whatever the plan said.
+  const plan=f.plan();
+  assert.deepEqual(plan.groups,[['T-001'],['T-002','T-003']]);
+  assert.throws(()=>host(f,plan.config.batch,{'1.work/T-001':workflow}),{code:'parallel_solo_qa_checkpoint'});
+  // Learning writes AGENTS.md, so a registered AGENTS.md path counts as well.
+  assert.throws(()=>host(f,plan.config.batch,{'1.work/T-001':{qa:{criticalPaths:{api:['AGENTS.md']}},applicableAgentFiles:[]}}),
+    {code:'parallel_solo_qa_checkpoint'});
+  assert.ok(host(f,plan.config.batch,{'1.work/T-001':{qa:{criticalPaths:{api:['other.js']}},applicableAgentFiles:[]}}));
+});
+test('one-member groups need the project configuration a worktree gets from Git',t=>{
+  // Review r2: a Git-ignored local .cm-workflow.yml does not reach the worktree, where QA
+  // reloads the configuration. Here it narrows tests to commands, so the main checkout sees
+  // no applicable browser case while the worktree (defaults) would plan one.
+  const f=project(t,diamond(),{caseKinds:['logic','browser']});
+  const cases=path.join(f.specsDir,'1.work','test-cases.json'),contract=JSON.parse(fs.readFileSync(cases,'utf8'));
+  contract.cases.find(item=>item.kind==='browser').blocking=false;fs.writeFileSync(cases,JSON.stringify(contract));
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  const git=(...args)=>{const result=spawnSync('git',['-C',f.codeProject,...args],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);return result.stdout;};
+  git('init','-q','-b','main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+  fs.writeFileSync(path.join(f.codeProject,'.gitignore'),'.cm-workflow.yml\n');
+  fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),'version: 1\npolicies:\n  tests: [commands]\n');
+  git('add','-A');git('commit','-qm','base');assert.equal(git('status','--porcelain'),'');
+  const plan=f.plan();
+  assert.deepEqual(plan.groups,[['T-002','T-003']]);
+  assert.throws(()=>host(f,{...plan.config.batch,parallel:[['1.work/T-001'],['1.work/T-002','1.work/T-003']]}),{code:'parallel_solo_config_untracked'});
+  // Tracked, the same configuration reaches every worktree: one-member groups are back.
+  fs.writeFileSync(path.join(f.codeProject,'.gitignore'),'');git('add','-A');git('commit','-qm','track config');
+  assert.deepEqual(f.plan().groups,[['T-001'],['T-002','T-003']]);
+});
+
 test('a scaffold feature is serial; a finished project is complete; settings are validated',t=>{
   assert.deepEqual(project(t,`- [ ] T-001: scaffold\n  - 范围: 串行\n`,{feature:'0.bootstrap',emptyCode:true}).plan(),{mode:'serial',feature:'0.bootstrap',reason:'bootstrap_feature'});
   assert.deepEqual(project(t,diamond().replaceAll('- [ ]','- [x]')).plan(),{mode:'complete'});
@@ -190,4 +245,15 @@ test('the CLI reads parallel.worktree_all; the default gives every task before t
   const legacyProject=project(t,diamond());
   fs.writeFileSync(path.join(legacyProject.codeProject,'.cm-workflow.yml'),'version: 1\nparallel:\n  worktree_all: false\n');
   assert.deepEqual(run(legacyProject),[['T-002','T-003']]);
+});
+
+test('the CLI reads --workflow-config and keeps a task hitting a registered QA path in the main checkout',t=>{
+  const f=project(t,diamond()),workflow=path.join(f.root,'workflow.json');
+  fs.writeFileSync(workflow,JSON.stringify({qa:{commands:[],environment:{kind:'web',carrier:'browser',target:'fixture',scope:'local'},
+    criticalPaths:{authentication:['a.js']}},documentationPaths:[],applicableAgentFiles:[]}));
+  const writes=[];const original=process.stdout.write.bind(process.stdout);
+  process.stdout.write=chunk=>{writes.push(String(chunk));return true;};
+  let code;try{code=main(['--specs-dir',f.specsDir,'--code-project',f.codeProject,'--repository-id','r','--batch-id','plan-batch-1','--workflow-config',workflow]);}
+  finally{process.stdout.write=original;}
+  assert.equal(code,0);assert.deepEqual(JSON.parse(writes.join('')).groups,[['T-002','T-003']]);
 });

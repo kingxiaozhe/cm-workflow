@@ -23,7 +23,7 @@ import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs'
 import {readControlPolicy,controlTarget,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
 import {BATCH_SEGMENT_FIELD,batchSegment,batchSegments,batchStarted,batchMemberWorktree,batchMemberBranch} from '../runtime/js/cm-ai/batch-location.mjs';
 import {declaredTaskScope,assertDeclaredScope} from '../runtime/js/task-scope.mjs';
-import {featureHasBrowserCases} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
+import {soloWorktreeBlocker,soloQaCheckpoint,soloQaBase} from '../runtime/js/cm-ai/batch-plan.mjs';
 import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
@@ -93,7 +93,7 @@ export function memberSupersedeAdmitted(specsDir,runId,history){
   return strictPriorAttemptResolved(runConfig,history,records)&&sameTaskPriorAttemptResolved(history);
 }
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
-  rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,holdRevisions=[],bootstrapKeys=[],memberActions={}}){
+  rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,holdRevisions=[],bootstrapKeys=[],memberActions={},workflows=null}){
   const config=json(configuration);
   shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['externalModels','executionPolicy','codeProjects','parallel','controlPolicy'].filter(name=>Object.hasOwn(config,name))]);
   const controlPolicy=config.controlPolicy?readControlPolicy(config.controlPolicy):null;
@@ -143,7 +143,8 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     &&Array.isArray(memberActions[name])&&memberActions[name].every(item=>plans.has(item))),'invalid_input');
   // One-shot per launch and member, like the single-task flags.
   const actionGrants=new Map(Object.keys(BATCH_MEMBER_ACTIONS).map(name=>[name,new Set(memberActions[name]??[])]));
-  const groups=validateGroups(config,plans,{declared:!batchStarted({specsDir:config.specsDir,batchId:config.batchId})}),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
+  need(workflows===null||typeof workflows==='object'&&!Array.isArray(workflows),'invalid_input');
+  const groups=validateGroups(config,plans,{declared:!batchStarted({specsDir:config.specsDir,batchId:config.batchId}),workflows}),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
   const originalMembership=new Map(membership),originalPlans=new Map(plans);
   // A one-member group (batch-plan.mjs worktree_all) is a task developed alone in its
   // own worktree. Unlike members developed alongside others it keeps the fixed N6
@@ -201,7 +202,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     const rows=[];
     if(fs.existsSync(log))scanRows(log,row=>{
       if(row?.workflow==='cm-ai'&&row.event==='decision'&&row.run_id===config.batchId
-        &&['batch_start','batch_task_committed','batch_handoff','batch_cancel','batch_member_ready','batch_member_blocked','batch_merge_conflict','batch_merge_started','batch_merge_blocked'].includes(row.phase))rows.push(row);
+        &&['batch_start','batch_task_committed','batch_handoff','batch_cancel','batch_member_ready','batch_member_blocked','batch_merge_conflict','batch_merge_started','batch_merge_blocked','batch_member_qa_failed'].includes(row.phase))rows.push(row);
     });
     if(groups.length)return parallelProgress(rows);
     let current=first,stopped=false;const seen=new Set();
@@ -259,6 +260,12 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       }
       if(row.phase==='batch_cancel'){stopped=true;code='cancelled';continue;}
       if(['batch_merge_conflict','batch_merge_blocked'].includes(row.phase)){stopped=true;code=row.code;continue;}
+      if(row.phase==='batch_member_qa_failed'){
+        need(soloMember(row.from_key)&&!done.has(row.from_key)&&!ready.has(row.from_key)&&row.code==='batch_solo_qa_failed','batch_history_invalid');
+        const expected=location(row.from_key);
+        need(row.worktree===expected.worktree&&row.branch===expected.branch,'batch_history_invalid');
+        stopped=true;code=row.code;continue;
+      }
       if(row.phase==='batch_member_blocked'){
         need(originalMembership.has(row.from_key)&&!done.has(row.from_key)&&!ready.has(row.from_key)
           &&!blocked.has(row.from_key)&&row.generation===2,'batch_history_invalid');
@@ -496,8 +503,12 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       const terminal=['blocked','failed','unknown'].includes(status.state)
         &&!developmentRetryable(status)&&!completionRetryable(status)
         ||status.state==='pending_review'&&status.code!==null&&!reviewRetryable(status);
-      if(!terminal)return {kind:'waiting',status};
       const key=pending[index];
+      // The safety net (batch-plan.mjs keeps tasks that could trigger QA out of one-member
+      // groups): a one-member group whose own QA really failed has no QA repair path in a
+      // batch. It is not merged; the batch stops with its delivery committed on its branch.
+      if(soloMember(key)&&status.state==='fixture_completed'&&status.code==='qa_failed')return {kind:'qa_failed',key,status};
+      if(!terminal)return {kind:'waiting',status};
       // Q25: a member that can still be resolved in its own run (original-invocation
       // receipts, interrupted effect, a redo awaiting stop confirmation) keeps its
       // worktree and stops with the batch operation named; an unconfirmed one stays
@@ -538,6 +549,15 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     // Log before Git mutation so a crash during WIP commit/removal is resumable.
     for(const row of progress().blocked.values())preserveBlockedMember(row);
     if(rejected)throw rejected;
+    const qaFailed=decisions.find(decision=>decision.kind==='qa_failed');
+    if(qaFailed){
+      // Committed before the stop is logged: a crash in between re-drives the member to
+      // the same recorded failure and commits nothing new.
+      commitSoloDelivery(qaFailed.key,qaFailed.status);
+      const row={from_key:qaFailed.key,code:'batch_solo_qa_failed',...location(qaFailed.key)};
+      record('batch_member_qa_failed',row);
+      return soloQaFailedStop(row);
+    }
     if(recoverable)return parallelRecoveryRequired(recoverable.key,recoverable.status);
     if(unresolved)return parallelMemberUnresolved(unresolved.key,unresolved.status,unresolved.raw,unresolved.history);
     // The second generation is a new run: stop here so the next advance (and its
@@ -545,6 +565,28 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
     if(rescheduled.length)return parallelMemberRescheduled(rescheduled);
     if(waiting)return {...waiting,batchId:config.batchId};
     return null;
+  }
+  // The member's reviewed, completed delivery, committed on its branch so the operator
+  // can merge it; only the recorded QA failure kept it from the ordinary seal.
+  function commitSoloDelivery(key,status){
+    const {worktree,branch}=location(key),definition=plans.get(key);
+    need(definition.codeProject===worktree&&fs.existsSync(worktree)&&batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
+    const qa=findCmAiQaDecision({specsDir:config.specsDir,feature:definition.feature,identity:status.identity,packageDigest:status.packageDigest});
+    need(qa?.status==='triggered'&&latestCmAiQaRun({specsDir:config.specsDir,feature:definition.feature,identity:status.identity,
+      packageDigest:status.packageDigest})?.status==='failed','batch_qa_not_ready');
+    batchGit(worktree,['add','-A']);
+    if(batchGit(worktree,['status','--porcelain']))batchGit(worktree,['commit',...taskCommitArgs(definition.identity.taskId,taskDescription(config,definition))]);
+  }
+  function soloQaFailedStop(row){
+    const {from_key:key,worktree,branch}=row;
+    const nextStep=`在主目录 git merge --no-ff ${branch}（工作树 ${worktree}，分支上已提交该任务的已审交付）；`
+      +`再用 /cm-fix 按该任务最新一轮 QA 报告（specs 的 .reviews/ 下）复现并修复，修复照常经过独立审查与回归；`
+      +`然后删除该工作树与分支；剩余任务用 cm-ai-batch-plan.mjs 以新的批次 ID 重新生成批次继续，功能最后一个任务会重跑整个功能的 QA。`;
+    return Object.freeze({outcome:'blocked',state:'blocked',code:'batch_solo_qa_failed',batchId:config.batchId,currentTask:key,
+      reason:`单独在 worktree 里开发的任务 ${key} 自己的 QA 未通过；批次没有 QA 修复出口，不合并它，批次停止，主目录未改动。出口：${nextStep}`,
+      guidance:stopGuidance(`任务 ${key} 在自己的 worktree 里 QA 未通过；批次不合并它并已停止，主目录未改动。`,nextStep,
+        ['该任务已审查通过并在 tasks.md 记为完成，新批次会跳过它；不合并就会缺代码','合并进来的代码有已知 QA 失败，修复并通过 QA 前不要发布',
+          '原批次不会再推进；之后每次 advance 只重复本指引'])});
   }
   const stopGuidance=(summary,nextStep,prerequisites)=>Object.freeze({summary,nextStep,recoveryOperation:null,
     prerequisites:Object.freeze(prerequisites),authorizationGranted:false});
@@ -707,6 +749,7 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         const conflict=initial.code==='merge_conflict'?initial.rows.findLast(row=>row.phase==='batch_merge_conflict'):null;
         // A stop logged before its members were sealed (a crash, or an older version):
         // advance seals them; status stays read-only and reports the stop as logged.
+        if(initial.code==='batch_solo_qa_failed')return soloQaFailedStop(initial.rows.findLast(row=>row.phase==='batch_member_qa_failed'));
         const unsealed=!conflict?[]:request.operation==='advance'?await sealForGuidance():unsealedReadOnly();
         return {outcome:'blocked',code:initial.code??'cancelled',batchId:config.batchId,
           ...(conflict?{files:conflict.files,...(unsealed.length?{unsealed}:{}),guidance:mergeConflictGuidance(conflict.from_key,conflict.files,unsealed)}:{})};
@@ -819,7 +862,7 @@ function taskDescription(config,definition){
 // A one-member group is a task developed alone in its own worktree (batch-plan.mjs
 // worktree_all) under the same member rules. Batches written before it existed never
 // contain one (they were refused), so their resume is unchanged.
-function validateGroups(config,plans,{declared=false}={}){
+function validateGroups(config,plans,{declared=false,workflows=null}={}){
   const groups=config.parallel??[];need(Array.isArray(groups),'invalid_parallel_groups');const used=new Set();
   for(const group of groups){
     need(Array.isArray(group)&&group.length>=1&&group.length<=4,'invalid_parallel_group');
@@ -853,9 +896,19 @@ function validateGroups(config,plans,{declared=false}={}){
       const scope=declaredTaskScope(config.specsDir,plans.get(key).feature,plans.get(key).identity.taskId);
       need(scope!==null,'parallel_scope_undeclared');need(!scope.device,'parallel_device_task');
     }
-    // A one-member group runs its own QA in its worktree; interactive QA may target the
-    // main checkout, so a new batch refuses one in a feature with such cases (batch-plan.mjs).
-    if(declared&&group.length===1)need(!featureHasBrowserCases(config.specsDir,feature,config.codeProject),'parallel_solo_interactive_qa');
+    // A new batch takes a one-member group only where the planner would propose it
+    // (batch-plan.mjs): same project configuration in the worktree, no interactive QA,
+    // and no fixed N6 checkpoint its QA could hit there, with the launched workflows.
+    if(declared&&group.length===1){
+      const refuse=(code,reason)=>{throw Object.assign(new Error(code),{code,reason:`${group[0]}: ${reason}`});};
+      const blocked=soloWorktreeBlocker({specsDir:config.specsDir,codeProject:config.codeProject,feature});
+      if(blocked)refuse(blocked.code,blocked.reason);
+      const order=[...plans.keys()].filter(key=>plans.get(key).feature===feature);
+      const rule=soloQaCheckpoint({scope:plans.get(group[0]).scope,index:order.indexOf(group[0]),
+        base:soloQaBase({specsDir:config.specsDir,codeProject:config.codeProject,feature,repositoryId:config.repositoryId}),
+        workflow:workflows?.[group[0]]??null});
+      if(rule)refuse('parallel_solo_qa_checkpoint',`单独在 worktree 里开发时 QA 可能按固定检查点触发（${rule}），批次没有 QA 修复出口；让它在主目录串行（用 cm-ai-batch-plan.mjs 带 --workflow-config 重新生成）`);
+    }
     for(const key of group)used.add(key);
   }
   return groups;

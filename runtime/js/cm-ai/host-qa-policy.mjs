@@ -7,7 +7,7 @@ import {digest,freeze,hex,id,json,need,shape,validIdentity} from './effect-contr
 
 const key=(feature,task)=>`${feature}/${task}`;
 
-function history(binding,context) {
+function unassessed(binding,context) {
   const completed=new Set(context.completed.map(task=>key(task.feature,task.id)));
   const pendingFeatures=new Set(context.pendingFeatures);
   const unseen=new Set(context.completed.filter(task=>pendingFeatures.has(task.feature))
@@ -22,10 +22,19 @@ function history(binding,context) {
     const task=key(row.feature,row.task);unseen.delete(task);
     if(row.status==='triggered')since.clear();else since.add(task);
   });
+  return new Set([...unseen,...since]);
+}
+function history(binding,context) {
   // Missing historical QA rows are unknown coverage, never evidence of a reset.
   // This callback only proposes a fresh decision. An older run/package for the
   // same task cannot cover the current work; exact recovery happens in entry.
-  return new Set([...unseen,...since,key(binding.feature,binding.identity.taskId)]).size;
+  return new Set([...unassessed(binding,context),key(binding.feature,binding.identity.taskId)]).size;
+}
+// Completed tasks counted toward five_tasks_without_qa right now, by the same log
+// reading the decision uses (batch-plan.mjs predicts one-member groups from it).
+export function qaUnassessedTaskCount({specsDir,codeProject,feature,repositoryId}){
+  const context=inspectCmAiQaTaskContext({specsDir,codeProject,feature});
+  return unassessed({specsDir,feature,identity:{repositoryId}},context).size;
 }
 
 const categories=['migration','authentication','authorization','payment','api'];

@@ -16,11 +16,48 @@
 //   the whole group starts there.
 import fs from 'node:fs';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {inspectCmAiAdmission,parseFeatureTaskText} from './cm-ai-admission.mjs';
 import {approvedTaskGrammar} from '../spec-task-line.mjs';
 import {parseTaskScopes,scopesOverlap,BOOTSTRAP_FEATURE} from '../task-scope.mjs';
 import {need} from './effect-contract.mjs';
 import {featureHasBrowserCases} from './host-workflow-capabilities.mjs';
+import {decideHostQaPolicy,qaUnassessedTaskCount} from './host-qa-policy.mjs';
+import {findConfig} from '../../../scripts/cm-workflow-config.mjs';
+
+// One-member groups (worktree_all) and N6. A task alone in a worktree decides its QA
+// like a serial task and would run a triggered QA in that worktree, where the batch
+// has no QA repair path. So a task gets a one-member group only when, by the same
+// rules the decision uses, it cannot trigger QA there; the planner and the batch
+// host (cm-ai-batch-run.mjs validateGroups) apply these two checks alike.
+//
+// Feature-wide: the worktree must see the same project configuration as the main
+// checkout (a Git-ignored local config does not reach it, and QA reloads it there),
+// and no interactive (browser/simulator) case may apply, since that QA may target a
+// server or app built from the main checkout. null, or {code,reason}.
+export function soloWorktreeBlocker({specsDir,codeProject,feature}){
+  const file=findConfig(codeProject);
+  if(file){
+    const tracked=spawnSync('git',['-c','core.fsmonitor=false','-C',codeProject,'ls-files','--error-unmatch','--',path.basename(file)],
+      {encoding:'utf8',timeout:10000,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
+    if(tracked.error||tracked.status!==0)return {code:'parallel_solo_config_untracked',
+      reason:`项目配置 ${path.basename(file)} 没有被 Git 跟踪（例如被 .gitignore 忽略），worktree 里拿不到同一份配置，QA 会按另一套策略执行；提交该配置后再生成批次，或让这些任务在主目录串行`};
+  }
+  if(featureHasBrowserCases(specsDir,feature,codeProject))return {code:'parallel_solo_interactive_qa',
+    reason:`功能 ${feature} 有浏览器等交互式 QA 用例，可能连接主目录启动的服务或 App；单独开 worktree 会验收到未合并的代码`};
+  return null;
+}
+// Per task: index is its position among this feature's tasks in the batch order (the
+// tasks before it run first), base the five_tasks_without_qa count before the batch
+// (qaUnassessedTaskCount). Every earlier task is assumed not to reset the count. The
+// changed files are the declared scope plus the Learning targets. A reason, or null.
+export function soloQaCheckpoint({scope,index,base,workflow=null}){
+  const changedFiles=[...new Set([...scope,'AGENTS.md',...(workflow?.applicableAgentFiles??[])])];
+  const decision=decideHostQaPolicy({changedFiles,criticalPaths:workflow?.qa?.criticalPaths??{},pending:1,mergeEligible:false,
+    unassessedTasks:base+index+1});
+  return decision.status==='triggered'?decision.reason:null;
+}
+export const soloQaBase=({specsDir,codeProject,feature,repositoryId})=>qaUnassessedTaskCount({specsDir,codeProject,feature,repositoryId});
 
 // worktree_all: every task that could be a group member runs in a worktree, alone
 // when nothing pairs with it. false keeps only real groups (two or more members).
@@ -38,7 +75,10 @@ export function parallelSettings(config){
 // {mode:'complete'} when no task is left; any other admission state refuses with
 // the admission's own reason. Always the feature admission selects: the batch
 // host admits each task through that same selection.
-export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,settings:given=PARALLEL_DEFAULTS}){
+// workflow: optional single-task workflow configuration (the one the session passes the
+// batch host for these tasks); its qa.criticalPaths and applicableAgentFiles keep tasks
+// that would hit a registered path out of one-member groups.
+export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,settings:given=PARALLEL_DEFAULTS,workflow=null}){
   const settings=parallelSettings({parallel:given});
   const admission=inspectCmAiAdmission({specsDir,codeProject});
   if(admission.state==='complete')return {mode:'complete'};
@@ -64,13 +104,16 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   // collects the members' deferred QA); a completed last task leaves no such task.
   const lastDone=parsed.tasks.filter(task=>!task.dropped).at(-1)?.completed===true;
   const tasks=schedule.map(task=>({feature:selected,taskId:task.id,scope:[...scopes.tasks.get(task.id).scope],requirements:[]}));
-  // A task alone in a worktree runs its own QA there before it merges. Interactive
-  // QA (browser or simulator cases) may target a server or app built from the main
-  // checkout and would check unmerged code, so such a feature gets no one-member
-  // groups; real groups defer their QA to the last task in the main checkout.
-  const solo=settings.worktree_all&&!featureHasBrowserCases(specsDir,selected,codeProject);
-  const groups=settings.enabled&&(settings.max>=2||solo)&&!lastDone
-    ?group(parsed,schedule,scopes,settings.max,solo):[];
+  // One-member groups only where the task cannot trigger QA in its worktree (above);
+  // real groups defer their QA to the last task in the main checkout.
+  let alone=null;
+  if(settings.worktree_all&&!soloWorktreeBlocker({specsDir,codeProject,feature:selected})){
+    const base=soloQaBase({specsDir,codeProject,feature:selected,repositoryId});
+    const position=new Map(schedule.map((task,index)=>[task.id,index]));
+    alone=task=>soloQaCheckpoint({scope:scopes.tasks.get(task.id).scope,index:position.get(task.id),base,workflow})===null;
+  }
+  const groups=settings.enabled&&(settings.max>=2||alone)&&!lastDone
+    ?group(parsed,schedule,scopes,settings.max,alone):[];
   const key=taskId=>`${selected}/${taskId}`;
   const config={batch:{version:1,repositoryId,batchId,specsDir,codeProject,tasks,
     ...(groups.length?{parallel:groups.map(members=>members.map(key))}:{})},
@@ -90,7 +133,8 @@ function executionOrder(remaining,deps){
   return order;
 }
 
-function group(parsed,schedule,scopes,max,worktree_all){
+// alone: null (no one-member groups) or whether a task may run alone in a worktree.
+function group(parsed,schedule,scopes,max,alone){
   const deps=parsed.dependencies;
   const reaches=(from,target,seen=new Set())=>{
     if(seen.has(from))return false;seen.add(from);
@@ -105,9 +149,9 @@ function group(parsed,schedule,scopes,max,worktree_all){
   // The whole group starts at its first member, so every member's prerequisites
   // still to run must come before that point.
   const readyBefore=(task,start)=>(deps.get(task.id)??[]).every(dep=>!order.has(dep)||order.get(dep)<start);
-  // A candidate nothing pairs with becomes a one-member group under worktree_all.
+  // A candidate nothing pairs with becomes a one-member group when it may run alone.
   const groups=[];let current=[];
-  const close=()=>{if(current.length>=(worktree_all?1:2))groups.push(current.map(task=>task.id));current=[];};
+  const close=()=>{if(current.length>=2||current.length===1&&alone?.(current[0]))groups.push(current.map(task=>task.id));current=[];};
   for(const task of schedule){
     if(!candidate(task)){close();continue;}
     const fits=current.length>0&&current.length<max&&readyBefore(task,order.get(current[0].id))

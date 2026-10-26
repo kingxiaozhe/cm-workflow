@@ -303,7 +303,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     let reconciling=false;
     const driver=createCmAiBatch({configuration:{...batch,...(controlPolicy?{controlPolicy}:{}),...(externalModels?{externalModels}:{}),...(executionPolicy?{executionPolicy}:{})},logHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
       runtime:runtime??'codex',checkCommands:(providerConfig??protection)?.checkCommands??null,checkTimeoutMs:(providerConfig??protection)?.timeoutMs??60000,
-      rerunUnknownQa,rerunBlockedQa,qaEnvironmentFailure,memberActions,holdRevisions:[...holds],bootstrapKeys:Object.keys(bootstraps??{}),
+      rerunUnknownQa,rerunBlockedQa,qaEnvironmentFailure,memberActions,holdRevisions:[...holds],bootstrapKeys:Object.keys(bootstraps??{}),workflows,
       executionFor:async(definition,{parallelMember=false,soloMember=false}={})=>{
         await freezeBatchExecutionPolicy(batch,executionPolicy);
         freezeBatchExternalModels(batch,externalModels);
