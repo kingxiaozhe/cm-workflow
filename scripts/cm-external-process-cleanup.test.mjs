@@ -148,6 +148,16 @@ test('owned cleanup: an EPERM probe at the kill deadline does not wait past it',
   }})(),{code:'process_cleanup_unknown'});
   assert(Date.now()-started<150,`ended at the kill deadline, not ${Date.now()-started} ms later`);
 });
+// Review 2026-10-27 round 3: SIGTERM and SIGKILL each met EPERM before delivering, then
+// the group stayed alive; the poll after SIGKILL got a fresh killWaitMs (≈560 ms of 400).
+test('owned cleanup: EPERM before SIGTERM and SIGKILL still ends at the overall deadline',{skip:process.platform==='win32'},async()=>{
+  const started=Date.now(),at=()=>Date.now()-started;
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killWaitMs:200,exitBudgetMs:200,killProcess:(pid,signal)=>{
+    if(signal==='SIGTERM'&&at()<150)denied();
+    if(signal==='SIGKILL'&&at()<350)denied();
+  }})(),{code:'process_cleanup_unknown'});
+  assert(at()<480,`ended near the 400 ms overall deadline, not ${at()} ms`);
+});
 test('owned cleanup: a member that answers once our child exited is live, not stopped',{skip:process.platform==='win32'},async()=>{
   const calls=[];let first=true;
   await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killWaitMs:0,killProcess:(pid,signal)=>{

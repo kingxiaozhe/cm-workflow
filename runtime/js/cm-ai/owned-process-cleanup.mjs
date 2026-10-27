@@ -25,7 +25,9 @@ export function ownedProcessCleanup(child,{graceMs=250,killWaitMs=750,killProces
     if(!await signal('SIGTERM'))return;
     await pause(graceMs);
     if(!await signal('SIGKILL'))return;
-    const until=Date.now()+killWaitMs;
+    // Review 2026-10-27 round 3: an EPERM resolution before SIGKILL must not buy the
+    // poll a fresh killWaitMs, so the poll also ends at the overall deadline.
+    const until=Math.min(Date.now()+killWaitMs,overall);
     // SIGKILL delivery is asynchronous. Give the group one polling turn to
     // exit before probing; this wait consumes the existing deadline. An actual
     // permission error still fails immediately, without another probe.
