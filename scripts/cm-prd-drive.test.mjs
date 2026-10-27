@@ -128,6 +128,18 @@ test('static self-check evidence is refused before the host changes its session'
   const run=f.drive('advance');assert.equal(run.status,2);assert.match(run.stderr,/self-check.json.*执行证据/);
   assert.equal(fs.readFileSync(f.store(f.plan.session)).toString(),before.toString());
 });
+test('self-check revision with selfCheckRevisionReason passes driver preflight and reaches the host',t=>{
+  const f=draftReady(t);
+  f.plan.contextChecks=[{id:'read-source',command:[process.execPath,'-e',"require('fs').readFileSync('docs/input.md','utf8')"]}];
+  f.plan.contextJudgements={'1.guide':Object.fromEntries(pending.map((id,i)=>[id,i===0?'failed':'passed']))};
+  const checked=f.drive('advance');assert.equal(checked.status,0,checked.stderr);
+  assert.equal(checked.json.result.stage,'self_check_failed');
+  const revised=structuredClone(draft);revised.selfCheckRevisionReason='Task boundary named in the failed check';
+  revised.features[0].documents[0].content+='\n- [ ] [AC-002] Guide names its verification command.';
+  f.write('generate.json',revised);f.plan.request={text:'Revise after failed self-check'};
+  const run=f.drive('advance');assert.equal(run.status,0,run.stderr);
+  assert.equal(run.json.result.stage,'draft_ready');
+});
 test('self-check preflight requires real contextChecks before host launch',t=>{
   const f=draftReady(t);
   f.plan.contextJudgements={'1.guide':Object.fromEntries(pending.map(id=>[id,'passed']))};
