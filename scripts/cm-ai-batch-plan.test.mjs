@@ -199,6 +199,41 @@ test('a fifth task kept in the main checkout resets the count when the host poli
   // Tasks completed with no QA row at all stay counted after a triggered QA.
   assert.deepEqual(project(t,chainOf(9,2)).plan(undefined,none).groups,keys([3,4,6,7]));
 });
+test('the count walk keeps every reset a group, qa:null or several features may hide',t=>{
+  // Review r1 (ticket 05). Each case once let a one-member group reach five in its worktree.
+  const none={qa:{criticalPaths:{}},applicableAgentFiles:[]};
+  const solo=ids=>ids.map(id=>[`1.work/T-00${id}`]);
+  const every=(batch,workflow)=>Object.fromEntries(batch.tasks.map(task=>[`1.work/${task.taskId}`,workflow]));
+  // 1. A workflow with qa:null keeps the session-supplied QA decision: no certain reset.
+  const f=project(t,chainOf(9)),reset=f.plan(undefined,none);
+  assert.deepEqual(f.plan(undefined,{qa:null,applicableAgentFiles:[]}).groups,solo([1,2,3,4]).map(([key])=>[key.slice(7)]));
+  assert.throws(()=>host(f,reset.config.batch,every(reset.config.batch,{qa:null,applicableAgentFiles:[]})),
+    {code:'parallel_solo_qa_checkpoint',reason:/^1\.work\/T-006: /});
+  // 2. A blocked member of a real group reruns in the main checkout and may trigger QA
+  // there, after the other members' rows: the count after the group may be low.
+  const grouped=`- [ ] T-001: t1${scope('f1.js')}\n- [ ] T-002: t2${scope('f2.js')}\n`
+    +Array.from({length:7},(_,index)=>`- [ ] T-00${index+3}: t${index+3}${scope(`f${index+3}.js`)}\n`).join('')
+    +'\n- T-003 依赖 T-001, T-002\n'+Array.from({length:6},(_,index)=>`- T-00${index+4} 依赖 T-00${index+3}\n`).join('');
+  const g=project(t,grouped),plan=g.plan(undefined,none);
+  assert.deepEqual(plan.groups,[['T-001','T-002'],['T-003'],['T-004'],['T-008']]);
+  assert.ok(host(g,plan.config.batch,every(plan.config.batch,none)));
+  assert.throws(()=>host(g,{...plan.config.batch,parallel:[['1.work/T-001','1.work/T-002'],...solo([3,4,6,7,8])]},every(plan.config.batch,none)),
+    {code:'parallel_solo_qa_checkpoint',reason:/^1\.work\/T-006: /});
+  // 3. A group starts at its first member, so a hand-written group out of task order
+  // counts there: T-001 and T-005 run first, T-004 is then the fifth (or not).
+  const free=Array.from({length:9},(_,index)=>`- [ ] T-00${index+1}: t${index+1}${scope(`f${index+1}.js`)}\n`).join('');
+  const h=project(t,free),batch=h.plan(undefined,none).config.batch;
+  assert.throws(()=>host(h,{...batch,parallel:[['1.work/T-001','1.work/T-005'],...solo([7,8])]},every(batch,none)),
+    {code:'parallel_solo_qa_checkpoint',reason:/^1\.work\/T-007: /});
+  // 4. The count spans features and a closing feature leaves floor: no one-member group
+  // in a batch of several features.
+  const more=path.join(h.specsDir,'2.more');fs.mkdirSync(more);
+  for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(more,name),'# Fixture\n');
+  fs.writeFileSync(path.join(more,'tasks.md'),`- [ ] T-001: g1${scope('g1.js')}\n`);
+  fs.writeFileSync(path.join(h.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work','2.more'],specFiles:buildManifest(h.specsDir)}));
+  assert.throws(()=>host(h,{...batch,tasks:[...batch.tasks,{feature:'2.more',taskId:'T-001',scope:['g1.js'],requirements:[]}],
+    parallel:solo([1])},{...every(batch,none),'2.more/T-001':none}),{code:'parallel_solo_multi_feature'});
+});
 test('one-member groups skip a task whose scope hits a registered QA critical path',t=>{
   const workflow={qa:{criticalPaths:{authentication:['a.js']}},applicableAgentFiles:[]};
   const f=project(t,diamond());

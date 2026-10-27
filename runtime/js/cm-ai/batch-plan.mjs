@@ -68,15 +68,18 @@ export const soloQaBase=({specsDir,codeProject,feature,repositoryId})=>qaUnasses
 
 // The five_tasks_without_qa count along the batch order, as the set of values it may
 // have before the next task. A triggered QA leaves floor counted (tasks with no QA row
-// at all). check() judges the next task by the largest value; place() then records
-// where it runs:
-// - 'member' (two or more in a group): its QA is deferred, recorded as skipped;
-// - 'solo': check() found no checkpoint, so its QA is skipped;
+// at all). check() judges the next task by the largest value; then
+// place() records a task in the main checkout ('main') or alone in a worktree ('solo'):
+// - 'solo': check() found no checkpoint, so its QA is skipped (a blocked one reruns in
+//   the main checkout with the same count and files, so skipped as well);
 // - 'main': triggered once its count reaches five; below that skipped, unless its scope
 //   hits a registered path: then either, since the decision sees the files actually
 //   changed. (The batch's final task may trigger feature_complete; none runs after it.)
-// hostDecides: the host policy decides the task's QA (a workflow configuration or a
-// control policy). Without it the session supplies the decision, which may be either.
+// hostDecides: the host policy decides the task's QA (a workflow configuration with qa,
+// or a control policy). Without it the session supplies the decision: either.
+// placeGroup() records a group developed alongside each other: each member defers its
+// QA (skipped), but a blocked member reruns in the main checkout before the group
+// settles and may trigger there, after any of the other members' rows.
 export function soloQaCounter({count,floor}){
   let counts=new Set([count]);
   const check=(scope,workflow=null)=>soloQaCheckpoint({scope,count:Math.max(...counts)+1,workflow});
@@ -90,8 +93,16 @@ export function soloQaCounter({count,floor}){
     }
     counts=next;
   };
-  return Object.freeze({check,place});
+  const placeGroup=size=>{
+    const next=new Set([...counts].map(before=>before+size));
+    for(let rows=0;rows<size;rows++)next.add(floor+rows);
+    counts=next;
+  };
+  return Object.freeze({check,place,placeGroup});
 }
+// Whether the host policy decides a task's QA under this workflow configuration (a
+// control policy decides it as well; see soloQaCounter).
+export const workflowDecidesQa=workflow=>workflow!==null&&workflow.qa!=null;
 
 // worktree_all: every task that could be a group member runs in a worktree, alone
 // when nothing pairs with it. false keeps only real groups (two or more members).
@@ -144,10 +155,12 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   if(settings.worktree_all&&!soloWorktreeBlocker({specsDir,codeProject,feature:selected})){
     const counter=soloQaCounter(soloQaBase({specsDir,codeProject,feature:selected,repositoryId}));
     const scope=task=>scopes.tasks.get(task.id).scope;
-    // Every task gets the same workflow. Without one the plan cannot tell whether the
-    // host policy decides QA (the session may), so no task counts as a certain reset.
+    // Every task gets the same workflow. Without one (or with qa:null) the plan cannot
+    // tell whether the host policy decides QA (the session may), so no certain reset.
+    const hostDecides=workflowDecidesQa(workflow);
     solo={alone:task=>counter.check(scope(task),workflow)===null,
-      place:(task,placement)=>counter.place(placement,scope(task),{workflow,hostDecides:workflow!==null})};
+      place:(task,placement)=>counter.place(placement,scope(task),{workflow,hostDecides}),
+      placeGroup:tasks=>counter.placeGroup(tasks.length)};
   }
   const groups=settings.enabled&&(settings.max>=2||solo)&&!lastDone
     ?group(parsed,schedule,scopes,settings.max,solo):[];
@@ -171,7 +184,7 @@ function executionOrder(remaining,deps){
 }
 
 // solo: null (no one-member groups), or alone (whether a task may run alone in a
-// worktree) and place (told where each task runs, in the batch order).
+// worktree), place and placeGroup (told where each task runs, in the batch order).
 function group(parsed,schedule,scopes,max,solo){
   const deps=parsed.dependencies;
   const reaches=(from,target,seen=new Set())=>{
@@ -191,7 +204,7 @@ function group(parsed,schedule,scopes,max,solo){
   // Members are consecutive in the schedule, so tasks are placed in the batch order.
   const groups=[];let current=[];
   const close=()=>{
-    if(current.length>=2){groups.push(current.map(task=>task.id));current.forEach(task=>solo?.place(task,'member'));}
+    if(current.length>=2){groups.push(current.map(task=>task.id));solo?.placeGroup(current);}
     else if(current.length===1&&solo?.alone(current[0])){groups.push([current[0].id]);solo.place(current[0],'solo');}
     else current.forEach(task=>solo?.place(task,'main'));
     current=[];
