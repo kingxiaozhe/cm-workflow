@@ -22,7 +22,7 @@ import {approvedTaskGrammar} from '../spec-task-line.mjs';
 import {parseTaskScopes,scopesOverlap,BOOTSTRAP_FEATURE} from '../task-scope.mjs';
 import {need} from './effect-contract.mjs';
 import {featureHasBrowserCases} from './host-workflow-capabilities.mjs';
-import {decideHostQaPolicy,qaUnassessedTaskCount} from './host-qa-policy.mjs';
+import {decideHostQaPolicy,qaUnassessedTaskCounts} from './host-qa-policy.mjs';
 import {findConfig} from '../../../scripts/cm-workflow-config.mjs';
 
 // One-member groups (worktree_all) and N6. A task alone in a worktree decides its QA
@@ -54,17 +54,44 @@ export function soloWorktreeBlocker({specsDir,codeProject,feature}){
     reason:`功能 ${feature} 有浏览器等交互式 QA 用例，可能连接主目录启动的服务或 App；单独开 worktree 会验收到未合并的代码`};
   return null;
 }
-// Per task: index is its position among this feature's tasks in the batch order (the
-// tasks before it run first), base the five_tasks_without_qa count before the batch
-// (qaUnassessedTaskCount). Every earlier task is assumed not to reset the count. The
-// changed files are the declared scope plus the Learning targets. A reason, or null.
-export function soloQaCheckpoint({scope,index,base,workflow=null}){
+// Per task: count is the five_tasks_without_qa count its decision would see, itself
+// included. The changed files are the declared scope plus the Learning targets (a
+// delivery outside the scope is refused as out_of_scope). A reason, or null.
+export function soloQaCheckpoint({scope,count,workflow=null}){
   const changedFiles=[...new Set([...scope,'AGENTS.md',...(workflow?.applicableAgentFiles??[])])];
   const decision=decideHostQaPolicy({changedFiles,criticalPaths:workflow?.qa?.criticalPaths??{},pending:1,mergeEligible:false,
-    unassessedTasks:base+index+1});
+    unassessedTasks:count});
   return decision.status==='triggered'?decision.reason:null;
 }
-export const soloQaBase=({specsDir,codeProject,feature,repositoryId})=>qaUnassessedTaskCount({specsDir,codeProject,feature,repositoryId});
+// {count,floor} before the batch (qaUnassessedTaskCounts).
+export const soloQaBase=({specsDir,codeProject,feature,repositoryId})=>qaUnassessedTaskCounts({specsDir,codeProject,feature,repositoryId});
+
+// The five_tasks_without_qa count along the batch order, as the set of values it may
+// have before the next task. A triggered QA leaves floor counted (tasks with no QA row
+// at all). check() judges the next task by the largest value; place() then records
+// where it runs:
+// - 'member' (two or more in a group): its QA is deferred, recorded as skipped;
+// - 'solo': check() found no checkpoint, so its QA is skipped;
+// - 'main': triggered once its count reaches five; below that skipped, unless its scope
+//   hits a registered path: then either, since the decision sees the files actually
+//   changed. (The batch's final task may trigger feature_complete; none runs after it.)
+// hostDecides: the host policy decides the task's QA (a workflow configuration or a
+// control policy). Without it the session supplies the decision, which may be either.
+export function soloQaCounter({count,floor}){
+  let counts=new Set([count]);
+  const check=(scope,workflow=null)=>soloQaCheckpoint({scope,count:Math.max(...counts)+1,workflow});
+  const place=(placement,scope,{workflow=null,hostDecides})=>{
+    const hits=placement==='main'&&soloQaCheckpoint({scope,count:1,workflow})!==null;
+    const next=new Set();
+    for(const before of counts){
+      const own=before+1;
+      if(!hostDecides||hits&&own<5)next.add(floor).add(own);
+      else next.add(placement==='main'&&own>=5?floor:own);
+    }
+    counts=next;
+  };
+  return Object.freeze({check,place});
+}
 
 // worktree_all: every task that could be a group member runs in a worktree, alone
 // when nothing pairs with it. false keeps only real groups (two or more members).
@@ -113,14 +140,17 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   const tasks=schedule.map(task=>({feature:selected,taskId:task.id,scope:[...scopes.tasks.get(task.id).scope],requirements:[]}));
   // One-member groups only where the task cannot trigger QA in its worktree (above);
   // real groups defer their QA to the last task in the main checkout.
-  let alone=null;
+  let solo=null;
   if(settings.worktree_all&&!soloWorktreeBlocker({specsDir,codeProject,feature:selected})){
-    const base=soloQaBase({specsDir,codeProject,feature:selected,repositoryId});
-    const position=new Map(schedule.map((task,index)=>[task.id,index]));
-    alone=task=>soloQaCheckpoint({scope:scopes.tasks.get(task.id).scope,index:position.get(task.id),base,workflow})===null;
+    const counter=soloQaCounter(soloQaBase({specsDir,codeProject,feature:selected,repositoryId}));
+    const scope=task=>scopes.tasks.get(task.id).scope;
+    // Every task gets the same workflow. Without one the plan cannot tell whether the
+    // host policy decides QA (the session may), so no task counts as a certain reset.
+    solo={alone:task=>counter.check(scope(task),workflow)===null,
+      place:(task,placement)=>counter.place(placement,scope(task),{workflow,hostDecides:workflow!==null})};
   }
-  const groups=settings.enabled&&(settings.max>=2||alone)&&!lastDone
-    ?group(parsed,schedule,scopes,settings.max,alone):[];
+  const groups=settings.enabled&&(settings.max>=2||solo)&&!lastDone
+    ?group(parsed,schedule,scopes,settings.max,solo):[];
   const key=taskId=>`${selected}/${taskId}`;
   const config={batch:{version:1,repositoryId,batchId,specsDir,codeProject,tasks,
     ...(groups.length?{parallel:groups.map(members=>members.map(key))}:{})},
@@ -140,8 +170,9 @@ function executionOrder(remaining,deps){
   return order;
 }
 
-// alone: null (no one-member groups) or whether a task may run alone in a worktree.
-function group(parsed,schedule,scopes,max,alone){
+// solo: null (no one-member groups), or alone (whether a task may run alone in a
+// worktree) and place (told where each task runs, in the batch order).
+function group(parsed,schedule,scopes,max,solo){
   const deps=parsed.dependencies;
   const reaches=(from,target,seen=new Set())=>{
     if(seen.has(from))return false;seen.add(from);
@@ -157,16 +188,22 @@ function group(parsed,schedule,scopes,max,alone){
   // still to run must come before that point.
   const readyBefore=(task,start)=>(deps.get(task.id)??[]).every(dep=>!order.has(dep)||order.get(dep)<start);
   // A candidate nothing pairs with becomes a one-member group when it may run alone.
+  // Members are consecutive in the schedule, so tasks are placed in the batch order.
   const groups=[];let current=[];
-  const close=()=>{if(current.length>=2||current.length===1&&alone?.(current[0]))groups.push(current.map(task=>task.id));current=[];};
+  const close=()=>{
+    if(current.length>=2){groups.push(current.map(task=>task.id));current.forEach(task=>solo?.place(task,'member'));}
+    else if(current.length===1&&solo?.alone(current[0])){groups.push([current[0].id]);solo.place(current[0],'solo');}
+    else current.forEach(task=>solo?.place(task,'main'));
+    current=[];
+  };
   for(const task of schedule){
-    if(!candidate(task)){close();continue;}
+    if(!candidate(task)){close();solo?.place(task,'main');continue;}
     const fits=current.length>0&&current.length<max&&readyBefore(task,order.get(current[0].id))
       &&current.every(other=>!reaches(task.id,other.id)&&!reaches(other.id,task.id)
         &&!scopesOverlap(scopes.tasks.get(other.id).scope,scopes.tasks.get(task.id).scope));
     if(fits){current.push(task);continue;}
     close();
-    if(readyBefore(task,order.get(task.id)))current=[task];
+    if(readyBefore(task,order.get(task.id)))current=[task];else solo?.place(task,'main');
   }
   close();
   return groups;

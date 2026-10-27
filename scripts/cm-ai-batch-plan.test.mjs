@@ -177,6 +177,28 @@ test('one-member groups stop before a task could be the fifth without QA',t=>{
   // Real groups defer their QA and are unaffected.
   assert.deepEqual(project(t,chainOf(7)).plan({enabled:true,max:2,worktree_all:false}).groups,[]);
 });
+test('a fifth task kept in the main checkout resets the count when the host policy decides QA',t=>{
+  // Ticket 05: T-005 stays in the main checkout as the fifth without QA, so its QA
+  // triggers for certain and T-006 starts from zero again. That holds only where the
+  // host policy decides QA: a workflow configuration, or the batch's control policy.
+  const none={qa:{criticalPaths:{}},applicableAgentFiles:[]};
+  const keys=ids=>ids.map(id=>[`T-00${id}`]);
+  const f=project(t,chainOf(9)),plan=f.plan(undefined,none);
+  assert.deepEqual(plan.groups,keys([1,2,3,4,6,7,8]));
+  const every=workflow=>Object.fromEntries(plan.config.batch.tasks.map(task=>[`1.work/${task.taskId}`,workflow]));
+  assert.ok(host(f,plan.config.batch,every(none)));
+  assert.ok(host(f,{...plan.config.batch,controlPolicy:{version:2,development:'conversation',bootstrap:'disabled',qa:'disabled',qaFix:'disabled'}}));
+  // Without either the session supplies the decision, which may skip: no certain reset.
+  assert.deepEqual(f.plan().groups,keys([1,2,3,4]));
+  assert.throws(()=>host(f,plan.config.batch),{code:'parallel_solo_qa_checkpoint',reason:/^1\.work\/T-006: /});
+  // A task kept in the main checkout for a registered path may or may not trigger (the
+  // decision sees the files actually changed), so both counts stay possible after it.
+  const auth={qa:{criticalPaths:{authentication:['f2.js']}},applicableAgentFiles:[]};
+  assert.deepEqual(f.plan(undefined,auth).groups,keys([1,3,4,6,8]));
+  assert.throws(()=>host(f,{...plan.config.batch,parallel:[1,3,4,6,7].map(id=>[`1.work/T-00${id}`])},every(auth)),{code:'parallel_solo_qa_checkpoint',reason:/T-007/});
+  // Tasks completed with no QA row at all stay counted after a triggered QA.
+  assert.deepEqual(project(t,chainOf(9,2)).plan(undefined,none).groups,keys([3,4,6,7]));
+});
 test('one-member groups skip a task whose scope hits a registered QA critical path',t=>{
   const workflow={qa:{criticalPaths:{authentication:['a.js']}},applicableAgentFiles:[]};
   const f=project(t,diamond());
