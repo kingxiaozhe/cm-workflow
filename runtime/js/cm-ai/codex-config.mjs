@@ -51,7 +51,9 @@ export function configFingerprint(options) {
 
 export function cleanEnvironment() {
   return {...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL', 'CODEX_HOME'].includes(key))),
+    // CM_NOTIFY_OFF (runtime/js/notify.mjs) must survive, or a check or provider child
+    // that reaches the notice module would push from a run started silenced.
+    ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL', 'CODEX_HOME', 'CM_NOTIFY_OFF'].includes(key))),
     // CM's own sessions are not a person typing: the skill-hints hook stays out of them.
     CM_SKILL_HINTS: 'off'};
 }

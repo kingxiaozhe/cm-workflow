@@ -37,7 +37,8 @@ export function claudeReviewFingerprint({cwd,model,cli='claude',effort=null,veri
     environmentPolicy:1,promptTransport:'stdin'})).digest('hex');
 }
 export function claudeEnvironment() {
-  const allowed=['PATH','HOME','USER','LOGNAME','TMPDIR','LANG','LC_ALL','ANTHROPIC_API_KEY'];
+  // CM_NOTIFY_OFF kept for the same reason as in cleanEnvironment (codex-config.mjs).
+  const allowed=['PATH','HOME','USER','LOGNAME','TMPDIR','LANG','LC_ALL','ANTHROPIC_API_KEY','CM_NOTIFY_OFF'];
   return {...Object.fromEntries(Object.entries(process.env).filter(([key])=>allowed.includes(key))),
     CLAUDE_CODE_MAX_RETRIES:'0',CLAUDE_CODE_RETRY_WATCHDOG:'0',
     // CM's own sessions are not a person typing: the skill-hints hook stays out of them.

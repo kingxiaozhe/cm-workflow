@@ -80,6 +80,34 @@ test('CM_NOTIFY_OFF turns every notice path off with a valid config, touching no
   // Unset, empty or "0" leaves notices on.
   for(const value of [undefined,'','0'])assert.notEqual(readNotifyConfig({...h.env,CM_NOTIFY_OFF:value}),null,String(value));
 });
+// Review 2026-10-27 round 1: cleanEnvironment (checks, Codex workers) and
+// claudeEnvironment (Claude workers) rebuild the child environment from an
+// allowlist; without CM_NOTIFY_OFF in it, a child that reaches the notice module
+// read the user's HOME notify.json and pushed although the run was silenced.
+test('CM_NOTIFY_OFF survives the check and provider child environments',async t=>{
+  const h=home(t),userHome=path.join(h.dir,'user');
+  fs.mkdirSync(path.join(userHome,'.cm-workflow'),{recursive:true});
+  fs.copyFileSync(path.join(h.dir,'notify.json'),path.join(userHome,'.cm-workflow','notify.json'));
+  const {cleanEnvironment}=await import('../runtime/js/cm-ai/codex-config.mjs');
+  const {claudeEnvironment}=await import('../runtime/js/cm-ai/worker-claude.mjs');
+  const saved={HOME:process.env.HOME,CM_NOTIFY_OFF:process.env.CM_NOTIFY_OFF};
+  t.after(()=>{for(const [key,value] of Object.entries(saved)){if(value===undefined)delete process.env[key];else process.env[key]=value;}});
+  const NOTIFY=new URL('../runtime/js/notify.mjs',import.meta.url).href;
+  const child=(env,key)=>JSON.parse(spawnSync(process.execPath,['--input-type=module','-e',
+    `import {notify} from ${JSON.stringify(NOTIFY)};console.log(JSON.stringify(notify({key:${JSON.stringify(key)},event:'stuck',workflow:'cm-ai'})));`],
+    {env,encoding:'utf8',timeout:15000}).stdout);
+  process.env.HOME=userHome;
+  for(const [name,build] of [['clean',cleanEnvironment],['claude',claudeEnvironment]]){
+    process.env.CM_NOTIFY_OFF='1';
+    assert.equal(build().CM_NOTIFY_OFF,'1',name);
+    assert.deepEqual(child(build(),`silenced-${name}`),{sent:false,reason:'off'},name);
+    // Control: the same child without the switch does reach the user's config.
+    delete process.env.CM_NOTIFY_OFF;
+    assert.equal('CM_NOTIFY_OFF' in build(),false,name);
+    assert.deepEqual(child(build(),`control-${name}`),{sent:true,reason:'launched'},name);
+  }
+  assert(await h.until(()=>h.rows().length===2),'only the two control children pushed');
+});
 test('invalid config turns the feature off: relative command, bad version, bad waitMinutes',t=>{
   const h=home(t);const file=path.join(h.dir,'notify.json');
   for(const value of [{version:1,command:['notify.sh']},{version:2,command:['/bin/true']},{version:1,command:[]},

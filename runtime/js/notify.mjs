@@ -105,7 +105,9 @@ const UNSAFE_READ={permission:'not_regular_file',too_large:'too_large'};
 // CM_NOTIFY_OFF (any value but empty or "0") turns notices off for this process
 // and its children before anything is read or written: acceptance runs in a test
 // copy of a project keep the real CM_WORKFLOW_HOME (runtimes.yml and the rest)
-// without pushing to the user's phone. Every notice path starts here.
+// without pushing to the user's phone. Every automatic notice path starts here; the
+// explicit `/cm:notify test` and running a sender by hand do not (they are asked for).
+// cleanEnvironment / claudeEnvironment keep the variable for check and provider children.
 // An invalid file is reported in notify.log only, never on workflow output.
 export const notifyOffByEnv=(env=process.env)=>typeof env.CM_NOTIFY_OFF==='string'&&env.CM_NOTIFY_OFF!==''&&env.CM_NOTIFY_OFF!=='0';
 export function readNotifyConfig(env=process.env){
