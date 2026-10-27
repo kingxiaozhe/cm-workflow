@@ -1327,10 +1327,25 @@ function parseAssignment(raw){
   catch(error){throw new GateError(`cannot resolve assignment path ${rawPath}: ${error.message}`);}
 }
 
-export function checkParallelWrite({repo,assignment}){
-  let repository;
-  try{repository=fs.realpathSync.native(repo);}
+function resolveRepository(repo){
+  try{return fs.realpathSync.native(repo);}
   catch(error){throw new GateError(`cannot resolve repository ${repo}: ${error.message}`);}
+}
+// One writer's worktree: registered, of this repository, on its own named branch.
+function checkAssignedWorktree(item,{baseCommon,registered}){
+  const metadata=registered.get(pathKey(item.worktree));
+  if(!metadata)throw new GateError(`${item.task} path is not a registered worktree: ${item.worktree}`);
+  if(commonGitDir(item.worktree)!==baseCommon)
+    throw new GateError(`${item.task} worktree belongs to a different repository`);
+  const observed=runGit(item.worktree,'branch','--show-current');
+  if(metadata.detached||!metadata.branch||!observed)
+    throw new GateError(`${item.task} worktree must use a non-detached branch`);
+  if(metadata.branch!==observed)throw new GateError(`${item.task} branch metadata does not match the worktree`);
+  return {...item,branch:metadata.branch};
+}
+
+export function checkParallelWrite({repo,assignment}){
+  const repository=resolveRepository(repo);
   if(!Array.isArray(assignment)||assignment.length<2)
     throw new GateError('parallel write guard requires at least two assignments');
   const baseCommon=commonGitDir(repository),registered=registeredWorktrees(repository);
@@ -1339,21 +1354,33 @@ export function checkParallelWrite({repo,assignment}){
     throw new GateError('parallel write assignments must use unique task ids');
   if(new Set(assignments.map(item=>pathKey(item.worktree))).size!==assignments.length)
     throw new GateError('parallel write assignments must use distinct worktree paths');
-  const result=[];
-  for(const item of assignments){
-    const metadata=registered.get(pathKey(item.worktree));
-    if(!metadata)throw new GateError(`${item.task} path is not a registered worktree: ${item.worktree}`);
-    if(commonGitDir(item.worktree)!==baseCommon)
-      throw new GateError(`${item.task} worktree belongs to a different repository`);
-    const observed=runGit(item.worktree,'branch','--show-current');
-    if(metadata.detached||!metadata.branch||!observed)
-      throw new GateError(`${item.task} worktree must use a non-detached branch`);
-    if(metadata.branch!==observed)throw new GateError(`${item.task} branch metadata does not match the worktree`);
-    result.push({...item,branch:metadata.branch});
-  }
+  const result=assignments.map(item=>checkAssignedWorktree(item,{baseCommon,registered}));
   if(new Set(result.map(item=>item.branch)).size!==result.length)
     throw new GateError('parallel write assignments must use distinct branches');
   return {gate:'parallel-write',outcome:'isolated',assignments:result};
+}
+
+// A single writer in its own worktree while the main checkout only waits to merge it
+// (a one-member batch group). The worktree gets the same checks as a parallel
+// assignment, and it must not share the main checkout's branch. The main checkout
+// itself writes nothing meanwhile, so it may sit on a detached HEAD (map ticket 04:
+// it used to be padded in as a second assignment and had to be on a branch).
+export function checkSoloWrite({repo,assignment}){
+  const repository=resolveRepository(repo);
+  const registered=registeredWorktrees(repository);
+  // Review 2026-10-27 round 1: the old padding also proved the main checkout is itself a
+  // registered worktree. A copied linked worktree is not, yet shares the original's index
+  // and HEAD, so merges there would write another checkout's state. Only the branch
+  // requirement is relaxed: registration and matching metadata stay.
+  const mainMetadata=registered.get(pathKey(repository));
+  if(!mainMetadata)throw new GateError(`main checkout is not a registered worktree: ${repository}`);
+  const main=runGit(repository,'branch','--show-current');
+  if(mainMetadata.detached?main!=='':(!main||mainMetadata.branch!==main))
+    throw new GateError('main checkout branch metadata does not match the worktree');
+  const item=checkAssignedWorktree(parseAssignment(assignment),{baseCommon:commonGitDir(repository),registered});
+  if(pathKey(item.worktree)===pathKey(repository))throw new GateError(`${item.task} must use its own worktree, not the main checkout`);
+  if(main&&main===item.branch)throw new GateError(`${item.task} worktree must not use the main checkout's branch`);
+  return {gate:'solo-write',outcome:'isolated',assignments:[item]};
 }
 
 function usage(){return 'usage: cm-task-gate.mjs {capture-baseline|validate-handoff|hash-implementation|check-n4|check-n5|prepare-mark-done|verify-mark-done-plan|prepare-human-correction|publish-human-correction-review|prepare-controlled-correction|publish-controlled-correction-review|check-parallel-write} [options]';}

@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 
 import {
   GateError,checkN4,checkN5,implementationSha256,loadHandoff,prepareMarkDone,verifyMarkDonePlan,validateReview,
-  checkParallelWrite,markDoneLocked,
+  checkParallelWrite,checkSoloWrite,markDoneLocked,
 } from './cm-task-gate.mjs';
 
 const scriptsRoot=fileURLToPath(new URL('.',import.meta.url));
@@ -181,6 +181,43 @@ test('JS parallel-write gate accepts isolated worktrees and rejects duplicate as
   const assignments=[`T-001=${repo}`,`T-002=${worktree}`];
   assert.equal(checkParallelWrite({repo,assignment:assignments}).outcome,'isolated');
   assert.throws(()=>checkParallelWrite({repo,assignment:[assignments[0],`T-001=${worktree}`]}),GateError);
+}));
+
+// Map ticket 04: one writer while the main checkout only waits to merge it.
+test('JS solo-write gate: the worker needs its own branch; the main checkout may be detached',()=>fixture(root=>{
+  const repo=path.join(root,'repo'),worktree=path.join(root,'worker'),other=path.join(root,'other');fs.mkdirSync(repo);
+  const git=(directory,...args)=>{
+    const result=spawnSync('git',['-C',directory,...args],{encoding:'utf8'});
+    assert.equal(result.status,0,result.stderr);return result.stdout.trim();
+  };
+  git(repo,'init','-b','main');git(repo,'config','user.name','CM Fixture');git(repo,'config','user.email','fixture@example.invalid');
+  fs.writeFileSync(path.join(repo,'fixture.txt'),'fixture\n');git(repo,'add','fixture.txt');git(repo,'commit','-m','fixture');
+  git(repo,'worktree','add','-b','worker',worktree);
+  assert.deepEqual(checkSoloWrite({repo,assignment:`T-001=${worktree}`}),
+    {gate:'solo-write',outcome:'isolated',assignments:[{task:'T-001',worktree:fs.realpathSync.native(worktree),branch:'worker'}]});
+  // The old padding stopped here: the main checkout on a detached HEAD.
+  git(repo,'checkout','-q','--detach');
+  assert.throws(()=>checkParallelWrite({repo,assignment:[`T-001=${worktree}`,`T-batch-main=${repo}`]}),/T-batch-main worktree must use a non-detached branch/);
+  assert.equal(checkSoloWrite({repo,assignment:`T-001=${worktree}`}).outcome,'isolated');
+  // The worker itself still needs a branch, its own worktree and this repository.
+  assert.throws(()=>checkSoloWrite({repo,assignment:`T-001=${repo}`}),/non-detached branch/);
+  git(repo,'checkout','-q','main');
+  assert.throws(()=>checkSoloWrite({repo,assignment:`T-001=${repo}`}),/must use its own worktree, not the main checkout/);
+  git(worktree,'checkout','-q','--detach');
+  assert.throws(()=>checkSoloWrite({repo,assignment:`T-001=${worktree}`}),/non-detached branch/);
+  fs.mkdirSync(other);
+  assert.throws(()=>checkSoloWrite({repo,assignment:`T-001=${other}`}),/not a registered worktree/);
+  assert.throws(()=>checkSoloWrite({repo,assignment:'T-001=relative/path'}),/must be absolute/);
+  // Review round 1: a copy of a linked worktree as the main checkout shares that
+  // worktree's index and HEAD but is not registered; it is refused, as the old padding did.
+  git(worktree,'checkout','-q','worker');
+  const second=path.join(root,'second'),copy=path.join(root,'copy');
+  git(repo,'worktree','add','-b','second',second);
+  fs.cpSync(worktree,copy,{recursive:true});
+  assert.equal(git(copy,'rev-parse','--is-inside-work-tree'),'true');
+  assert.throws(()=>checkParallelWrite({repo:copy,assignment:[`T-001=${second}`,`T-batch-main=${copy}`]}),/T-batch-main path is not a registered worktree/);
+  assert.throws(()=>checkSoloWrite({repo:copy,assignment:`T-001=${second}`}),/main checkout is not a registered worktree/);
+  assert.equal(checkSoloWrite({repo:worktree,assignment:`T-001=${second}`}).outcome,'isolated','the registered original is fine');
 }));
 
 test('Windows lock serializes two task completions without losing either checkbox',{skip:process.platform!=='win32'},()=>fixture(async root=>{

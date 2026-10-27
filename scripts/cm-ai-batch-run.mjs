@@ -12,7 +12,7 @@ import {developmentRetryable,completionRetryable,reviewRetryable} from '../runti
 import {batchOperatorGuidance} from '../runtime/js/cm-ai/operator-guidance.mjs';
 import {digest,json,shape,need,id,hex,validIdentity} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {scanRows,findCmAiQaDecision,latestCmAiQaRun} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
-import {checkParallelWrite} from './cm-task-gate.mjs';
+import {checkParallelWrite,checkSoloWrite} from './cm-task-gate.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {parseFeatureTaskText} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {approvedTaskGrammar} from '../runtime/js/spec-task-line.mjs';
@@ -344,10 +344,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
       plans.set(key,worktreeDefinition(key));
     }
-    // Include the main checkout as the second assignment after a partial merge.
+    // One remaining member (a one-member group, or the rest after a partial merge) is the
+    // only writer: the main checkout just waits to merge it and may be detached.
     const assignments=remaining.map(key=>`${plans.get(key).identity.taskId}=${location(key).worktree}`);
-    if(assignments.length===1)assignments.push(`T-batch-main=${config.codeProject}`);
-    if(assignments.length)checkParallelWrite({repo:config.codeProject,assignment:assignments});
+    if(assignments.length===1)checkSoloWrite({repo:config.codeProject,assignment:assignments[0]});
+    else if(assignments.length)checkParallelWrite({repo:config.codeProject,assignment:assignments});
     // A one-member group decides and runs its own QA in its worktree, which reloads the
     // project configuration there. The planner's blob check is only a pre-filter (a
     // checkout filter or a second config file hidden in the main checkout pass it), so
@@ -638,6 +639,17 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   }
   const stopGuidance=(summary,nextStep,prerequisites)=>Object.freeze({summary,nextStep,recoveryOperation:null,
     prerequisites:Object.freeze(prerequisites),authorizationGranted:false});
+  // Review 2026-10-27 round 1 (P3): a batch that ends on a detached main checkout leaves its
+  // merges only on that commit (member branches are deleted). The finished result names the
+  // commit and how to keep it; the batch never creates or switches a branch itself.
+  function withDetachedSave(value){
+    if(batchGit(config.codeProject,['branch','--show-current'])!=='')return value;
+    const head=batchGit(config.codeProject,['rev-parse','HEAD']);
+    const note=`主目录停在 detached HEAD（提交 ${head.slice(0,12)}），本批次的结果只在这个提交上：要保留就在主目录运行 git switch -c <新分支名>`;
+    const guidance=value.guidance?Object.freeze({...value.guidance,prerequisites:Object.freeze([...(value.guidance.prerequisites??[]).slice(0,7),note])})
+      :stopGuidance('本批次已全部完成。',note,[]);
+    return {...value,detachedHead:head,guidance};
+  }
   // A member whose reviewed, completed delivery does not merge (members never share a
   // scope file, so this is a file outside every scope). The batch stays stopped; the
   // operator merges by hand and plans the rest as a new batch. Redoing the task
@@ -947,10 +959,10 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
         let task_commit=commitChanges(config.codeProject,taskCommitArgs(plans.get(liveKey).identity.taskId,taskDescription(config,plans.get(liveKey))));
         if(task_commit)record('batch_task_committed',{from_key:liveKey,task_commit});
         else task_commit=progress().rows.filter(row=>row.phase==='batch_task_committed'&&row.from_key===liveKey).at(-1)?.task_commit??null;
-        if(finished)return {...result,batchId:config.batchId,task_commit};
-        if(featureDone)return {...result,batchId:config.batchId,task_commit,batchComplete:true,nextFeature:result.nextTask.feature,
+        if(finished)return withDetachedSave({...result,batchId:config.batchId,task_commit});
+        if(featureDone)return withDetachedSave({...result,batchId:config.batchId,task_commit,batchComplete:true,nextFeature:result.nextTask.feature,
           guidance:stopGuidance(`本批次的功能 ${plans.get(liveKey).feature} 已全部完成。`,
-            `下一个功能是 ${result.nextTask.feature}：用 cm-ai-batch-plan.mjs 以新的批次 ID 生成它的批次再继续。`,[])};
+            `下一个功能是 ${result.nextTask.feature}：用 cm-ai-batch-plan.mjs 以新的批次 ID 生成它的批次再继续。`,[])});
         record('batch_handoff',{from_key:liveKey,to_key:next,checkpoint:active.checkpoint(),package_digest:result.packageDigest,task_commit});
         active.close();active=null;liveKey=next;
       }

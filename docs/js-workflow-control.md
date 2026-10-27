@@ -1488,8 +1488,10 @@ QA 报告修复、删除工作树与分支、剩余任务用 `cm-ai-batch-plan.m
 
 **前置条件。** 并行成员（含 1 人组）会在各自工作树里单独跑一次 review preflight，因此 `--review-config`
 是并行的硬前置：缺它整批立即以 `review_preflight_failed` 停止，一行代码都不会开发。
-串行批次没有这个要求。组里只剩一个未合并成员时（1 人组从一开始就是），`check-parallel-write`
-会把主目录作为第二个分配一起检查，主目录必须在一个分支上（不是 detached HEAD）。
+串行批次没有这个要求。组里只剩一个未合并成员时（1 人组从一开始就是），批次只检查这个成员的
+worktree（`checkSoloWrite`：已登记、同一仓库、在自己的分支上，且不与主目录同分支），不再把主目录
+当第二个分配；主目录这时只等合并，可以停在 detached HEAD，合并照旧落在它当前的提交上。两个及以上
+成员同时开发时仍走 `check-parallel-write`。
 
 **提议方。** 由 N1 决定哪些任务成组，规则见 `skills/cm-ai/references/js-host.md` 第 3.1 条。
 组不起来就省略该字段，正常串行；不为组而组。
