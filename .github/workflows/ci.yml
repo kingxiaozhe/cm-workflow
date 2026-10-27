@@ -208,7 +208,8 @@ jobs:
         shell: pwsh
         run: |
           $env:CLAUDE_HOME = Join-Path $env:RUNNER_TEMP "cm-workflow-claude"
-          ./install.ps1 -Force
+          # The companion-skill download is covered offline by cm-matt-skills.test.mjs; CI stays off the network.
+          ./install.ps1 -Force -NoMattSkills
           $required = @(
             "skills/cm-check/SKILL.md",
             "skills/cm-test/SKILL.md",

@@ -35,7 +35,7 @@ function sandbox(t) {
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\nexit 0\n', {mode: 0o755});
   const env = {...process.env, HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:${process.env.PATH}`,
-    CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs')};
+    CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs'), CM_MATT_SKILLS_INSTALL: 'off'};
   return {home, bin, plugin: path.join(home, 'plugins/cm-workflow'), marketplace: path.join(home, '.agents/plugins/marketplace.json'), env};
 }
 

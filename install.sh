@@ -12,6 +12,8 @@ ASSUME_YES=0
 OVERWRITE_LOCAL_EDITS=0
 # Non-empty when --no-skill-hints is given: this run does not wire the skill-hints hook.
 SKIP_SKILL_HINTS=""
+# Non-empty when --no-matt-skills is given: this run does not install the companion skills.
+SKIP_MATT_SKILLS=""
 INSTALL_COMPLETE=0
 DEST_TOUCHED=0
 # Records what this install wrote so the next install can tell hand edits apart.
@@ -39,7 +41,8 @@ for arg in "$@"; do
     --yes) ASSUME_YES=1 ;;
     --overwrite-local-edits) OVERWRITE_LOCAL_EDITS=1 ;;
     --no-skill-hints) SKIP_SKILL_HINTS=1 ;;
-    *) echo "用法: $0 [--yes] [--overwrite-local-edits] [--no-skill-hints]" >&2; exit 2 ;;
+    --no-matt-skills) SKIP_MATT_SKILLS=1 ;;
+    *) echo "用法: $0 [--yes] [--overwrite-local-edits] [--no-skill-hints] [--no-matt-skills]" >&2; exit 2 ;;
   esac
 done
 
@@ -554,6 +557,8 @@ echo "后台自动升级仍需另行开启，见 docs/installation.md。"
 # only refresh the copy under ~/.cm-workflow/skill-hints. Failure only warns.
 node "$DEST/scripts/cm-skill-hints.mjs" install --host claude ${SKIP_SKILL_HINTS:+--no-skill-hints} </dev/null ||
   echo "⚠ 技能提醒钩子未处理完（不影响本次安装）" >&2
-# Optional Matt Pocock companion skills: print what is missing and one command; never download.
+# Optional Matt Pocock companion skills: put the pinned set in by default (not with
+# --no-matt-skills, CM_MATT_SKILLS_INSTALL=off, {"install": false} in ~/.cm-workflow/matt-skills.local.json,
+# or a skill the user removed after CM saw it there); a fetch that fails only warns.
 echo
-node "$DEST/scripts/cm-matt-skills.mjs" hint </dev/null || true
+node "$DEST/scripts/cm-matt-skills.mjs" auto ${SKIP_MATT_SKILLS:+--no-matt-skills} </dev/null || true

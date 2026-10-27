@@ -345,15 +345,43 @@ Set `CM_UPDATE_REMOTE` when your team intentionally uses a fork.
 
 ## Optional companion skills (Matt Pocock)
 
-CM recommends twelve skills from [mattpocock/skills](https://github.com/mattpocock/skills)
+CM recommends thirteen skills from [mattpocock/skills](https://github.com/mattpocock/skills)
 (MIT) for work between CM stages, such as grilling a plan before `cm-prd` or finding
-refactoring opportunities before `cm-refactor`. CM never depends on them and never
-downloads them on its own. After installing, `install.sh` and `install-codex.sh`
-list the ones missing from `~/.claude/skills` and `~/.agents/skills` and print one
-command; later installs shorten this to one line while the same set is missing.
-`/cm-check` reports the same status.
+refactoring opportunities before `cm-refactor`, or a `retro` of the session once
+`cm-ai` has finished (N8 prints one line pointing at it). CM never depends on them.
 
-To install them, run the printed command, for example:
+Installers put them in by default: `install.sh`, `install-codex.sh` and `install.ps1`
+copy the ones missing from `~/.claude/skills` and `~/.agents/skills`, with the same
+fetch and checks as the manual command below, and print what was added. A fetch that
+fails (no network, no `git`) only warns; CM itself is installed either way, and the
+manual command is printed for later. `/cm-check` reports the status and whether the
+install-time default is on.
+
+An install does not add the skills when:
+
+- you pass `--no-matt-skills` (`-NoMattSkills` for `install.ps1`) or set
+  `CM_MATT_SKILLS_INSTALL=off`. This covers that run only: the next install without
+  them adds the skills as usual; skills already there are kept;
+- `~/.cm-workflow/matt-skills.local.json` has `"install": false`, which turns the
+  default off for good; or that file cannot be read, is empty, or has the wrong shape
+  (`install` must be `true`/`false`). Then it warns and changes nothing until you fix
+  the file;
+- a skill is settled: CM records every skill it has seen in a skills directory (put in
+  by it, or already there, including a same-named skill with other content) in
+  `~/.cm-workflow/matt-skills.auto.json`. A settled skill that is missing later was
+  removed by you, and no install puts it back. If that record cannot be read or has
+  another shape, it is kept as it is and no install adds anything until you fix or
+  delete it.
+
+Upgrade boundary: versions before this one kept no record, so a skill you installed by
+hand and removed earlier cannot be told from one you never had, and the first install of
+this version adds every missing skill once. To keep that choice, opt out first (the flag or
+the environment variable for that run, or `"install": false`). The fetch is bounded (two
+minutes per git call); a stalled network ends in the same warning as a failed one.
+
+A skill whose name already exists with other content is never overwritten, by the
+default or by the manual command. To install by hand (for example after opting out),
+run the printed command:
 
 ```bash
 node ~/.claude/scripts/cm-matt-skills.mjs install

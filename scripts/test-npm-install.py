@@ -106,8 +106,10 @@ with pathlib.Path(os.environ['CM_NPM_FIXTURE_CALLS']).open('a') as out:
 sys.exit(17 if os.environ.get('CM_NPM_FIXTURE_FAIL') == '1' else 0)
 ''')
         fake.chmod(0o755)
+        # The relocated installer really runs; the companion-skill download must stay off so
+        # nothing reaches the network or the real skills directories (covered offline elsewhere).
         env = {**os.environ, 'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'],
-               'CM_NPM_FIXTURE_CALLS': str(temp / 'calls.jsonl')}
+               'CM_NPM_FIXTURE_CALLS': str(temp / 'calls.jsonl'), 'CM_MATT_SKILLS_INSTALL': 'off'}
         # The shipped Node entry still chooses the original script and arguments.
         # Its injected subprocess executes only our relocated fixture copy.
         bridge = temp / 'entry-fixture.mjs'

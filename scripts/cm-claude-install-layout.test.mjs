@@ -11,7 +11,7 @@ test('real isolated Claude install checks correction docs at its installed layou
   const home=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-claude-install-layout-')));
   t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
   const target=path.join(home,'.claude'),env={...process.env,HOME:home,CLAUDE_HOME:target,
-    CM_WORKFLOW_HOME:path.join(home,'user'),CM_WORKFLOW_LOG_HOME:path.join(home,'logs')};
+    CM_WORKFLOW_HOME:path.join(home,'user'),CM_WORKFLOW_LOG_HOME:path.join(home,'logs'),CM_MATT_SKILLS_INSTALL:'off'};
   const installed=spawnSync('/bin/bash',[path.join(source,'install.sh'),'--yes'],{cwd:source,env,encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024});
   assert.equal(installed.status,0,installed.stdout+installed.stderr);
   assert.match(installed.stdout,/cm runtime check: PASSED \(claude-compat v/);

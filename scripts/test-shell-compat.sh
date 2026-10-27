@@ -7,6 +7,8 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/cm-shell-compat.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT HUP INT TERM
 FAILURES=0
 export CM_WORKFLOW_HOME="$TMP_ROOT/user-config"
+# The companion-skill download is covered offline by cm-matt-skills.test.mjs; installers here stay off the network.
+export CM_MATT_SKILLS_INSTALL=off
 
 fail() {
   echo "FAIL: $*" >&2
