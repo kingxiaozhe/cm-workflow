@@ -37,6 +37,10 @@ const failureText=message=>message.type==='error'?message.message:message.error?
 export const codexRateLimited=message=>{const text=failureText(message);
   return typeof text==='string'&&RATE_LIMITED.test(text.slice(0,2000));};
 
+// Codex can write the generic error line before the turn.failed naming the class
+// (e.g. a 429). A lone error waits this long for it before the group is stopped.
+export const CODEX_FAILURE_GRACE_MS=2000;
+
 export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
   disabledSkills = [], cli = 'codex', timeoutMs = 60000,
   promptTransport = 'argument', spawnProcess = spawn, onNotice = null,onUsage=null,onUsageClaim=null }) {
@@ -59,7 +63,7 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
       let failureTerminal = false, noticeCount = 0, reconnectNoticeCount = 0, receiptInvalid=false, rateLimited=false;
       // provider_failed stays the internal code; the published one names the class.
       const published=code=>code==='provider_failed'&&rateLimited?'reviewer_rate_limited':code;
-      let providerThread, turnStarted = false, usageContextInvalid=false, timedOut = false, closeTimer, closing=false, terminationRequested=false;
+      let failureGrace, providerFailed = false, providerThread, turnStarted = false, usageContextInvalid=false, timedOut = false, closeTimer, closing=false, terminationRequested=false;
       const cleanup=()=>process.platform==='win32'&&!terminationRequested?Promise.resolve():
         cleanupGroup().catch(()=>{failure='process_cleanup_unknown';});
       const stop = code => {
@@ -84,6 +88,8 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
         let message;
         try { message = JSON.parse(line); } catch { stop('invalid_event'); return; }
         if (!validEventShape(message)) { stop('invalid_event'); return; }
+        // While a lone error waits for its turn.failed, only further failure lines count.
+        if (failureGrace !== undefined && message.type !== 'turn.failed' && message.type !== 'error') return;
         // Codex emits reconnect notices as errors but may subsequently recover.
         // Keep a separate bounded notice budget; overflow follows fatal handling.
         if (isCodexReconnectNotice(message) && reconnectNoticeCount < CODEX_RECONNECT_NOTICE_LIMIT) {
@@ -132,7 +138,16 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
           try { value = JSON.parse(message.item.text); } catch { stop('invalid_output_json'); }
         }
         if (message.type === 'turn.completed') {completion = true;if(providerThread&&turnStarted&&!failureTerminal&&!usageContextInvalid)usage.terminal(message.usage);}
-        if (isFailureTerminal) stop('provider_failed');
+        // A turn.failed (or a second failure line, above) stops at once; a lone error
+        // stops after the grace, so a turn.failed written right after it is still read.
+        if (isFailureTerminal) {
+          if (message.type === 'turn.failed') stop('provider_failed');
+          else {
+            // Kept apart from failure, so a cancel or timeout in the grace keeps its code.
+            providerFailed = true;
+            if (!closing) failureGrace ??= setTimeout(() => stop('provider_failed'), CODEX_FAILURE_GRACE_MS);
+          }
+        }
       }
       child.stdout.on('data', chunk => {
         if (settled) return;
@@ -145,7 +160,7 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
         }
       });
       const clean = () => {
-        clearTimeout(timer); clearTimeout(closeTimer); signal.removeEventListener('abort', onAbort);
+        clearTimeout(timer); clearTimeout(closeTimer); clearTimeout(failureGrace); signal.removeEventListener('abort', onAbort);
       };
       child.once('error', async () => {
         if(settled)return;settled=true;closing=true;clean();await cleanup();
@@ -168,8 +183,8 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
         }
         if(failure==='process_cleanup_unknown')resolve({status:'failed',code:failure});
         else if (signal.aborted) resolve({ status: 'cancelled', code: 'cancelled' });
-        else if (failure || code !== 0 || !completion || !providerThread || value === undefined) {
-          resolve({ status: 'failed', code: published(failure ?? 'incomplete_result') });
+        else if (failure || providerFailed || code !== 0 || !completion || !providerThread || value === undefined) {
+          resolve({ status: 'failed', code: published(failure ?? (providerFailed ? 'provider_failed' : 'incomplete_result')) });
         } else resolve({ status: 'succeeded', value });
       });
       if(promptTransport==='stdin'){
