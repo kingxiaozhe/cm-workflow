@@ -788,7 +788,10 @@ export async function batchFixture(mode,options={}){
         // main is untouched and the merges sit on the detached HEAD, as serial commits did.
         assert.equal(git(codeProject,['branch','--show-current']),'');
         assert.equal(git(codeProject,['log','-1','--format=%s','refs/heads/main']),'fixture baseline');
-      }else assert.equal(git(codeProject,['branch','--show-current']),'main');
+        // The finished result names the commit holding the merges and how to keep it.
+        assert.equal(result.detachedHead,git(codeProject,['rev-parse','HEAD']));
+        assert.match(`${result.guidance.nextStep} ${result.guidance.prerequisites.join('；')}`,new RegExp(`detached HEAD（提交 ${result.detachedHead.slice(0,12)}）.*git switch -c`));
+      }else{assert.equal(git(codeProject,['branch','--show-current']),'main');assert.equal('detachedHead' in result,false);}
       if(options.slowFirst){
         const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
         const order=phase=>rows.filter(row=>row.phase===phase).map(row=>row.from_key);

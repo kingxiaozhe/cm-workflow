@@ -208,6 +208,16 @@ test('JS solo-write gate: the worker needs its own branch; the main checkout may
   fs.mkdirSync(other);
   assert.throws(()=>checkSoloWrite({repo,assignment:`T-001=${other}`}),/not a registered worktree/);
   assert.throws(()=>checkSoloWrite({repo,assignment:'T-001=relative/path'}),/must be absolute/);
+  // Review round 1: a copy of a linked worktree as the main checkout shares that
+  // worktree's index and HEAD but is not registered; it is refused, as the old padding did.
+  git(worktree,'checkout','-q','worker');
+  const second=path.join(root,'second'),copy=path.join(root,'copy');
+  git(repo,'worktree','add','-b','second',second);
+  fs.cpSync(worktree,copy,{recursive:true});
+  assert.equal(git(copy,'rev-parse','--is-inside-work-tree'),'true');
+  assert.throws(()=>checkParallelWrite({repo:copy,assignment:[`T-001=${second}`,`T-batch-main=${copy}`]}),/T-batch-main path is not a registered worktree/);
+  assert.throws(()=>checkSoloWrite({repo:copy,assignment:`T-001=${second}`}),/main checkout is not a registered worktree/);
+  assert.equal(checkSoloWrite({repo:worktree,assignment:`T-001=${second}`}).outcome,'isolated','the registered original is fine');
 }));
 
 test('Windows lock serializes two task completions without losing either checkbox',{skip:process.platform!=='win32'},()=>fixture(async root=>{

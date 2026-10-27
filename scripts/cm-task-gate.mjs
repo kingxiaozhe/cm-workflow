@@ -1367,9 +1367,18 @@ export function checkParallelWrite({repo,assignment}){
 // it used to be padded in as a second assignment and had to be on a branch).
 export function checkSoloWrite({repo,assignment}){
   const repository=resolveRepository(repo);
-  const item=checkAssignedWorktree(parseAssignment(assignment),{baseCommon:commonGitDir(repository),registered:registeredWorktrees(repository)});
-  if(pathKey(item.worktree)===pathKey(repository))throw new GateError(`${item.task} must use its own worktree, not the main checkout`);
+  const registered=registeredWorktrees(repository);
+  // Review 2026-10-27 round 1: the old padding also proved the main checkout is itself a
+  // registered worktree. A copied linked worktree is not, yet shares the original's index
+  // and HEAD, so merges there would write another checkout's state. Only the branch
+  // requirement is relaxed: registration and matching metadata stay.
+  const mainMetadata=registered.get(pathKey(repository));
+  if(!mainMetadata)throw new GateError(`main checkout is not a registered worktree: ${repository}`);
   const main=runGit(repository,'branch','--show-current');
+  if(mainMetadata.detached?main!=='':(!main||mainMetadata.branch!==main))
+    throw new GateError('main checkout branch metadata does not match the worktree');
+  const item=checkAssignedWorktree(parseAssignment(assignment),{baseCommon:commonGitDir(repository),registered});
+  if(pathKey(item.worktree)===pathKey(repository))throw new GateError(`${item.task} must use its own worktree, not the main checkout`);
   if(main&&main===item.branch)throw new GateError(`${item.task} worktree must not use the main checkout's branch`);
   return {gate:'solo-write',outcome:'isolated',assignments:[item]};
 }
