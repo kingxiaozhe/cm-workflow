@@ -32,9 +32,11 @@ full license text; this notice preserves the upstream attribution.
 - Copyright: © 2026 Matt Pocock
 - License declared by upstream: MIT (`LICENSE` at the repository root)
 - Not bundled: `scripts/cm-matt-skills.mjs` contains only skill names, paths and
-  SHA-256 checksums. When the user runs its `install` command, it fetches the
-  pinned files from upstream and copies the upstream `LICENSE` into each
-  installed skill directory.
+  SHA-256 checksums. Its `install` command (run by the user) and its `auto`
+  command (run by `install.sh`, `install-codex.sh` and `install.ps1` by default,
+  unless the user opts out as described in `docs/installation.md`) fetch the
+  pinned files from upstream and copy the upstream `LICENSE` into each installed
+  skill directory.
 
 ## Kenney pixel assets
 

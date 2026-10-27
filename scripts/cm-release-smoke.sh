@@ -65,7 +65,7 @@ cp -R "$SOURCE_CREATOR" "$TEMP_CODEX_HOME/skills/.system/plugin-creator"
 
 printf '%s\n' '==> Installing the Codex plugin in a disposable home'
 HOME="$TEMP_HOME" CODEX_HOME="$TEMP_CODEX_HOME" \
-  "$ROOT/install-codex.sh" --yes
+  CM_MATT_SKILLS_INSTALL=off "$ROOT/install-codex.sh" --yes
 
 PLUGIN_LIST="$(HOME="$TEMP_HOME" CODEX_HOME="$TEMP_CODEX_HOME" codex plugin list)"
 printf '%s\n' "$PLUGIN_LIST"
