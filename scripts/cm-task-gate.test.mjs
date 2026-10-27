@@ -194,7 +194,7 @@ test('JS solo-write gate: the worker needs its own branch; the main checkout may
   fs.writeFileSync(path.join(repo,'fixture.txt'),'fixture\n');git(repo,'add','fixture.txt');git(repo,'commit','-m','fixture');
   git(repo,'worktree','add','-b','worker',worktree);
   assert.deepEqual(checkSoloWrite({repo,assignment:`T-001=${worktree}`}),
-    {gate:'solo-write',outcome:'isolated',assignments:[{task:'T-001',worktree:fs.realpathSync(worktree),branch:'worker'}]});
+    {gate:'solo-write',outcome:'isolated',assignments:[{task:'T-001',worktree:fs.realpathSync.native(worktree),branch:'worker'}]});
   // The old padding stopped here: the main checkout on a detached HEAD.
   git(repo,'checkout','-q','--detach');
   assert.throws(()=>checkParallelWrite({repo,assignment:[`T-001=${worktree}`,`T-batch-main=${repo}`]}),/T-batch-main worktree must use a non-detached branch/);
