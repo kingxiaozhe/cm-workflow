@@ -1068,15 +1068,22 @@ function validateGroups(config,plans,{declared=false,workflows=null}={}){
   return groups;
 }
 // The planner's walk along the batch order (soloQaCounter), with the launched workflows
-// and control policy. It follows the order tasks run in: a group starts at its first
-// member, whatever the order of the others. The count spans features (and a feature
-// that closes drops its tasks from floor), so a one-member group needs a one-feature batch.
+// and control policy. The count spans features (and a feature that closes drops its tasks
+// from floor), so a one-member group needs a one-feature batch. Its groups must be
+// contiguous in that order: a blocked member reruns when it is the first unfinished task,
+// so a member placed after outside tasks would rerun (and maybe reset the count) after them.
 function checkSoloQaCheckpoints(config,plans,groups,workflows){
   const solos=groups.filter(group=>group.length===1);
   if(!solos.length)return;
   const features=new Set([...plans.values()].map(plan=>plan.feature));
   if(features.size>1)throw Object.assign(new Error('parallel_solo_multi_feature'),{code:'parallel_solo_multi_feature',
     reason:`${solos[0][0]}: 批次含多个功能时不能单独开 worktree（QA 计数跨功能累计，推算不准）；按功能分别生成批次（cm-ai-batch-plan.mjs）`});
+  const order=[...plans.keys()];
+  for(const group of groups){
+    const at=group.map(key=>order.indexOf(key));
+    if(Math.max(...at)-Math.min(...at)!==group.length-1)throw Object.assign(new Error('parallel_solo_split_group'),{code:'parallel_solo_split_group',
+      reason:`${group.join(',')}: 有单独开 worktree 的任务时，同组成员必须在任务顺序里相邻（被阻断的成员改回主目录重做的时点才可推算）；按顺序重排或用 cm-ai-batch-plan.mjs 重新生成`});
+  }
   const [feature]=features,groupOf=new Map(groups.flatMap(group=>group.map(key=>[key,group]))),placed=new Set();
   const counter=soloQaCounter(soloQaBase({specsDir:config.specsDir,codeProject:config.codeProject,feature,repositoryId:config.repositoryId}));
   for(const key of plans.keys()){

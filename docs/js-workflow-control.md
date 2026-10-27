@@ -1429,8 +1429,9 @@ N6 与串行任务相同、按固定检查点判定，触发时在该工作树�
 范围命中关键路径的主目录任务可能触发也可能不触发（判定看实际改动文件），两种都保留；n 人组成员延后 QA 各加一，但被阻断的成员在组收尾前
 改回主目录重做、可能触发，所以组后还可能是保底数加 0 到 n-1。只有宿主策略判定 QA 时（工作流配置的 `qa` 不为 `null`，或有控制策略）才按
 这些规则推算，否则会话给的结论可能是任意一种。判断复用 `host-qa-policy.mjs` 的 `decideHostQaPolicy` 与同一份日志计数
-（`qaUnassessedTaskCounts`）。新批次宿主按实际 `workflows` 与控制策略、按实际执行顺序（组从首个成员开始）再核，不符报
-`parallel_solo_qa_checkpoint`；批次含多个功能时不产生 1 人组（计数跨功能累计、功能收尾会改变保底数），报 `parallel_solo_multi_feature`。工作树从 HEAD 检出，所以主目录的项目配置文件（`.cm-workflow.yml` 等）必须与 HEAD 中该路径的 blob
+（`qaUnassessedTaskCounts`）。新批次宿主按实际 `workflows` 与控制策略、按批次顺序再核，不符报 `parallel_solo_qa_checkpoint`；
+有 1 人组时组员必须在批次顺序里相邻（被阻断的成员在它成为第一个未完成任务时才重做，隔开的成员会晚于中间的组外任务），否则报
+`parallel_solo_split_group`；批次含多个功能时不产生 1 人组（计数跨功能累计、功能收尾会改变保底数），报 `parallel_solo_multi_feature`。工作树从 HEAD 检出，所以主目录的项目配置文件（`.cm-workflow.yml` 等）必须与 HEAD 中该路径的 blob
 （`git cat-file blob HEAD:./<文件>`，不经过滤器）逐字节相同才产生 1 人组；只看「已跟踪且 `git status` 干净」不够，`skip-worktree`／
 `assume-unchanged` 下的本地改动不会显示。不在提交里报 `parallel_solo_config_untracked`，内容不同报 `parallel_solo_config_diverged`；
 生成器与新批次宿主（`validateGroups`）调用同一个函数 `soloWorktreeBlocker`。这只是预筛（Git 检出过滤器、或提交里有两份配置文件而

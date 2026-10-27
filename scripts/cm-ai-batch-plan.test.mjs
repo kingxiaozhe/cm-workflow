@@ -219,12 +219,20 @@ test('the count walk keeps every reset a group, qa:null or several features may 
   assert.ok(host(g,plan.config.batch,every(plan.config.batch,none)));
   assert.throws(()=>host(g,{...plan.config.batch,parallel:[['1.work/T-001','1.work/T-002'],...solo([3,4,6,7,8])]},every(plan.config.batch,none)),
     {code:'parallel_solo_qa_checkpoint',reason:/^1\.work\/T-006: /});
-  // 3. A group starts at its first member, so a hand-written group out of task order
-  // counts there: T-001 and T-005 run first, T-004 is then the fifth (or not).
+  // 3. A hand-written group out of task order starts at its first member (T-001 and T-005
+  // run first), and a blocked later member reruns only once it is the first unfinished
+  // task, after the outside tasks before it (review r2: T-003 rerun after T-002 reset the
+  // count, T-008 reached five). With one-member groups, groups must be contiguous.
   const free=Array.from({length:9},(_,index)=>`- [ ] T-00${index+1}: t${index+1}${scope(`f${index+1}.js`)}\n`).join('');
   const h=project(t,free),batch=h.plan(undefined,none).config.batch;
   assert.throws(()=>host(h,{...batch,parallel:[['1.work/T-001','1.work/T-005'],...solo([7,8])]},every(batch,none)),
-    {code:'parallel_solo_qa_checkpoint',reason:/^1\.work\/T-007: /});
+    {code:'parallel_solo_split_group',reason:/^1\.work\/T-001,1\.work\/T-005: /});
+  assert.throws(()=>host(h,{...batch,parallel:[['1.work/T-001','1.work/T-003'],...solo([8])]},every(batch,none)),
+    {code:'parallel_solo_split_group',reason:/^1\.work\/T-001,1\.work\/T-003: /});
+  // Contiguous in task order is enough, whatever the order inside the group; and with no
+  // one-member group there is no count to protect.
+  assert.ok(host(h,{...batch,parallel:[['1.work/T-002','1.work/T-001'],...solo([8])]},every(batch,none)));
+  assert.ok(host(h,{...batch,parallel:[['1.work/T-001','1.work/T-005']]},every(batch,none)));
   // 4. The count spans features and a closing feature leaves floor: no one-member group
   // in a batch of several features.
   const more=path.join(h.specsDir,'2.more');fs.mkdirSync(more);
