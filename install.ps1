@@ -1,11 +1,12 @@
 param(
     [switch]$Force,
     [switch]$Yes,
-    [switch]$NoSkillHints
+    [switch]$NoSkillHints,
+    [switch]$NoMattSkills
 )
 
 # CM Workflow Claude Code compatibility installer for Windows.
-# Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [-Force] [-Yes] [-NoSkillHints]
+# Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [-Force] [-Yes] [-NoSkillHints] [-NoMattSkills]
 $ErrorActionPreference = "Stop"
 if ($Yes) { $Force = $true }
 
@@ -211,6 +212,18 @@ if ($InstallComplete) {
         if ($LASTEXITCODE -ne 0) { Write-Warning "技能提醒钩子未处理完（不影响本次安装）" }
     } catch {
         Write-Warning "技能提醒钩子未处理完（不影响本次安装）：$($_.Exception.Message)"
+    }
+
+    # Optional Matt Pocock companion skills: put the pinned set in by default (not with
+    # -NoMattSkills, CM_MATT_SKILLS_INSTALL=off, {"install": false} in ~/.cm-workflow/matt-skills.local.json,
+    # or a skill the user removed after CM saw it there); a fetch that fails only warns.
+    try {
+        $MattArgs = @("auto")
+        if ($NoMattSkills) { $MattArgs += "--no-matt-skills" }
+        & node (Join-Path $Dest "scripts/cm-matt-skills.mjs") @MattArgs
+        if ($LASTEXITCODE -ne 0) { Write-Warning "作者技能未处理完（不影响本次安装）" }
+    } catch {
+        Write-Warning "作者技能未处理完（不影响本次安装）：$($_.Exception.Message)"
     }
 
     Write-Host "`n完成（已安装版本: v$Version）。请在 Claude Code 中运行 /cm-check 校验。"

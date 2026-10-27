@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 // Optional companion skills from mattpocock/skills (MIT): report which are installed
-// and, only when the user runs `install`, copy a pinned and fully verified set.
+// and copy a pinned and fully verified set.
 //
-// CM never depends on these skills and never installs them on its own (decided
-// 2026-10-20: CM is public and other people install it). Installers and /cm-check
-// only print what is missing plus one command. `install` fetches one fixed commit,
-// reads blobs straight from git (no checkout, nothing downloaded is executed),
-// checks every file against the SHA-256 list below, and writes nothing unless the
-// whole set verifies. Existing skills with the same name are never overwritten.
+// CM never depends on these skills. Since 2026-10-27 the installers put them in by
+// default (`auto`, replacing the earlier report-only hint decided 2026-10-20), unless
+// the user says no: --no-matt-skills or CM_MATT_SKILLS_INSTALL=off for one run,
+// {"install": false} in ~/.cm-workflow/matt-skills.local.json for good, and a skill the
+// user removed after CM saw it there is never put back (see "settled skills" below).
+// A fetch that fails only warns; CM itself is installed either way. /cm-check only
+// reports. `install` and `auto` fetch one fixed commit, read blobs straight from git
+// (no checkout, nothing downloaded is executed), check every file against the SHA-256
+// list below, and write nothing unless the whole set verifies. Existing skills with
+// the same name are never overwritten.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,9 +82,16 @@ export const SKILLS=Object.freeze([
 ]);
 
 const HINT_STATE='matt-skills-hint';
+export const LOCAL_NAME='matt-skills.local.json';
+export const AUTO_NAME='matt-skills.auto.json';
+const MAX_READ=1024*1024;
+const RUNTIMES=['claude','codex'];
 const NOTE={other:'（已有同名技能但内容不同，安装时会跳过）',unreadable:'（无法读取，安装时会报错）'};
 const sha256=buffer=>crypto.createHash('sha256').update(buffer).digest('hex');
 const homeOf=env=>env.HOME||os.homedir();
+export const cmHome=env=>path.resolve(env.CM_WORKFLOW_HOME||path.join(homeOf(env),'.cm-workflow'));
+export const localPath=env=>path.join(cmHome(env),LOCAL_NAME);
+export const autoPath=env=>path.join(cmHome(env),AUTO_NAME);
 
 export const skillRoots=(env=process.env)=>[
   {runtime:'claude',label:'Claude',root:path.join(path.resolve(env.CLAUDE_HOME||path.join(homeOf(env),'.claude')),'skills')},
@@ -203,7 +214,7 @@ export function hint({env=process.env,skills=SKILLS,upstream=UPSTREAM,command=in
   if(seen===fingerprint){
     text=`ℹ 推荐的 Matt Pocock 技能还缺 ${names.length} 个（可选，CM 不依赖）。安装：${command}\n`;
   }else{
-    const lines=['ℹ 推荐搭配 Matt Pocock 的技能（可选，CM 不依赖，不会自动安装）。'];
+    const lines=['ℹ 推荐搭配 Matt Pocock 的技能（可选，CM 不依赖）。'];
     const width=Math.max(...names.map(n=>n.length));
     const absentOf=r=>r.skills.filter(s=>s.state!=='author');
     const key=r=>absentOf(r).map(s=>`${s.name}:${s.state}`).join(',');
@@ -233,7 +244,12 @@ export function statusText({env=process.env,skills=SKILLS,upstream=UPSTREAM,comm
     lines.push(`recommended skills [${r.runtime}] ${count}/${r.skills.length} author versions in ${tilde(r.root,env)}`);
     for(const s of r.skills)if(s.state!=='author')lines.push(`recommended skills [${r.runtime}] ${s.name}: ${STATE_TEXT[s.state]}`);
   }
-  if(lines.length>2)lines.push(`recommended skills install (optional, never automatic): ${command}`);
+  if(lines.length>2)lines.push(`recommended skills install (optional): ${command}`);
+  const gate=installGate(env,false);
+  const settled=settledSkills(env);
+  lines.push(`recommended skills auto-install at install time: ${gate?.optOut?`skipped this run (${gate.optOut})`:gate?.off?`off (${gate.off})`
+    :gate?.pause?`paused (${gate.pause})`:settled.state==='invalid'?`paused (${autoPath(env)} ${settled.reason})`:'on'}`
+    +`; seen installed: ${RUNTIMES.map(runtime=>`${runtime} ${(settled.installed[runtime]||[]).length}`).join(', ')}`);
   return lines.join('\n')+'\n';
 }
 
@@ -337,11 +353,14 @@ export function placeSkill(root,name,files){
   }
 }
 
-export function install({env=process.env,source=UPSTREAM.repo,upstream=UPSTREAM,skills=SKILLS,tmpRoot=os.tmpdir(),write=text=>process.stdout.write(text)}={}){
+// `settled` maps a runtime to skill names CM once saw installed there and are now gone:
+// the user removed them, so they are left out and reported, never put back.
+export function install({env=process.env,source=UPSTREAM.repo,upstream=UPSTREAM,skills=SKILLS,tmpRoot=os.tmpdir(),write=text=>process.stdout.write(text),settled={}}={}){
   try{git(['--version'],tmpRoot);}
   catch{write('✗ 未找到 git，无法安装；未写入任何文件。\n');return 1;}
   const plan=status({env,skills,upstream}).map(r=>({...r,
-    todo:r.problem?[]:skills.filter(s=>r.skills.find(x=>x.name===s.name).state==='missing'),
+    todo:r.problem?[]:skills.filter(s=>r.skills.find(x=>x.name===s.name).state==='missing'&&!(settled[r.runtime]||[]).includes(s.name)),
+    removed:r.problem?[]:r.skills.filter(s=>s.state==='missing'&&(settled[r.runtime]||[]).includes(s.name)),
     skipped:r.skills.filter(s=>s.state==='author'||s.state==='other'),
     unreadable:r.problem?[]:r.skills.filter(s=>s.state==='unreadable')}));
   let failed=0;
@@ -350,8 +369,9 @@ export function install({env=process.env,source=UPSTREAM.repo,upstream=UPSTREAM,
     for(const s of r.unreadable){write(`✗ ${r.label} ${s.name} 无法读取，未判断也未安装。\n`);failed++;}
   }
   if(plan.every(r=>!r.todo.length)){
-    if(!failed)write(`✓ 无需安装：两个目录都已有这 ${skills.length} 个同名技能。\n`);
+    if(!failed&&plan.every(r=>!r.removed.length))write(`✓ 无需安装：两个目录都已有这 ${skills.length} 个同名技能。\n`);
     for(const r of plan)for(const s of r.skipped)if(s.state==='other')write(`  跳过 ${r.label} ${s.name}：已有同名技能但内容不同，未覆盖\n`);
+    for(const r of plan)if(r.removed.length)write(`  ${r.label} 的 ${r.removed.map(s=>s.name).join('、')} 之前装过后被你删掉，不再自动装回\n`);
     return failed?1:0;
   }
   // git runs inside a private temporary directory, so a local path is fixed to the caller's cwd first.
@@ -385,13 +405,143 @@ export function install({env=process.env,source=UPSTREAM.repo,upstream=UPSTREAM,
     }
     write(`${r.label}（${tilde(r.root,env)}）：新装 ${installed.length} 个${installed.length?`：${installed.join('、')}`:''}\n`);
     if(skipped.length)write(`  跳过 ${skipped.length} 个，未覆盖：${skipped.join('、')}\n`);
+    if(r.removed.length)write(`  ${r.removed.map(s=>s.name).join('、')} 之前装过后被你删掉，不再自动装回\n`);
   }
   if(failed){write(`⚠ 有 ${failed} 处失败，见上；已装好的技能保留。\n`);return 1;}
   write('装完的技能要开新会话才能看到。\n');
   return 0;
 }
 
-const USAGE='用法: cm-matt-skills.mjs status | hint | install [--source <git 地址或本地路径>]\n';
+// ---- Install-time default ("auto") ----
+// Only a regular file of bounded size is read; every config is strict JSON (an empty file
+// is a problem, never rewritten).
+function readJson(file){
+  let text;
+  try{
+    const st=fs.lstatSync(file);
+    if(!st.isFile())return {error:'not-file'};
+    if(st.size>MAX_READ)return {error:'too-large'};
+    text=fs.readFileSync(file,'utf8');
+  }catch(error){if(error.code==='ENOENT')return {missing:true};return {error:error.code||'read'};}
+  if(!text.trim())return {error:'empty'};
+  try{return {value:JSON.parse(text),text};}catch{return {error:'parse'};}
+}
+const plainObject=value=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
+class Drift extends Error{}
+// Replace by renaming a fresh file over the path; `before` runs right before the rename.
+function writeAtomic(file,text,{before}={}){
+  fs.mkdirSync(path.dirname(file),{recursive:true});
+  const temporary=`${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try{
+    fs.writeFileSync(temporary,text,{flag:'wx',mode:0o600});
+    before?.();
+    fs.renameSync(temporary,file);
+  }finally{try{fs.unlinkSync(temporary);}catch{/* 已改名或未创建 */}}
+}
+
+// The user's local file: {"install": false} turns the install-time default off for good.
+export function localShapeError(value){
+  if(!plainObject(value))return '应为对象';
+  if(value.install!==undefined&&typeof value.install!=='boolean')return 'install 只能是 true 或 false';
+  return null;
+}
+export function readLocal(env){
+  const local=readJson(localPath(env));
+  if(local.missing)return {settings:{},error:null,missing:true};
+  if(local.error)return {settings:{},error:`读取失败（${local.error}）`};
+  const shape=localShapeError(local.value);
+  return shape?{settings:{},error:`格式异常（${shape}）`}:{settings:local.value,error:null};
+}
+
+// Settled skills: ~/.cm-workflow/matt-skills.auto.json records, per runtime, every skill
+// the install-time default has seen installed there (put in by it, or found already
+// there). A settled skill that is missing later was removed by the user, and no install
+// puts it back. --no-matt-skills and CM_MATT_SKILLS_INSTALL=off cover one run only and
+// settle nothing. A record CM cannot read or whose shape is unknown is kept as is, and no
+// install adds anything while it is there.
+function readRecord(env){
+  const read=readJson(autoPath(env));
+  if(read.missing)return {state:'missing',read,installed:{}};
+  const value=read.value;
+  const names=list=>Array.isArray(list)&&list.every(name=>typeof name==='string'&&/^[a-z0-9][a-z0-9-]*$/.test(name));
+  if(read.error||!plainObject(value)||value.version!==1||!plainObject(value.installed)
+    ||!Object.keys(value.installed).every(runtime=>RUNTIMES.includes(runtime)&&names(value.installed[runtime])))
+    return {state:'invalid',read,reason:read.error??'格式异常',installed:{}};
+  return {state:'ok',read,installed:Object.fromEntries(RUNTIMES.map(runtime=>[runtime,[...new Set(value.installed[runtime]||[])]]))};
+}
+export function settledSkills(env){
+  const record=readRecord(env);
+  return {state:record.state,reason:record.reason,installed:record.installed};
+}
+const recordWarning=(env,reason)=>`⚠ 作者技能：${autoPath(env)} 异常（${reason}），已保留原样；修好或删掉它之前，安装不会自动装作者技能。\n`;
+// Adds the skills now present to the record, under the shared config lock. Never throws.
+async function noteRecord(env,found,{lockWaitMs}={}){
+  const file=autoPath(env);
+  try{
+    const {withConfigLock,LockBusy}=await import('./cm-config-lock.mjs');
+    try{
+      return withConfigLock(env,file,()=>{
+        const record=readRecord(env);
+        if(record.state==='invalid')return {warning:recordWarning(env,record.reason)};
+        const next=Object.fromEntries(RUNTIMES.map(runtime=>[runtime,
+          [...new Set([...(record.installed[runtime]||[]),...(found[runtime]||[])])].sort()]));
+        // Nothing new to note: an existing record stays as it is, and no record is created for nothing.
+        if(RUNTIMES.every(runtime=>next[runtime].length===(record.installed[runtime]||[]).length))return {installed:next};
+        writeAtomic(file,JSON.stringify({version:1,installed:next})+'\n',{before:()=>{
+          const now=readJson(file);
+          if(record.read.missing?!now.missing:now.text!==record.read.text)throw new Drift();
+        }});
+        return {installed:next};
+      },lockWaitMs===undefined?{}:{waitMs:lockWaitMs});
+    }catch(error){
+      const why=error instanceof Drift?'刚被其他程序改动':error instanceof LockBusy?'另一个 CM 程序正在改它':error.message;
+      return {warning:`⚠ 作者技能：未能记下已装的技能（${file}：${why}）；不影响本次安装，下次安装再记。\n`};
+    }
+  }catch(error){return {warning:`⚠ 作者技能：未能记下已装的技能（${file}：${error.message}）。\n`};}
+}
+
+// Why an install must not add skills now, or null. `optOut` is the user skipping this run;
+// `off` is {"install": false}; `pause` is a local file CM cannot use, so it does nothing.
+export function installGate(env,skip=false){
+  if(skip)return {optOut:'安装参数 --no-matt-skills'};
+  if(env.CM_MATT_SKILLS_INSTALL==='off')return {optOut:'环境变量 CM_MATT_SKILLS_INSTALL=off'};
+  const local=readLocal(env);
+  if(local.error)return {pause:`${localPath(env)} ${local.error}`};
+  if(local.settings.install===false)return {off:`${localPath(env)} 里 install 为 false`};
+  return null;
+}
+const OFF_NOTE=env=>`不想要：重装加 --no-matt-skills 只管这一次；永久关闭在 ${localPath(env)} 写 {"install": false}；你删掉的技能不会再自动装回。`;
+
+// Run by the installers. Installs the missing skills into both directories unless the user
+// said no, records what is there, and never throws; 1 means a warning (CM itself is
+// installed either way).
+export async function autoInstall({env=process.env,source=UPSTREAM.repo,upstream=UPSTREAM,skills=SKILLS,tmpRoot=os.tmpdir(),
+  write=text=>process.stdout.write(text),skip=false,command=installCommand(env),lockWaitMs}={}){
+  try{
+    const gate=installGate(env,skip);
+    if(gate?.optOut){
+      write(`作者技能：按${gate.optOut}，这次不自动安装（只管这一次，下次不带它安装照常装）。\n`);
+      write(hint({env,skills,upstream,command}));
+      return 0;
+    }
+    if(gate?.off){write(`作者技能：${gate.off}，不自动安装；要装运行 ${command}\n`);return 0;}
+    if(gate){write(`⚠ 作者技能：${gate.pause}，这次不自动安装；改好后重装或运行 ${command}\n`);return 1;}
+    const settled=settledSkills(env);
+    if(settled.state==='invalid'){write(recordWarning(env,settled.reason));write(hint({env,skills,upstream,command}));return 1;}
+    const present=()=>Object.fromEntries(status({env,skills,upstream}).map(r=>[r.runtime,r.skills.filter(s=>s.state==='author').map(s=>s.name)]));
+    const code=install({env,source,upstream,skills,tmpRoot,write,settled:settled.installed});
+    if(code!==0)write(`  作者技能不影响 CM 使用；稍后可手动运行 ${command}\n`);
+    const noted=await noteRecord(env,present(),{lockWaitMs});
+    if(noted.warning)write(noted.warning);
+    write(`  ${OFF_NOTE(env)}\n`);
+    return Math.max(code,noted.warning?1:0);
+  }catch(error){
+    write(`⚠ 作者技能未处理：${error.message}\n`);
+    return 1;
+  }
+}
+
+const USAGE='用法: cm-matt-skills.mjs status | hint | install [--source <git 地址或本地路径>] | auto [--no-matt-skills] [--source <git 地址或本地路径>]\n';
 
 export function main(argv=process.argv.slice(2),{env=process.env,write=text=>process.stdout.write(text),error=text=>process.stderr.write(text)}={}){
   const [command,...rest]=argv;
@@ -403,10 +553,18 @@ export function main(argv=process.argv.slice(2),{env=process.env,write=text=>pro
     else if(rest.length){error(USAGE);return 2;}
     return install({env,source,write});
   }
+  if(command==='auto'){
+    let source=UPSTREAM.repo,skip=false;
+    const args=[...rest];
+    if(args[0]==='--no-matt-skills'){skip=true;args.shift();}
+    if(args.length===2&&args[0]==='--source'&&args[1])source=args[1];
+    else if(args.length){error(USAGE);return 2;}
+    return autoInstall({env,source,write,skip});
+  }
   error(USAGE);
   return 2;
 }
 
 if(process.argv[1]&&fs.realpathSync(process.argv[1])===fs.realpathSync(fileURLToPath(import.meta.url))){
-  process.exitCode=main();
+  Promise.resolve(main()).then(code=>{process.exitCode=code;});
 }
