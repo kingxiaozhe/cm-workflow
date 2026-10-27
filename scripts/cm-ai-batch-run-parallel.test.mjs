@@ -8,6 +8,10 @@ test('D1 parallel member retries failed develop checks before review',()=>batchF
 // Worktree for every task: a chain that cannot pair still develops each task before the
 // last alone in its own worktree, merges it back in order and removes worktree and branch.
 test('one-member groups develop in their own worktree, merge back in order and clean up',()=>batchFixture('worktree-each'));
+// Map ticket 04: a one-member group used to add the main checkout as the second
+// assignment of the parallel-write guard, which requires a branch, so a detached main
+// checkout stopped every new batch although nothing writes there concurrently.
+test('one-member groups run when the main checkout is on a detached HEAD',()=>batchFixture('worktree-each',{detachedMain:true}));
 // A one-member group keeps the fixed N6 checkpoints: a registered path its change hits
 // triggers QA at once, in its worktree, and only a passing QA lets it merge.
 test('a one-member group runs its triggered QA in its worktree before merging',()=>batchFixture('worktree-each-qa'));

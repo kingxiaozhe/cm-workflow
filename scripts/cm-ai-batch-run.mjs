@@ -12,7 +12,7 @@ import {developmentRetryable,completionRetryable,reviewRetryable} from '../runti
 import {batchOperatorGuidance} from '../runtime/js/cm-ai/operator-guidance.mjs';
 import {digest,json,shape,need,id,hex,validIdentity} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {scanRows,findCmAiQaDecision,latestCmAiQaRun} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
-import {checkParallelWrite} from './cm-task-gate.mjs';
+import {checkParallelWrite,checkSoloWrite} from './cm-task-gate.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {parseFeatureTaskText} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {approvedTaskGrammar} from '../runtime/js/spec-task-line.mjs';
@@ -344,10 +344,11 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
       need(batchGit(worktree,['branch','--show-current'])===branch,'batch_worktree_mismatch');
       plans.set(key,worktreeDefinition(key));
     }
-    // Include the main checkout as the second assignment after a partial merge.
+    // One remaining member (a one-member group, or the rest after a partial merge) is the
+    // only writer: the main checkout just waits to merge it and may be detached.
     const assignments=remaining.map(key=>`${plans.get(key).identity.taskId}=${location(key).worktree}`);
-    if(assignments.length===1)assignments.push(`T-batch-main=${config.codeProject}`);
-    if(assignments.length)checkParallelWrite({repo:config.codeProject,assignment:assignments});
+    if(assignments.length===1)checkSoloWrite({repo:config.codeProject,assignment:assignments[0]});
+    else if(assignments.length)checkParallelWrite({repo:config.codeProject,assignment:assignments});
     // A one-member group decides and runs its own QA in its worktree, which reloads the
     // project configuration there. The planner's blob check is only a pre-filter (a
     // checkout filter or a second config file hidden in the main checkout pass it), so

@@ -58,6 +58,9 @@ export async function batchFixture(mode,options={}){
       if(options.configDivergence==='two-files')for(const name of ['.cm-workflow.yml','.cm-workflow.yaml'])
         fs.writeFileSync(path.join(codeProject,name),'version: 1\n');
       git(codeProject,['add','-A']);git(codeProject,['commit','-m','fixture baseline']);
+      // detachedMain (map ticket 04): the main checkout sits on a detached HEAD, as a
+      // session that checked out a commit leaves it; the batch must still run.
+      if(options.detachedMain)git(codeProject,['checkout','-q','--detach']);
       if(options.configDivergence==='two-files'){
         // HEAD has both files; the main checkout hides one, so it sees a single config.
         git(codeProject,['update-index','--skip-worktree','.cm-workflow.yaml']);fs.unlinkSync(path.join(codeProject,'.cm-workflow.yaml'));
@@ -780,7 +783,12 @@ export async function batchFixture(mode,options={}){
         assert.equal(qaSeen.at(-1).codeProject,codeProject);
       }
       assert(fs.readFileSync(path.join(specsDir,feature,'tasks.md'),'utf8').includes('[x] T-003'));
-      assert.equal(git(codeProject,['branch','--show-current']),'main');
+      if(options.detachedMain){
+        // Still detached: the batch never switches or creates a branch in the main checkout,
+        // main is untouched and the merges sit on the detached HEAD, as serial commits did.
+        assert.equal(git(codeProject,['branch','--show-current']),'');
+        assert.equal(git(codeProject,['log','-1','--format=%s','refs/heads/main']),'fixture baseline');
+      }else assert.equal(git(codeProject,['branch','--show-current']),'main');
       if(options.slowFirst){
         const rows=fs.readFileSync(path.join(specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
         const order=phase=>rows.filter(row=>row.phase===phase).map(row=>row.from_key);
@@ -798,7 +806,8 @@ export async function batchFixture(mode,options={}){
         // One merge commit per member, in task order, then the final task's own commit.
         const subjects=git(codeProject,['log','--format=%s','-5']).split('\n');
         assert.deepEqual([subjects[0],subjects[2],subjects[4]],['T-003: final','T-002: second','T-001: first']);
-        for(const merge of [subjects[1],subjects[3]])assert.match(merge,/^Merge commit '[a-f0-9]{40}'$/);
+        // Git names a detached target in its default message ("… into HEAD").
+        for(const merge of [subjects[1],subjects[3]])assert.match(merge,options.detachedMain?/^Merge commit '[a-f0-9]{40}' into HEAD$/:/^Merge commit '[a-f0-9]{40}'$/);
       }
       if(mode==='parallel-existing')for(const file of ['file0.js','file1.js']){
         assert.equal(fs.readFileSync(path.join(codeProject,file),'utf8'),'implemented\n');
