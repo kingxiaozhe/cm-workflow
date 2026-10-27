@@ -264,8 +264,11 @@ function validate(kind,value,ctx){
         ??ctx.state?.checkpoint?.analysis?.draft?.features?.[0]?.directory?.split('.')[0]
         ??nextPrdFeatureIndex(prdFeatureInventory(ctx.specs)));
       try{if(value.status==='design')inspectPrdDesignDraft(value,{nextIndex});
-        else inspectPrdDraft(value,{nextIndex,generateCases:ctx.config.policies.generate_cases,
-          userCasesProvided:ctx.sources.sourceInspection.userCases!==null});}
+        else{
+          // Same as the host: the revision reason is a top-level envelope field, not draft schema.
+          const {selfCheckRevisionReason,...draftReply}=value;
+          inspectPrdDraft(draftReply,{nextIndex,generateCases:ctx.config.policies.generate_cases,
+            userCasesProvided:ctx.sources.sourceInspection.userCases!==null});}}
       catch(e){fail('generate.json 不符合草稿 schema',e.code??e.message);}
     }
   }else if(kind==='prd_review'){
