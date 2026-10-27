@@ -15,7 +15,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {parseNotifyConfig,appendNotifyLog,buildNotifyMessage,localClock,NOTIFY_LIMITS} from '../runtime/js/notify.mjs';
+import {parseNotifyConfig,notifyOffByEnv,appendNotifyLog,buildNotifyMessage,localClock,NOTIFY_LIMITS} from '../runtime/js/notify.mjs';
 import {CHANNELS,CHANNEL_FILE,SEND_EXIT,SendError,WINDOWS_UNSUPPORTED,NODE_UNSUPPORTED,MAX_FILE_BYTES,notifyHome,readChannel,readSecret,readRegularFile,parseAssignments,buildRequest} from '../runtime/js/notify-send.mjs';
 
 export const SENDER_SOURCE=fileURLToPath(new URL('../runtime/js/notify-send.mjs',import.meta.url));
@@ -443,8 +443,11 @@ export async function main(argv=process.argv.slice(2),{env=process.env,stdout=pr
   const home=notifyHome(env);
   try{
     if(sub==='status'){
-      const status=await notifyStatus(home,{platform});
-      say(stdout,flags.has('--json')?JSON.stringify(status,null,2):formatStatus(status));return 0;
+      // CM_NOTIFY_OFF silences this process tree whatever notify.json says; say so,
+      // or a configured channel that never pushes looks like a broken one.
+      const status={...await notifyStatus(home,{platform}),envOff:notifyOffByEnv(env)};
+      const lines=formatStatus(status)+(status.envOff?'\n当前环境设置了 CM_NOTIFY_OFF：从这里启动的流程一律不发提醒（只影响这个环境，不改任何文件）':'');
+      say(stdout,flags.has('--json')?JSON.stringify(status,null,2):lines);return 0;
     }
     if(sub==='preview'){
       const preview=await previewText(home);
