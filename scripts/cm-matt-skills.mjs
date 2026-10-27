@@ -72,6 +72,9 @@ export const SKILLS=Object.freeze([
   {name:'wait-what',dir:'skills/productivity/wait-what',use:'上一条回复没看懂，让模型换个说法重讲',files:{
     'SKILL.md':'d961bb37defd975c539427edb8f450cdbccdcdd552e213c1ece46676a7970905',
     'agents/openai.yaml':'b41faadf741d51e4ea184148b2d1854d93f947aaf754c7844f70a00f04194999'}},
+  {name:'retro',dir:'skills/engineering/retro',use:'cm-ai 收尾后复盘这一轮，看哪些错该交给脚本拦、哪些该写进指引',files:{
+    'SKILL.md':'33fbc28568e3146f20fd908b12998bc0ab30aa4f4c87288199a40793efa94696',
+    'agents/openai.yaml':'cb6fb9d7e6b4be5975f41f6def1dd00a1255bad5d9b02696b124c924a8b8745c'}},
 ]);
 
 const HINT_STATE='matt-skills-hint';

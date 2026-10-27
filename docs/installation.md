@@ -345,9 +345,10 @@ Set `CM_UPDATE_REMOTE` when your team intentionally uses a fork.
 
 ## Optional companion skills (Matt Pocock)
 
-CM recommends twelve skills from [mattpocock/skills](https://github.com/mattpocock/skills)
+CM recommends thirteen skills from [mattpocock/skills](https://github.com/mattpocock/skills)
 (MIT) for work between CM stages, such as grilling a plan before `cm-prd` or finding
-refactoring opportunities before `cm-refactor`. CM never depends on them and never
+refactoring opportunities before `cm-refactor`, or a `retro` of the session once
+`cm-ai` has finished (N8 prints one line pointing at it). CM never depends on them and never
 downloads them on its own. After installing, `install.sh` and `install-codex.sh`
 list the ones missing from `~/.claude/skills` and `~/.agents/skills` and print one
 command; later installs shorten this to one line while the same set is missing.
