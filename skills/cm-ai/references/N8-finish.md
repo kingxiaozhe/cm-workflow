@@ -96,9 +96,10 @@ staging/体验版验证。
 ## 3.5 复盘提示
 
 写完 `run_done` 后运行 `node "{CM_WORKFLOW_ROOT}/scripts/cm-matt-skills.mjs" status`（只读，不装）。
-当前运行时一行未列出 `retro`（即已装作者版）→ 总结里的 `🔁 复盘` 行写
-「可运行 `/retro`（Codex `$retro`）看这一轮哪些错该交给脚本拦、哪些该写进指引」；
-列为缺失、内容不同或命令失败 → 该行写「未装作者版 `retro`；可选安装：{输出里那一行安装命令}」。
+按当前运行时那一行取首个命中，写成总结里的 `🔁 复盘` 行：
+- 未列出 `retro`（即已装作者版）→「可运行 `/retro`（Codex `$retro`）看这一轮哪些错该交给脚本拦、哪些该写进指引」；
+- 列为 `missing` 或 `same name, different content` →「未装作者版 `retro`；可选安装：{输出里的 install 命令}」；
+- 列为 `cannot be read`，或命令没跑起来、异常退出、输出里没有 install 命令 →「无法确认作者版 `retro` 状态；可选安装：`node "{CM_WORKFLOW_ROOT}/scripts/cm-matt-skills.mjs" install`」。
 只提示，不运行 `retro`，不代为安装，不读取作者技能内容；该行不影响完成状态和 `run_done`。
 `runtime/project-learning.md` 已借鉴它「机械性错误交给脚本」的分类，`retro` 是面向整个环境的全量版本。
 
