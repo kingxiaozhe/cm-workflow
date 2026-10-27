@@ -63,7 +63,7 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
       let failureTerminal = false, noticeCount = 0, reconnectNoticeCount = 0, receiptInvalid=false, rateLimited=false;
       // provider_failed stays the internal code; the published one names the class.
       const published=code=>code==='provider_failed'&&rateLimited?'reviewer_rate_limited':code;
-      let failureGrace, providerThread, turnStarted = false, usageContextInvalid=false, timedOut = false, closeTimer, closing=false, terminationRequested=false;
+      let failureGrace, providerFailed = false, providerThread, turnStarted = false, usageContextInvalid=false, timedOut = false, closeTimer, closing=false, terminationRequested=false;
       const cleanup=()=>process.platform==='win32'&&!terminationRequested?Promise.resolve():
         cleanupGroup().catch(()=>{failure='process_cleanup_unknown';});
       const stop = code => {
@@ -143,8 +143,9 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
         if (isFailureTerminal) {
           if (message.type === 'turn.failed') stop('provider_failed');
           else {
-            failure ??= 'provider_failed';
-            failureGrace ??= setTimeout(() => stop('provider_failed'), CODEX_FAILURE_GRACE_MS);
+            // Kept apart from failure, so a cancel or timeout in the grace keeps its code.
+            providerFailed = true;
+            if (!closing) failureGrace ??= setTimeout(() => stop('provider_failed'), CODEX_FAILURE_GRACE_MS);
           }
         }
       }
@@ -182,8 +183,8 @@ export function codexWorker({ cwd, model, schemaPath, preflight, effort='high',
         }
         if(failure==='process_cleanup_unknown')resolve({status:'failed',code:failure});
         else if (signal.aborted) resolve({ status: 'cancelled', code: 'cancelled' });
-        else if (failure || code !== 0 || !completion || !providerThread || value === undefined) {
-          resolve({ status: 'failed', code: published(failure ?? 'incomplete_result') });
+        else if (failure || providerFailed || code !== 0 || !completion || !providerThread || value === undefined) {
+          resolve({ status: 'failed', code: published(failure ?? (providerFailed ? 'provider_failed' : 'incomplete_result')) });
         } else resolve({ status: 'succeeded', value });
       });
       if(promptTransport==='stdin'){

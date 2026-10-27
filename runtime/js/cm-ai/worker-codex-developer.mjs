@@ -54,7 +54,7 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
       try{child=spawnProcess(cli,args,{cwd,env:cleanEnvironment(),stdio:['pipe','pipe','pipe'],shell:false,detached:true});}
       catch{usage.complete();resolve({status:'unavailable',code:'spawn_failed'});return;}
       let buffer='',bytes=0,thread=null,turnStarted=false,completed=false,lastMessage=null;
-      let failure=null,closed=false,timer,failureGrace,cleanup,noticeCount=0,reconnectNoticeCount=0,rateLimited=false;
+      let failure=null,providerFailed=false,closed=false,timer,failureGrace,cleanup,noticeCount=0,reconnectNoticeCount=0,rateLimited=false;
       // signalOwnedGroup (process-group-exit.mjs): an exited, not yet reaped leader
       // (EPERM on macOS) is a stop only once its exit is observed and a re-probe
       // answers ESRCH; anything unproven is a cleanup failure, as before.
@@ -85,7 +85,11 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
         // Like the Codex reviewer (worker-codex.mjs): every failure event of the turn,
         // the first or a later one, may name the rate limit; only the class is kept.
         if((event.type==='error'&&!isCodexReconnectNotice(event)||event.type==='turn.failed')&&codexRateLimited(event))rateLimited=true;
-        if(PROVIDER_ENDED.has(failure)){if(event.type==='turn.failed')stop(failure);return;}
+        // After a provider failure only further failure lines count: they stop at once.
+        if(providerFailed||PROVIDER_ENDED.has(failure)){
+          if(event.type==='turn.failed'||event.type==='error'&&!isCodexReconnectNotice(event))stop('provider_failed');
+          return;
+        }
         // Reconnects may precede thread initialization, but never bypass a
         // completed turn. Keep their budget separate from item notices.
         if(!completed&&isCodexReconnectNotice(event)&&reconnectNoticeCount<CODEX_RECONNECT_NOTICE_LIMIT){
@@ -95,7 +99,8 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
         }
         // A lone error waits a short grace for the turn.failed that may name the class.
         if(event.type==='turn.failed'){stop('provider_failed');return;}
-        if(event.type==='error'){failure??='provider_failed';failureGrace??=setTimeout(()=>stop('provider_failed'),CODEX_FAILURE_GRACE_MS);return;}
+        // The fact is kept apart from failure, so a cancel or timeout in the grace keeps its code.
+        if(event.type==='error'){providerFailed=true;if(!closed)failureGrace=setTimeout(()=>stop('provider_failed'),CODEX_FAILURE_GRACE_MS);return;}
         if(completed){
           stop(event.type==='item.completed'&&event.item?.type==='error'?'invalid_event':'event_after_terminal');return;
         }
@@ -147,10 +152,11 @@ export function codexDeveloperWorker({cwd,model,effort,learning=true,specsRoot=n
         await cleanGroup();
         if(buffer.trim())accept(buffer);
         usage.complete();
-        if(failure||code!==0||exitSignal||!completed||lastMessage===null){
+        const ended=failure??(providerFailed?'provider_failed':null);
+        if(ended||code!==0||exitSignal||!completed||lastMessage===null){
           // provider_failed stays the internal terminal; the published code names a rate limit.
-          resolve({status:failure==='spawn_failed'?'unavailable':'unknown',
-            code:failure==='provider_failed'&&rateLimited?'developer_rate_limited':failure??'incomplete_result'});return;
+          resolve({status:ended==='spawn_failed'?'unavailable':'unknown',
+            code:ended==='provider_failed'&&rateLimited?'developer_rate_limited':ended??'incomplete_result'});return;
         }
         try{resolve({status:'succeeded',value:json(JSON.parse(lastMessage)),providerThread:thread});}
         catch{resolve({status:'unknown',code:'invalid_output_json'});}

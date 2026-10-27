@@ -120,9 +120,9 @@ test('Codex non-rate-limit failures stay provider_failed; a 429 reconnect notice
 
 // Ticket 11: the reviewer must not stop on the generic error before the 429 turn.failed
 // that Codex writes a moment later; a lone error still stops within the short grace.
-async function delayedFailure(delayMs){
+async function delayedFailure(delayMs,{timeoutMs=60000,tail=false,closeAt=5000}={}){
   const options={cwd:'/fixture',model:'fixture',effort:'high'},terminals=[];let kills=0;
-  const run=codexWorker({...options,schemaPath:'/unused',timeoutMs:60000,
+  const run=codexWorker({...options,schemaPath:'/unused',timeoutMs,
     preflight:{passed:true,cli_model:options.model,config_fingerprint:configFingerprint(options)},
     spawnProcess(){
       const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();
@@ -131,15 +131,18 @@ async function delayedFailure(delayMs){
       child.kill=()=>{kills++;queueMicrotask(close);return true;};
       const write=row=>{if(!kills&&!closed)child.stdout.write(JSON.stringify(row)+'\n');};
       queueMicrotask(()=>{
-        for(const row of [...start,{type:'error',message:'Request failed'}])write(row);
+        for(const row of start)write(row);
+        // tail: the error is the last line, with no trailing newline, written as the process closes.
+        if(tail){child.stdout.write(JSON.stringify({type:'error',message:'Request failed'}));close();return;}
+        write({type:'error',message:'Request failed'});
         if(delayMs!==null)setTimeout(()=>write({type:'turn.failed',error:{message:'HTTP 429 Too Many Requests'}}),delayMs);
-        setTimeout(close,5000);
+        setTimeout(close,closeAt);
       });
       return child;
     }});
   const started=Date.now();
   const result=await run({prompt:'synthetic delayed failure'},{signal:new AbortController().signal,onEvent(){},onTerminal:t=>terminals.push(t)});
-  return {result,terminals,elapsed:Date.now()-started};
+  return {result,terminals,elapsed:Date.now()-started,kills:()=>kills};
 }
 test('Codex reviewer keeps the 429 of a turn.failed written 400 ms after a generic error',async()=>{
   const actual=await delayedFailure(400);
@@ -150,4 +153,15 @@ test('Codex reviewer stops a lone generic error within the short grace, not the 
   const actual=await delayedFailure(null);
   assert.deepEqual(actual.result,{status:'failed',code:'provider_failed'});
   assert.ok(actual.elapsed<4500,`stopped after ${actual.elapsed} ms`);
+});
+test('Codex reviewer timeout during the error grace keeps timeout',async()=>{
+  const actual=await delayedFailure(null,{timeoutMs:300});
+  assert.deepEqual(actual.result,{status:'failed',code:'timeout'});
+});
+test('Codex reviewer starts no grace for an unterminated error read at close',async()=>{
+  const timers=()=>process.getActiveResourcesInfo().filter(name=>name==='Timeout').length;
+  const before=timers();
+  const actual=await delayedFailure(null,{tail:true});
+  assert.deepEqual(actual.result,{status:'failed',code:'provider_failed'});
+  assert.equal(timers(),before,'no grace timer left after the call settled');
 });

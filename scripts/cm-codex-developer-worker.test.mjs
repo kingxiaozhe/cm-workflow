@@ -4,6 +4,8 @@ import {spawn} from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {EventEmitter} from 'node:events';
+import {PassThrough} from 'node:stream';
 import {codexDeveloperWorker,developerArgs} from '../runtime/js/cm-ai/worker-codex-developer.mjs';
 import {commonArgs} from '../runtime/js/cm-ai/codex-config.mjs';
 import {createCodexDeveloperRun} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
@@ -268,6 +270,50 @@ test('Codex developer stops a lone generic error within the short grace, not the
   assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code:'provider_failed'});
   assert.ok(Date.now()-started<4500,`stopped after ${Date.now()-started} ms`);
 }));
+
+// Codex review r1 (ticket 11): a cancel or timeout during the grace keeps its own code,
+// and a second error line stops at once instead of waiting out the grace.
+test('Codex developer cancel and timeout during the error grace keep cancelled and timeout',()=>fixture(async cwd=>{
+  const cancelled=new AbortController();
+  const cancel=codexDeveloperWorker({cwd,model:'fixture',schemaPath:'/unused',
+    spawnProcess:(_,__,options)=>{setTimeout(()=>cancelled.abort(),300);return spawn(process.execPath,['-e',delayedPair(null)],options);}});
+  assert.deepEqual(await cancel({prompt:'synthetic'},{signal:cancelled.signal}),{status:'unknown',code:'cancelled'});
+  const timeout=codexDeveloperWorker({cwd,model:'fixture',schemaPath:'/unused',timeoutMs:500,
+    spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',delayedPair(null)],options)});
+  assert.deepEqual(await timeout({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code:'timeout'});
+}));
+test('Codex developer stops at once on a second error line and keeps its 429 class',()=>fixture(async cwd=>{
+  const script=`${ownerGuardSource()}let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{
+const emit=x=>process.stdout.write(JSON.stringify(x)+'\\n');
+emit({type:'thread.started',thread_id:'isolated-fixture'});emit({type:'turn.started'});
+emit({type:'error',message:'Request failed'});setTimeout(()=>emit({type:'error',message:'HTTP 429 Too Many Requests'}),100);
+setTimeout(()=>process.exit(1),5000);
+});`;
+  const worker=codexDeveloperWorker({cwd,model:'fixture',schemaPath:'/unused',
+    spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',script],options)});
+  const started=Date.now();
+  assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code:'developer_rate_limited'});
+  // Without the immediate stop the 2 s grace plus the 1 s kill escalation would pass 3 s.
+  assert.ok(Date.now()-started<2700,`stopped after ${Date.now()-started} ms`);
+}));
+
+test('Codex developer starts no grace for an unterminated error read at close',async()=>{
+  const timers=()=>process.getActiveResourcesInfo().filter(name=>name==='Timeout').length;
+  const worker=codexDeveloperWorker({cwd:'/fixture',model:'fixture',schemaPath:'/unused',
+    spawnProcess(){
+      // In-memory child without a pid: group signals are skipped, only the stream matters.
+      const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();
+      child.stdin.on('finish',()=>{
+        child.stdout.write([{type:'thread.started',thread_id:'fixture'},{type:'turn.started'}].map(x=>JSON.stringify(x)+'\n').join(''));
+        child.stdout.end(JSON.stringify({type:'error',message:'Request failed'}));
+        child.stdout.once('end',()=>{child.emit('exit',1,null);child.emit('close',1,null);});
+      });
+      return child;
+    }});
+  const before=timers();
+  assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code:'provider_failed'});
+  assert.equal(timers(),before,'no grace timer left after the call settled');
+});
 
 // 2026-10-27: a Codex developer that exits right after its failed turn (its group is
 // then only our unreaped zombie child, EPERM on macOS) is proven stopped, so the call
