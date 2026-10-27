@@ -24,7 +24,7 @@ import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs'
 import {readControlPolicy,controlTarget,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
 import {BATCH_SEGMENT_FIELD,batchSegment,batchSegments,batchStarted,batchMemberWorktree,batchMemberBranch} from '../runtime/js/cm-ai/batch-location.mjs';
 import {declaredTaskScope,assertDeclaredScope} from '../runtime/js/task-scope.mjs';
-import {soloWorktreeBlocker,soloQaCheckpoint,soloQaBase} from '../runtime/js/cm-ai/batch-plan.mjs';
+import {soloWorktreeBlocker,soloQaCounter,soloQaBase,workflowDecidesQa} from '../runtime/js/cm-ai/batch-plan.mjs';
 import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
 const writer=fileURLToPath(new URL('./cm-log-event.py',import.meta.url));
@@ -1057,20 +1057,45 @@ function validateGroups(config,plans,{declared=false,workflows=null}={}){
     }
     // A new batch takes a one-member group only where the planner would propose it
     // (batch-plan.mjs): same project configuration in the worktree, no interactive QA,
-    // and no fixed N6 checkpoint its QA could hit there, with the launched workflows.
+    // and no fixed N6 checkpoint its QA could hit there (checked below).
     if(declared&&group.length===1){
-      const refuse=(code,reason)=>{throw Object.assign(new Error(code),{code,reason:`${group[0]}: ${reason}`});};
       const blocked=soloWorktreeBlocker({specsDir:config.specsDir,codeProject:config.codeProject,feature});
-      if(blocked)refuse(blocked.code,blocked.reason);
-      const order=[...plans.keys()].filter(key=>plans.get(key).feature===feature);
-      const rule=soloQaCheckpoint({scope:plans.get(group[0]).scope,index:order.indexOf(group[0]),
-        base:soloQaBase({specsDir:config.specsDir,codeProject:config.codeProject,feature,repositoryId:config.repositoryId}),
-        workflow:workflows?.[group[0]]??null});
-      if(rule)refuse('parallel_solo_qa_checkpoint',`单独在 worktree 里开发时 QA 可能按固定检查点触发（${rule}），批次没有 QA 修复出口；让它在主目录串行（用 cm-ai-batch-plan.mjs 带 --workflow-config 重新生成）`);
+      if(blocked)throw Object.assign(new Error(blocked.code),{code:blocked.code,reason:`${group[0]}: ${blocked.reason}`});
     }
     for(const key of group)used.add(key);
   }
+  if(declared)checkSoloQaCheckpoints(config,plans,groups,workflows);
   return groups;
+}
+// The planner's walk along the batch order (soloQaCounter), with the launched workflows
+// and control policy. The count spans features (and a feature that closes drops its tasks
+// from floor), so a one-member group needs a one-feature batch. Its groups must be
+// contiguous in that order: a blocked member reruns when it is the first unfinished task,
+// so a member placed after outside tasks would rerun (and maybe reset the count) after them.
+function checkSoloQaCheckpoints(config,plans,groups,workflows){
+  const solos=groups.filter(group=>group.length===1);
+  if(!solos.length)return;
+  const features=new Set([...plans.values()].map(plan=>plan.feature));
+  if(features.size>1)throw Object.assign(new Error('parallel_solo_multi_feature'),{code:'parallel_solo_multi_feature',
+    reason:`${solos[0][0]}: 批次含多个功能时不能单独开 worktree（QA 计数跨功能累计，推算不准）；按功能分别生成批次（cm-ai-batch-plan.mjs）`});
+  const order=[...plans.keys()];
+  for(const group of groups){
+    const at=group.map(key=>order.indexOf(key));
+    if(Math.max(...at)-Math.min(...at)!==group.length-1)throw Object.assign(new Error('parallel_solo_split_group'),{code:'parallel_solo_split_group',
+      reason:`${group.join(',')}: 有单独开 worktree 的任务时，同组成员必须在任务顺序里相邻（被阻断的成员改回主目录重做的时点才可推算）；按顺序重排或用 cm-ai-batch-plan.mjs 重新生成`});
+  }
+  const [feature]=features,groupOf=new Map(groups.flatMap(group=>group.map(key=>[key,group]))),placed=new Set();
+  const counter=soloQaCounter(soloQaBase({specsDir:config.specsDir,codeProject:config.codeProject,feature,repositoryId:config.repositoryId}));
+  for(const key of plans.keys()){
+    if(placed.has(key))continue;
+    const group=groupOf.get(key)??[key];group.forEach(member=>placed.add(member));
+    if(group.length>1){counter.placeGroup(group.length);continue;}
+    const scope=plans.get(key).scope,workflow=workflows?.[key]??null;
+    const rule=groupOf.has(key)?counter.check(scope,workflow):null;
+    if(rule)throw Object.assign(new Error('parallel_solo_qa_checkpoint'),{code:'parallel_solo_qa_checkpoint',
+      reason:`${key}: 单独在 worktree 里开发时 QA 可能按固定检查点触发（${rule}），批次没有 QA 修复出口；让它在主目录串行（用 cm-ai-batch-plan.mjs 带 --workflow-config 重新生成）`});
+    counter.place(groupOf.has(key)?'solo':'main',scope,{workflow,hostDecides:workflowDecidesQa(workflow)||Boolean(config.controlPolicy)});
+  }
 }
 function acquireBatchLock(config){
   const directory=path.join(config.specsDir,'.reviews','.execution');fs.mkdirSync(directory,{recursive:true,mode:0o700});
