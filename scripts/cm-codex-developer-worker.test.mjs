@@ -247,6 +247,28 @@ test(`Codex developer error "${first}" then turn.failed "${second}" ends as ${co
   assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code});
 }));
 
+// Ticket 11: Codex can write the generic error line first and the turn.failed naming
+// the 429 a moment later. Killing the group on the first line used to lose the class.
+const delayedPair=delayMs=>`${ownerGuardSource()}let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{
+const emit=x=>process.stdout.write(JSON.stringify(x)+'\\n');
+emit({type:'thread.started',thread_id:'isolated-fixture'});emit({type:'turn.started'});
+emit({type:'error',message:'Request failed'});
+${delayMs===null?'':`setTimeout(()=>emit({type:'turn.failed',error:{message:'HTTP 429 Too Many Requests'}}),${delayMs});`}
+setTimeout(()=>process.exit(1),5000);
+});`;
+test('Codex developer keeps the 429 of a turn.failed written 400 ms after a generic error',()=>fixture(async cwd=>{
+  const worker=codexDeveloperWorker({cwd,model:'fixture',schemaPath:'/unused',
+    spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',delayedPair(400)],options)});
+  assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code:'developer_rate_limited'});
+}));
+test('Codex developer stops a lone generic error within the short grace, not the call timeout',()=>fixture(async cwd=>{
+  const worker=codexDeveloperWorker({cwd,model:'fixture',schemaPath:'/unused',timeoutMs:60000,
+    spawnProcess:(_,__,options)=>spawn(process.execPath,['-e',delayedPair(null)],options)});
+  const started=Date.now();
+  assert.deepEqual(await worker({prompt:'synthetic'},{signal:new AbortController().signal}),{status:'unknown',code:'provider_failed'});
+  assert.ok(Date.now()-started<4500,`stopped after ${Date.now()-started} ms`);
+}));
+
 // 2026-10-27: a Codex developer that exits right after its failed turn (its group is
 // then only our unreaped zombie child, EPERM on macOS) is proven stopped, so the call
 // keeps its class instead of process_cleanup_failed.
