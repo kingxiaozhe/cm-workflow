@@ -269,9 +269,11 @@ export function gitEnv(base=process.env,home){
 }
 const GIT_SAFETY=['-c','core.hooksPath='+os.devNull,'-c','credential.helper=','-c','core.fsmonitor=false',
   '-c','protocol.allow=never','-c','protocol.https.allow=always','-c','protocol.file.allow=always'];
+// Every git call is bounded so an optional download can never hold an install for long.
+export const GIT_TIMEOUT_MS=120000;
 function git(args,home){
   return execFileSync('git',[...GIT_SAFETY,...args],{stdio:['ignore','pipe','pipe'],maxBuffer:64*1024*1024,
-    cwd:home,env:gitEnv(process.env,home)});
+    cwd:home,env:gitEnv(process.env,home),timeout:GIT_TIMEOUT_MS,killSignal:'SIGKILL'});
 }
 
 // Fetches the pinned commit into a private bare repository and returns every
@@ -283,7 +285,8 @@ export function fetchVerified({source,upstream,skills,workdir}){
   // Only the pinned commit, one level deep; a source that cannot serve it by id is refused.
   try{run(['-C',repo,'fetch','-q','--no-tags','--no-recurse-submodules','--depth','1',source,upstream.commit]);}
   catch(error){
-    const reason=String(error.stderr||error.message).trim().split('\n').pop();
+    const reason=error.code==='ETIMEDOUT'||error.signal==='SIGKILL'?`超过 ${GIT_TIMEOUT_MS/1000} 秒未完成，已中止`
+      :String(error.stderr||error.message).trim().split('\n').pop();
     throw new VerifyError(`无法从 ${source} 拉取固定提交 ${upstream.commit}：${reason}`);
   }
   let commit;
@@ -528,7 +531,9 @@ export async function autoInstall({env=process.env,source=UPSTREAM.repo,upstream
     if(gate){write(`⚠ 作者技能：${gate.pause}，这次不自动安装；改好后重装或运行 ${command}\n`);return 1;}
     const settled=settledSkills(env);
     if(settled.state==='invalid'){write(recordWarning(env,settled.reason));write(hint({env,skills,upstream,command}));return 1;}
-    const present=()=>Object.fromEntries(status({env,skills,upstream}).map(r=>[r.runtime,r.skills.filter(s=>s.state==='author').map(s=>s.name)]));
+    // Seen = a skill of that name is there, the pinned author version or not ("other" is kept
+    // as it is and must enjoy the same removal protection). Unreadable is never "seen".
+    const present=()=>Object.fromEntries(status({env,skills,upstream}).map(r=>[r.runtime,r.skills.filter(s=>s.state==='author'||s.state==='other').map(s=>s.name)]));
     const code=install({env,source,upstream,skills,tmpRoot,write,settled:settled.installed});
     if(code!==0)write(`  作者技能不影响 CM 使用；稍后可手动运行 ${command}\n`);
     const noted=await noteRecord(env,present(),{lockWaitMs});

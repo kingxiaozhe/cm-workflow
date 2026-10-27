@@ -367,10 +367,17 @@ An install does not add the skills when:
   (`install` must be `true`/`false`). Then it warns and changes nothing until you fix
   the file;
 - a skill is settled: CM records every skill it has seen in a skills directory (put in
-  by it, or already there) in `~/.cm-workflow/matt-skills.auto.json`. A settled skill
-  that is missing later was removed by you, and no install puts it back. If that record
-  cannot be read or has another shape, it is kept as it is and no install adds anything
-  until you fix or delete it.
+  by it, or already there, including a same-named skill with other content) in
+  `~/.cm-workflow/matt-skills.auto.json`. A settled skill that is missing later was
+  removed by you, and no install puts it back. If that record cannot be read or has
+  another shape, it is kept as it is and no install adds anything until you fix or
+  delete it.
+
+Upgrade boundary: versions before this one kept no record, so a skill you installed by
+hand and removed earlier cannot be told from one you never had, and the first install of
+this version adds every missing skill once. To keep that choice, opt out first (the flag or
+the environment variable for that run, or `"install": false`). The fetch is bounded (two
+minutes per git call); a stalled network ends in the same warning as a failed one.
 
 A skill whose name already exists with other content is never overwritten, by the
 default or by the manual command. To install by hand (for example after opting out),

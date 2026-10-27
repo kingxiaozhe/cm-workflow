@@ -37,6 +37,7 @@ function sandbox(t) {
     CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs')};
   delete env.CM_SKILL_HINTS;
   delete env.CM_SKILL_HINTS_INSTALL;
+  env.CM_MATT_SKILLS_INSTALL = 'off'; // the companion-skill download is tested by cm-matt-skills.test.mjs offline
   delete env.TYPESAFE_API_KEY;
   return {home, env, copy: path.join(home, 'workflow/skill-hints'),
     settings: path.join(home, '.claude/settings.json'), hooks: path.join(codexHome, 'hooks.json'),

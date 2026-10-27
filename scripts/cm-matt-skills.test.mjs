@@ -513,3 +513,38 @@ test('the auto command parses its arguments like install',async t=>{
   assert.match(text,/这次不自动安装/);
   assert.equal(snapshot(h.claude),null);
 });
+
+test('a same-named skill with other content counts as seen too: removed later, it is not put back',async t=>{
+  const f=fakeUpstream(t),h=home(t);
+  fs.mkdirSync(path.join(h.claude,'alpha'),{recursive:true});
+  fs.writeFileSync(path.join(h.claude,'alpha','SKILL.md'),'mine\n');
+  const first=await runAuto(h,f);
+  assert.equal(first.code,0);
+  assert.match(first.text,/跳过 1 个，未覆盖：alpha（已有同名技能但内容不同）/);
+  assert.equal(fs.readFileSync(path.join(h.claude,'alpha','SKILL.md'),'utf8'),'mine\n');
+  assert.deepEqual(readRecord(h).installed,{claude:['alpha','beta'],codex:['alpha','beta']});
+  fs.rmSync(path.join(h.claude,'alpha'),{recursive:true});
+  const second=await runAuto(h,f);
+  assert.equal(second.code,0);
+  assert.equal(skillState(h.claude,f.skills[0],f.upstream.license.sha256),'missing');
+  assert.match(second.text,/Claude 的 alpha 之前装过后被你删掉，不再自动装回/);
+});
+
+test('an unreadable skill is never recorded as seen',async t=>{
+  const f=fakeUpstream(t),h=home(t);
+  fs.mkdirSync(h.claude,{recursive:true});
+  fs.writeFileSync(path.join(h.claude,'alpha'),'not a directory\n');
+  const {code}=await runAuto(h,f);
+  assert.equal(code,0);
+  assert.deepEqual(readRecord(h).installed,{claude:['alpha','beta'],codex:['alpha','beta']},'a file at the name is "other": present, kept, seen');
+  const g=fakeUpstream(t),k=home(t);
+  fs.mkdirSync(k.claude,{recursive:true});
+  fs.mkdirSync(path.join(k.claude,'alpha'),{mode:0o000});
+  try{
+    if(process.getuid?.()!==0){
+      const r=await runAuto(k,g);
+      assert.equal(r.code,1,'an unreadable skill is reported as a failure');
+      assert.deepEqual(readRecord(k).installed,{claude:['beta'],codex:['alpha','beta']});
+    }
+  }finally{fs.chmodSync(path.join(k.claude,'alpha'),0o755);}
+});

@@ -20,7 +20,7 @@ function sandbox(t, prefix) {
   t.after(() => fs.rmSync(home, {recursive: true, force: true}));
   const target = path.join(home, '.claude');
   const env = {...process.env, HOME: home, CLAUDE_HOME: target,
-    CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs')};
+    CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs'), CM_MATT_SKILLS_INSTALL: 'off'};
   return {home, target, env};
 }
 
@@ -293,7 +293,7 @@ function installedClone(t, prefix) {
     process.on('exit', () => fs.rmSync(home, {recursive: true, force: true}));
     const target = path.join(home, '.claude');
     const env = {...process.env, HOME: home, CLAUDE_HOME: target,
-      CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs')};
+      CM_WORKFLOW_HOME: path.join(home, 'workflow'), CM_WORKFLOW_LOG_HOME: path.join(home, 'logs'), CM_MATT_SKILLS_INSTALL: 'off'};
     const first = install(env, ['--yes']);
     assert.equal(first.status, 0, output(first));
     template = target;
