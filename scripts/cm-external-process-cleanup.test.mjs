@@ -106,3 +106,94 @@ test('owned cleanup keeps a live group unknown at its original deadline',{skip:p
   await assert.rejects(cleanup(),{code:'process_cleanup_unknown'});
   assert.deepEqual(calls,['SIGTERM','SIGKILL',0]);
 });
+
+// 2026-10-27 (macOS 26 measured): a process group whose only member is our own child
+// that already exited but is not reaped yet (a zombie) answers kill(-pgid, 0|SIGTERM)
+// with EPERM; after the reap it is ESRCH. A provider CLI that exits right after its
+// error used to end process_cleanup_unknown. A stop is proven only once our direct
+// child's exit is observed and a re-probe answers ESRCH (no process table is read).
+const exitedChild=(pid=12345)=>Object.assign(new EventEmitter(),{pid,exitCode:1,signalCode:null});
+const denied=()=>{throw Object.assign(new Error('synthetic permission denied'),{code:'EPERM'});};
+test('owned cleanup: a real child that exited at once (unreaped zombie group) is proven stopped',{skip:process.platform==='win32'},async()=>{
+  const child=spawn(process.execPath,['-e','process.exit(1)'],{detached:true,stdio:'ignore'});
+  const started=Date.now();while(Date.now()-started<400){} // the child exits; this loop keeps it unreaped
+  await ownedProcessCleanup(child,{graceMs:0})();
+  assert.notEqual(child.exitCode,null);
+});
+// EPERM is resolved only through our own child: after its exit is observed, a re-probe
+// within the same budget must answer ESRCH (stopped) or deliver (a live member).
+const waitingChild=(pid=12345)=>Object.assign(new EventEmitter(),{pid,exitCode:null,signalCode:null});
+test('owned cleanup: EPERM until our child is reaped, then ESRCH, is a stop; the wait never blocks the event loop',{skip:process.platform==='win32'},async()=>{
+  const child=waitingChild(),calls=[];let reaped=false,ticked=false;
+  setTimeout(()=>{ticked=true;},10);
+  setTimeout(()=>{reaped=true;child.exitCode=1;child.emit('exit',1,null);},40);
+  await ownedProcessCleanup(child,{graceMs:0,killProcess:(pid,signal)=>{
+    assert.equal(pid,-12345);calls.push(signal);
+    throw Object.assign(new Error('synthetic'),{code:reaped?'ESRCH':'EPERM'});
+  }})();
+  assert.equal(ticked,true,'a 10 ms timer ran while waiting for the exit');
+  assert.deepEqual(calls,['SIGTERM','SIGTERM']);
+});
+test('owned cleanup: an EPERM that persists after our child exited stays unknown',{skip:process.platform==='win32'},async()=>{
+  const started=Date.now();
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,exitBudgetMs:200,killProcess:denied})(),{code:'process_cleanup_unknown'});
+  assert(Date.now()-started<1000,'bounded by the budget');
+});
+// Review 2026-10-27 round 2: every signal used to get the full exit budget again, so a
+// probe that met EPERM at the kill deadline still waited the whole budget past it.
+test('owned cleanup: an EPERM probe at the kill deadline does not wait past it',{skip:process.platform==='win32'},async()=>{
+  const started=Date.now();
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killWaitMs:0,exitBudgetMs:200,killProcess:(pid,signal)=>{
+    if(signal===0)denied();
+  }})(),{code:'process_cleanup_unknown'});
+  assert(Date.now()-started<150,`ended at the kill deadline, not ${Date.now()-started} ms later`);
+});
+// Review 2026-10-27 round 3: SIGTERM and SIGKILL each met EPERM before delivering, then
+// the group stayed alive; the poll after SIGKILL got a fresh killWaitMs (≈560 ms of 400).
+test('owned cleanup: EPERM before SIGTERM and SIGKILL still ends at the overall deadline',{skip:process.platform==='win32'},async()=>{
+  const started=Date.now(),at=()=>Date.now()-started;
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killWaitMs:200,exitBudgetMs:200,killProcess:(pid,signal)=>{
+    if(signal==='SIGTERM'&&at()<150)denied();
+    if(signal==='SIGKILL'&&at()<350)denied();
+  }})(),{code:'process_cleanup_unknown'});
+  assert(at()<480,`ended near the 400 ms overall deadline, not ${at()} ms`);
+});
+test('owned cleanup: a member that answers once our child exited is live, not stopped',{skip:process.platform==='win32'},async()=>{
+  const calls=[];let first=true;
+  await assert.rejects(ownedProcessCleanup(exitedChild(),{graceMs:0,killWaitMs:0,killProcess:(pid,signal)=>{
+    calls.push(signal);if(first){first=false;denied();}
+  }})(),{code:'process_cleanup_unknown'});
+  // It was treated as alive: escalated to SIGKILL and still probed alive at the deadline.
+  assert.deepEqual(calls,['SIGTERM','SIGTERM','SIGKILL',0]);
+});
+test('owned cleanup: EPERM without an observed exit of our child stays unknown, even if a later probe says ESRCH',{skip:process.platform==='win32'},async()=>{
+  await assert.rejects(ownedProcessCleanup(waitingChild(),{graceMs:0,exitBudgetMs:30,killProcess:denied})(),{code:'process_cleanup_unknown'});
+  let first=true;
+  await assert.rejects(ownedProcessCleanup(waitingChild(),{graceMs:0,exitBudgetMs:30,killProcess:()=>{
+    if(first){first=false;denied();}throw Object.assign(new Error('synthetic'),{code:'ESRCH'});
+  }})(),{code:'process_cleanup_unknown'});
+});
+test('owned cleanup: a zombie leader with a live descendant is killed, not taken for stopped',{skip:process.platform==='win32'},async t=>{
+  const root=fixture(t),pidFile=path.join(root,'grandchild.pid');
+  const child=spawn(process.execPath,['-e',`const c=require('child_process').spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'ignore'});
+require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));c.unref();process.exit(0);`],{detached:true,stdio:'ignore'});
+  t.after(()=>{try{process.kill(-child.pid,'SIGKILL');}catch{}});
+  while(!fs.existsSync(pidFile))await new Promise(resolve=>setTimeout(resolve,10));
+  const grandchild=Number(fs.readFileSync(pidFile,'utf8'));
+  await ownedProcessCleanup(child,{graceMs:50})();
+  assert.equal(alive(grandchild),false,'the TERM-ignoring descendant was killed');
+});
+test('Codex reviewer that exits right after its 429 ends reviewer_rate_limited, not process_cleanup_unknown',{skip:process.platform==='win32'},async t=>{
+  const root=fixture(t),script=path.join(root,'codex-429.mjs');
+  fs.writeFileSync(script,`let input='';for await(const part of process.stdin)input+=part;
+const message='exceeded retry limit, last status: 429 Too Many Requests';
+for(const value of [{type:'thread.started',thread_id:'t-429'},{type:'turn.started'},{type:'error',message},{type:'turn.failed',error:{message}}])
+  process.stdout.write(JSON.stringify(value)+'\\n');
+process.exit(1);`);
+  for(let attempt=0;attempt<3;attempt++){
+    const result=await worker(root,{promptTransport:'stdin',timeoutMs:5000,spawnProcess:(_cli,_args,opts)=>spawn(process.execPath,[script],opts),
+      preflight:{passed:true,cli_model:'synthetic-reviewer',prompt_transport:'stdin',
+        config_fingerprint:configFingerprint({...options(root),promptTransport:'stdin'})}})({prompt:'p'},{signal:new AbortController().signal,onEvent:()=>{}});
+    assert.deepEqual(result,{status:'failed',code:'reviewer_rate_limited'},`attempt ${attempt}`);
+  }
+});
