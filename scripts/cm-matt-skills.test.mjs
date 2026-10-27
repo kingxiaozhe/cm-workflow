@@ -80,12 +80,12 @@ function snapshot(dir){
   return out;
 }
 
-test('pinned manifest: fixed full commit, twelve skills, well-formed checksums',()=>{
+test('pinned manifest: fixed full commit, thirteen skills, well-formed checksums',()=>{
   assert.equal(UPSTREAM.commit,'5beb35b040e3de97e54fa9e386d7e42d15c295c2');
   assert.equal(UPSTREAM.repo,'https://github.com/mattpocock/skills.git');
   assert.match(UPSTREAM.license.sha256,/^[0-9a-f]{64}$/);
   assert.deepEqual(SKILLS.map(s=>s.name).sort(),['codebase-design','domain-modeling','grill-me','grill-with-docs','grilling',
-    'handoff','improve-codebase-architecture','prototype','setup-matt-pocock-skills','wait-what','wayfinder','writing-for-agents']);
+    'handoff','improve-codebase-architecture','prototype','retro','setup-matt-pocock-skills','wait-what','wayfinder','writing-for-agents']);
   for(const skill of SKILLS){
     assert.equal(path.basename(skill.dir),skill.name);
     assert.ok(skill.files['SKILL.md'],`${skill.name} pins SKILL.md`);
@@ -95,7 +95,7 @@ test('pinned manifest: fixed full commit, twelve skills, well-formed checksums',
       assert.ok(!file.startsWith('/')&&!file.split('/').includes('..'),file);
     }
   }
-  assert.equal(SKILLS.reduce((n,s)=>n+Object.keys(s.files).length,0),37);
+  assert.equal(SKILLS.reduce((n,s)=>n+Object.keys(s.files).length,0),39);
 });
 
 test('install copies every verified skill with LICENSE into both directories',t=>{

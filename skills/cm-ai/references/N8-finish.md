@@ -93,6 +93,16 @@ staging/体验版验证。
 
 **成本落盘（灰度门槛「单任务成本 < 人工工时」的数据源）**：如果当前 Codex/Claude 界面提供 usage 或会话费用，将总费用与总耗时写入 `{SPECS_DIR}/度量汇总.md`（`成本: ${x} / {N} 任务 ≈ ${x/N} 每任务`）；无法获得就标注 `成本: 未采集`，不许编造。
 
+## 3.5 复盘提示
+
+写完 `run_done` 后运行 `node "{CM_WORKFLOW_ROOT}/scripts/cm-matt-skills.mjs" status`（只读，不装）。
+按当前运行时那一行取首个命中，写成总结里的 `🔁 复盘` 行：
+- 未列出 `retro`（即已装作者版）→「可运行 `/retro`（Codex `$retro`）看这一轮哪些错该交给脚本拦、哪些该写进指引」；
+- 列为 `missing` 或 `same name, different content` →「未装作者版 `retro`；可选安装：{输出里的 install 命令}」；
+- 列为 `cannot be read`，或命令没跑起来、异常退出、输出里没有 install 命令 →「无法确认作者版 `retro` 状态；可选安装：`node "{CM_WORKFLOW_ROOT}/scripts/cm-matt-skills.mjs" install`」。
+只提示，不运行 `retro`，不代为安装，不读取作者技能内容；该行不影响完成状态和 `run_done`。
+`runtime/project-learning.md` 已借鉴它「机械性错误交给脚本」的分类，`retro` 是面向整个环境的全量版本。
+
 ## 4. 输出总结
 
 ```text
@@ -103,6 +113,7 @@ staging/体验版验证。
 📝 文档同步: 已完成
 🔎 收尾核对: {按原结果附六行报告，或未完成原因/已关闭；不能据此代替 Review/QA}
 🚀 生产发布待决清单: 已编制，等待人工决策
+🔁 复盘: {按 3.5 的结果写一行}
 
 各 Feature 摘要:
 - 1.{name}: {N} 个任务 ✅ (发布验证: {staging/体验版已验证 | 未执行/待人工 | 不适用})
