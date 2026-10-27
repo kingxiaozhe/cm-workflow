@@ -177,6 +177,71 @@ test('one-member groups stop before a task could be the fifth without QA',t=>{
   // Real groups defer their QA and are unaffected.
   assert.deepEqual(project(t,chainOf(7)).plan({enabled:true,max:2,worktree_all:false}).groups,[]);
 });
+test('a fifth task kept in the main checkout resets the count when the host policy decides QA',t=>{
+  // Ticket 05: T-005 stays in the main checkout as the fifth without QA, so its QA
+  // triggers for certain and T-006 starts from zero again. That holds only where the
+  // host policy decides QA: a workflow configuration, or the batch's control policy.
+  const none={qa:{criticalPaths:{}},applicableAgentFiles:[]};
+  const keys=ids=>ids.map(id=>[`T-00${id}`]);
+  const f=project(t,chainOf(9)),plan=f.plan(undefined,none);
+  assert.deepEqual(plan.groups,keys([1,2,3,4,6,7,8]));
+  const every=workflow=>Object.fromEntries(plan.config.batch.tasks.map(task=>[`1.work/${task.taskId}`,workflow]));
+  assert.ok(host(f,plan.config.batch,every(none)));
+  assert.ok(host(f,{...plan.config.batch,controlPolicy:{version:2,development:'conversation',bootstrap:'disabled',qa:'disabled',qaFix:'disabled'}}));
+  // Without either the session supplies the decision, which may skip: no certain reset.
+  assert.deepEqual(f.plan().groups,keys([1,2,3,4]));
+  assert.throws(()=>host(f,plan.config.batch),{code:'parallel_solo_qa_checkpoint',reason:/^1\.work\/T-006: /});
+  // A task kept in the main checkout for a registered path may or may not trigger (the
+  // decision sees the files actually changed), so both counts stay possible after it.
+  const auth={qa:{criticalPaths:{authentication:['f2.js']}},applicableAgentFiles:[]};
+  assert.deepEqual(f.plan(undefined,auth).groups,keys([1,3,4,6,8]));
+  assert.throws(()=>host(f,{...plan.config.batch,parallel:[1,3,4,6,7].map(id=>[`1.work/T-00${id}`])},every(auth)),{code:'parallel_solo_qa_checkpoint',reason:/T-007/});
+  // Tasks completed with no QA row at all stay counted after a triggered QA.
+  assert.deepEqual(project(t,chainOf(9,2)).plan(undefined,none).groups,keys([3,4,6,7]));
+});
+test('the count walk keeps every reset a group, qa:null or several features may hide',t=>{
+  // Review r1 (ticket 05). Each case once let a one-member group reach five in its worktree.
+  const none={qa:{criticalPaths:{}},applicableAgentFiles:[]};
+  const solo=ids=>ids.map(id=>[`1.work/T-00${id}`]);
+  const every=(batch,workflow)=>Object.fromEntries(batch.tasks.map(task=>[`1.work/${task.taskId}`,workflow]));
+  // 1. A workflow with qa:null keeps the session-supplied QA decision: no certain reset.
+  const f=project(t,chainOf(9)),reset=f.plan(undefined,none);
+  assert.deepEqual(f.plan(undefined,{qa:null,applicableAgentFiles:[]}).groups,solo([1,2,3,4]).map(([key])=>[key.slice(7)]));
+  assert.throws(()=>host(f,reset.config.batch,every(reset.config.batch,{qa:null,applicableAgentFiles:[]})),
+    {code:'parallel_solo_qa_checkpoint',reason:/^1\.work\/T-006: /});
+  // 2. A blocked member of a real group reruns in the main checkout and may trigger QA
+  // there, after the other members' rows: the count after the group may be low.
+  const grouped=`- [ ] T-001: t1${scope('f1.js')}\n- [ ] T-002: t2${scope('f2.js')}\n`
+    +Array.from({length:7},(_,index)=>`- [ ] T-00${index+3}: t${index+3}${scope(`f${index+3}.js`)}\n`).join('')
+    +'\n- T-003 依赖 T-001, T-002\n'+Array.from({length:6},(_,index)=>`- T-00${index+4} 依赖 T-00${index+3}\n`).join('');
+  const g=project(t,grouped),plan=g.plan(undefined,none);
+  assert.deepEqual(plan.groups,[['T-001','T-002'],['T-003'],['T-004'],['T-008']]);
+  assert.ok(host(g,plan.config.batch,every(plan.config.batch,none)));
+  assert.throws(()=>host(g,{...plan.config.batch,parallel:[['1.work/T-001','1.work/T-002'],...solo([3,4,6,7,8])]},every(plan.config.batch,none)),
+    {code:'parallel_solo_qa_checkpoint',reason:/^1\.work\/T-006: /});
+  // 3. A hand-written group out of task order starts at its first member (T-001 and T-005
+  // run first), and a blocked later member reruns only once it is the first unfinished
+  // task, after the outside tasks before it (review r2: T-003 rerun after T-002 reset the
+  // count, T-008 reached five). With one-member groups, groups must be contiguous.
+  const free=Array.from({length:9},(_,index)=>`- [ ] T-00${index+1}: t${index+1}${scope(`f${index+1}.js`)}\n`).join('');
+  const h=project(t,free),batch=h.plan(undefined,none).config.batch;
+  assert.throws(()=>host(h,{...batch,parallel:[['1.work/T-001','1.work/T-005'],...solo([7,8])]},every(batch,none)),
+    {code:'parallel_solo_split_group',reason:/^1\.work\/T-001,1\.work\/T-005: /});
+  assert.throws(()=>host(h,{...batch,parallel:[['1.work/T-001','1.work/T-003'],...solo([8])]},every(batch,none)),
+    {code:'parallel_solo_split_group',reason:/^1\.work\/T-001,1\.work\/T-003: /});
+  // Contiguous in task order is enough, whatever the order inside the group; and with no
+  // one-member group there is no count to protect.
+  assert.ok(host(h,{...batch,parallel:[['1.work/T-002','1.work/T-001'],...solo([8])]},every(batch,none)));
+  assert.ok(host(h,{...batch,parallel:[['1.work/T-001','1.work/T-005']]},every(batch,none)));
+  // 4. The count spans features and a closing feature leaves floor: no one-member group
+  // in a batch of several features.
+  const more=path.join(h.specsDir,'2.more');fs.mkdirSync(more);
+  for(const name of ['requirements.md','design.md'])fs.writeFileSync(path.join(more,name),'# Fixture\n');
+  fs.writeFileSync(path.join(more,'tasks.md'),`- [ ] T-001: g1${scope('g1.js')}\n`);
+  fs.writeFileSync(path.join(h.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work','2.more'],specFiles:buildManifest(h.specsDir)}));
+  assert.throws(()=>host(h,{...batch,tasks:[...batch.tasks,{feature:'2.more',taskId:'T-001',scope:['g1.js'],requirements:[]}],
+    parallel:solo([1])},{...every(batch,none),'2.more/T-001':none}),{code:'parallel_solo_multi_feature'});
+});
 test('one-member groups skip a task whose scope hits a registered QA critical path',t=>{
   const workflow={qa:{criticalPaths:{authentication:['a.js']}},applicableAgentFiles:[]};
   const f=project(t,diamond());
