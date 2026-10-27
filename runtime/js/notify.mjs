@@ -102,8 +102,14 @@ const UNSAFE_READ={permission:'not_regular_file',too_large:'too_large'};
 
 // null = feature off. Under `node --test` only an explicit CM_WORKFLOW_HOME
 // enables it, so a test suite never reaches the user's real configuration.
+// CM_NOTIFY_OFF (any value but empty or "0") turns notices off for this process
+// and its children before anything is read or written: acceptance runs in a test
+// copy of a project keep the real CM_WORKFLOW_HOME (runtimes.yml and the rest)
+// without pushing to the user's phone. Every notice path starts here.
 // An invalid file is reported in notify.log only, never on workflow output.
+export const notifyOffByEnv=(env=process.env)=>typeof env.CM_NOTIFY_OFF==='string'&&env.CM_NOTIFY_OFF!==''&&env.CM_NOTIFY_OFF!=='0';
 export function readNotifyConfig(env=process.env){
+  if(notifyOffByEnv(env))return null;
   if(env.NODE_TEST_CONTEXT&&!env.CM_WORKFLOW_HOME)return null;
   const file=path.join(notifyHome(env),'notify.json');
   let raw;

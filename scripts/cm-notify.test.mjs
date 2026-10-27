@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {notify,notifyLater,cancelPendingNotice,clearAttention,sessionTitle,scheduleWaitNotice,driveProgressKey,readNotifyConfig,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
+import {notify,notifyLater,cancelPendingNotice,clearAttention,sessionTitle,scheduleWaitNotice,driveProgressKey,readNotifyConfig,writeHostRegistry,scheduleIdleNotice,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
 
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
@@ -59,6 +59,27 @@ test('off without notify.json, and off under node --test unless CM_WORKFLOW_HOME
   assert.equal(readNotifyConfig({NODE_TEST_CONTEXT:'child-v8'}),null);
 });
 
+// 2026-10-27: acceptance runs in a test copy of a project (not under node --test)
+// read the user's real notify.json and pushed to their phone. CM_NOTIFY_OFF turns
+// notices off for that process tree only, before any file is read or written, and
+// unlike a temporary CM_WORKFLOW_HOME keeps the user's other settings (runtimes.yml).
+test('CM_NOTIFY_OFF turns every notice path off with a valid config, touching no file',async t=>{
+  const h=home(t),before=fs.readdirSync(h.dir).sort();
+  for(const value of ['1','true','yes']){
+    const env={...h.env,CM_NOTIFY_OFF:value};
+    assert.equal(readNotifyConfig(env),null,value);
+    assert.deepEqual(notify(fields(`off-${value}`),{env,now:NOW}),{sent:false,reason:'off'});
+    assert.deepEqual(await notifyLater(fields(`later-${value}`,{attentionKey:'attn|off|s'}),{env,delayMs:50}),{scheduled:false,reason:'off'});
+    assert.equal(scheduleWaitNotice({kind:'develop',callId:'c1',workflow:'cm-ai',project:h.dir,env}),null);
+    assert.equal(scheduleIdleNotice({workflow:'cm-ai',project:h.dir,sessionKey:'s',seq:1,row:null,env}),null);
+    assert.equal(writeHostRegistry({sessionKey:'00000000-0000-4000-8000-000000000000',workflow:'cm-ai',project:h.dir,startedAt:NOW},{env,now:NOW}),false);
+  }
+  await new Promise(resolve=>setTimeout(resolve,200));
+  assert.deepEqual(h.rows(),[]);
+  assert.deepEqual(fs.readdirSync(h.dir).sort(),before,'no notify.log, state, notify-pending or hosts entry');
+  // Unset, empty or "0" leaves notices on.
+  for(const value of [undefined,'','0'])assert.notEqual(readNotifyConfig({...h.env,CM_NOTIFY_OFF:value}),null,String(value));
+});
 test('invalid config turns the feature off: relative command, bad version, bad waitMinutes',t=>{
   const h=home(t);const file=path.join(h.dir,'notify.json');
   for(const value of [{version:1,command:['notify.sh']},{version:2,command:['/bin/true']},{version:1,command:[]},

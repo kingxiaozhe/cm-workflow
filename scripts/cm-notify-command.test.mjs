@@ -240,6 +240,11 @@ test('status shows each channel as missing, empty, malformed or filled, marks th
       fs.chmodSync(path.join(s.home,'bark.env'),0o644);
       result=s.cli([]);assert.match(result.stdout,/渠道 bark［当前］：格式不对/);assert.match(result.stdout,/chmod 600/);noSecret(result.stdout);
     }
+    // 2026-10-27: CM_NOTIFY_OFF silences runs started from this environment; status says so.
+    assert.doesNotMatch(s.cli([]).stdout,/CM_NOTIFY_OFF/);
+    assert.match(s.cli([],{CM_NOTIFY_OFF:'1'}).stdout,/当前渠道：bark（生效中）[\s\S]*当前环境设置了 CM_NOTIFY_OFF/);
+    assert.equal(JSON.parse(s.cli(['status','--json'],{CM_NOTIFY_OFF:'1'}).stdout).envOff,true);
+    assert.equal(JSON.parse(s.cli(['status','--json']).stdout).envOff,false);
     assert.equal(s.log(),'','status writes nothing, not even notify.log');
   }
 });
