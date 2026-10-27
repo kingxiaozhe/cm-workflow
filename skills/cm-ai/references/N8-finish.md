@@ -96,10 +96,14 @@ staging/体验版验证。
 ## 3.5 复盘提示
 
 写完 `run_done` 后运行 `node "{CM_WORKFLOW_ROOT}/scripts/cm-matt-skills.mjs" status`（只读，不装）。
-按当前运行时那一行取首个命中，写成总结里的 `🔁 复盘` 行：
-- 未列出 `retro`（即已装作者版）→「可运行 `/retro`（Codex `$retro`）看这一轮哪些错该交给脚本拦、哪些该写进指引」；
-- 列为 `missing` 或 `same name, different content` →「未装作者版 `retro`；可选安装：{输出里的 install 命令}」；
-- 列为 `cannot be read`，或命令没跑起来、异常退出、输出里没有 install 命令 →「无法确认作者版 `retro` 状态；可选安装：`node "{CM_WORKFLOW_ROOT}/scripts/cm-matt-skills.mjs" install`」。
+先判命令结果，再判状态，写成总结里的 `🔁 复盘` 行。固定命令指
+`node "{CM_WORKFLOW_ROOT}/scripts/cm-matt-skills.mjs" install`；「输出里的安装命令」指 `recommended skills install` 那一行里的命令，没有这一行就用固定命令。
+1. 命令没跑起来、退出码非 0、或输出里没有当前运行时的 `recommended skills [claude|codex] N/M author versions` 行
+   →「无法确认作者版 `retro` 状态；可选安装：{固定命令}」。
+2. 命令正常，再看当前运行时下有没有 `retro:` 状态行：
+   - 没有（即已装作者版）→「可运行 `/retro`（Codex `$retro`）看这一轮哪些错该交给脚本拦、哪些该写进指引」；
+   - `retro: missing` 或 `retro: same name, different content` →「未装作者版 `retro`；可选安装：{输出里的安装命令}」；
+   - `retro: cannot be read` →「无法确认作者版 `retro` 状态；可选安装：{输出里的安装命令}」。
 只提示，不运行 `retro`，不代为安装，不读取作者技能内容；该行不影响完成状态和 `run_done`。
 `runtime/project-learning.md` 已借鉴它「机械性错误交给脚本」的分类，`retro` 是面向整个环境的全量版本。
 
