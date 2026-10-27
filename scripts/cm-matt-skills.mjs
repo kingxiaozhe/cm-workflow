@@ -285,7 +285,8 @@ export function fetchVerified({source,upstream,skills,workdir}){
   // Only the pinned commit, one level deep; a source that cannot serve it by id is refused.
   try{run(['-C',repo,'fetch','-q','--no-tags','--no-recurse-submodules','--depth','1',source,upstream.commit]);}
   catch(error){
-    const reason=error.code==='ETIMEDOUT'||error.signal==='SIGKILL'?`超过 ${GIT_TIMEOUT_MS/1000} 秒未完成，已中止`
+    const reason=error.code==='ETIMEDOUT'?`超过 ${GIT_TIMEOUT_MS/1000} 秒未完成，已中止`
+      :error.signal?`进程被强制终止（${error.signal}）`
       :String(error.stderr||error.message).trim().split('\n').pop();
     throw new VerifyError(`无法从 ${source} 拉取固定提交 ${upstream.commit}：${reason}`);
   }
