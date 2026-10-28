@@ -8,7 +8,8 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
 import {openPrdSession,prdSessionVersions} from '../runtime/js/cm-prd/session.mjs';
-import {PRD_SELF_CHECK_RULES,PRD_SELF_CHECK_RULE_VERSIONS,checkPrdDraftMechanics} from '../runtime/js/cm-prd/self-check.mjs';
+import {PRD_SELF_CHECK_RULES,PRD_SELF_CHECK_RULE_VERSIONS,checkPrdDraftMechanics,matchesPrdDraftMechanics} from '../runtime/js/cm-prd/self-check.mjs';
+import {recordPrdTaskScopes,prdTaskScopeOptions} from '../runtime/js/cm-prd/task-scope-record.mjs';
 import {TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-rules-home-'));
@@ -150,4 +151,44 @@ test('rule 4 reads the developer mark and checks session tasks; rules 1-3 keep i
   const badCodes=rules=>checkPrdDraftMechanics(bad,{rules}).findings.map(item=>item.code);
   assert.ok(badCodes(4).includes('task_scope_invalid'),'grammar 3 rejects an unknown developer value');
   assert.ok(!badCodes(3).includes('task_scope_invalid'),'rule 3 reads tasks.md as grammar 2, where the line is prose');
+});
+
+// R1-03: re-checks of saved files (correction, disposition, summary, driver) run
+// outside the saving operation; the task-scope record carries a rule-4 save's rule.
+test('a save records rule 4 for the re-checks; an earlier rule or an operation without a rule keeps the old record',t=>{
+  const {dir,entry}=specs(t),sessionId='prd-record-fixture',open=()=>openPrdSession({specs:dir,sessionId,identity:{entry,runtime:'codex'}});
+  const tasks=['- [ ] T-001: Build','  - 范围: `src/a.js`','- [ ] T-002: Walk','  - 范围: `docs/qa.md`','  - 开发: 会话',''].join('\n');
+  const feature=content=>({directory:'1.walk',name:'walk',documents:[
+    {path:'requirements.md',content:'## 功能需求\n1. [F-001] Walk\n- [ ] [AC-001] Walk it.'},
+    {path:'design.md',content:'## 方案摘要\nx'},{path:'tasks.md',content}]});
+  const moved=tasks.replace('\n  - 开发: 会话','').replace('`src/a.js`','`src/a.js`\n  - 开发: 会话');
+  const second=tasks.replace('`src/a.js`','`src/a.js`\n  - 开发: 会话');
+  const record=path.join(dir,'.reviews/prd-walk-task-scope.json');
+  const recheck=content=>checkPrdDraftMechanics({draftDigest:'d'.repeat(64),features:[feature(content)]},prdTaskScopeOptions(dir,'1.walk'))
+    .findings.map(item=>item.code);
+  const save=()=>{const session=open();try{recordPrdTaskScopes(dir,[feature(tasks)],{},{selfCheckRules:session.selfCheckRules()});}finally{session.close();}};
+  let session=open();
+  try{session.begin({requestId:'r1',operation:'save_draft'},null,{selfCheckRules:session.versions().selfCheckRules});}finally{session.close();}
+  save();
+  assert.deepEqual(JSON.parse(fs.readFileSync(record,'utf8')),{version:1,enforced:true,exempt:[],selfCheckRules:4});
+  assert.deepEqual(prdTaskScopeOptions(dir,'1.walk'),{scopes:{'1.walk':{exempt:[]}},sessionTasks:['1.walk']});
+  assert.deepEqual(recheck(tasks),[]);
+  assert.deepEqual(recheck(moved),['session_task_not_final']);
+  assert.deepEqual(recheck(second),['session_task_multiple']);
+  // The bound options add nothing to a rule-4 report, so recorded reports still match.
+  const draft={draftDigest:'d'.repeat(64),features:[feature(moved)]};
+  assert.ok(matchesPrdDraftMechanics(draft,checkPrdDraftMechanics(draft,{rules:4}),prdTaskScopeOptions(dir,'1.walk')));
+  // The state an older host left: the active operation without a rule saves as rule 1, the old record.
+  edit(stateFile(dir,sessionId),state=>{delete state.active.selfCheckRules;});
+  save();
+  assert.equal(fs.readFileSync(record,'utf8'),JSON.stringify({version:1,enforced:true,exempt:[]})+'\n');
+  assert.deepEqual(prdTaskScopeOptions(dir,'1.walk'),{scopes:{'1.walk':{exempt:[]}}});
+  for(const content of [moved,second])assert.deepEqual(recheck(content),[]);
+  // Rule 3 adds nothing beyond the scope record, so its save keeps the old bytes too.
+  recordPrdTaskScopes(dir,[feature(tasks)],{},{selfCheckRules:3});
+  assert.equal(fs.readFileSync(record,'utf8'),JSON.stringify({version:1,enforced:true,exempt:[]})+'\n');
+  for(const value of [3,5,'4']){
+    fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:[],selfCheckRules:value})+'\n',{mode:0o600});
+    assert.throws(()=>prdTaskScopeOptions(dir,'1.walk'),/prd_task_scope_record_invalid/);
+  }
 });

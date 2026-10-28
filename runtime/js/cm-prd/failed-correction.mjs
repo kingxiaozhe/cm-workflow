@@ -39,9 +39,14 @@ export function inspectPrdFailedCorrection({specs,receipt}){
   need(scopes===undefined||(scopes!==null&&typeof scopes==='object'&&Object.keys(scopes).every(key=>key===feature)
     &&Array.isArray(scopes[feature]?.exempt)&&scopes[feature].exempt.every(id=>typeof id==='string')
     &&Object.keys(scopes[feature]).length===1),'prd_failed_check_binding');
-  // Evidence recorded before the policy joined the check input has no taskScopes:
+  // Likewise the rule-4 additions a recorded rule 4 bound (task-scope-record.mjs).
+  const sessionTasks=draft.sessionTasks;
+  need(sessionTasks===undefined||Array.isArray(sessionTasks)&&sessionTasks.length===1&&sessionTasks[0]===feature,
+    'prd_failed_check_binding');
+  const bound={...(scopes===undefined?{}:{scopes}),...(sessionTasks===undefined?{}:{sessionTasks})};
+  // Evidence recorded before the policy joined the check input has neither:
   // it ran either without a scope record or under the record still on disk.
-  need(scopes!==undefined?matchesPrdDraftMechanics(draft,mechanical,{scopes})
+  need(Object.keys(bound).length?matchesPrdDraftMechanics(draft,mechanical,bound)
     :matchesPrdDraftMechanics(draft,mechanical)||matchesPrdDraftMechanics(draft,mechanical,prdTaskScopeOptions(specs,feature)),
   'prd_failed_check_binding');
   const stored=correctionCheckStore({specs,feature,packageDigest:review.packageDigest,inputDigest:digest(proof.input)}).inspect();

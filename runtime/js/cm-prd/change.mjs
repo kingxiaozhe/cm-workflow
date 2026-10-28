@@ -228,7 +228,8 @@ export function createPrdChange({admission,runtime,call,restored=null,selected=[
     },
     save(writeEnabled){
       need(writeEnabled===true&&state.stage==='confirmed','prd_change_write_not_enabled');
-      const result=applyPrdChange({specs:admission.specs,before:state.before,proposal:state.proposal,selected:state.selected});
+      const result=applyPrdChange({specs:admission.specs,before:state.before,proposal:state.proposal,selected:state.selected,
+        selfCheckRules:selfCheckRules()});
       state.stage='awaiting_review';state.saved=result;return result;
     },
   };
@@ -256,7 +257,7 @@ export function assertPrdReviewsSettled(specs,selected,{requireSplit=false}={}){
     if(requireSplit&&stage==='split')need(gate.outcome==='completed','prd_revision_original_split_required');
   }
 }
-export function applyPrdChange({specs,before,proposal,selected}){
+export function applyPrdChange({specs,before,proposal,selected,selfCheckRules}){
   const reviews=path.join(specs,'.reviews');try{fs.mkdirSync(reviews,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}
   need(fs.realpathSync(reviews)===reviews,'prd_change_archive_invalid');
   const name=`prd-change-${proposal.proposalDigest}.json`,archive={version:1,before,proposal,selected};
@@ -297,7 +298,7 @@ export function applyPrdChange({specs,before,proposal,selected}){
   if(read(specs,statusFile)===before.status)replaceSessionFile(specs,statusFile,before.status,invalidated);
   // Before any spec byte: later re-checks keep the scopes this proposal carries.
   current();recordPrdTaskScopes(specs,proposal.features,
-    approvedScopeExemptions(before,proposal.features.map(feature=>feature.directory),approvedGrammar(before)));
+    approvedScopeExemptions(before,proposal.features.map(feature=>feature.directory),approvedGrammar(before)),{selfCheckRules});
   for(const [file,content] of Object.entries(expected)){
     if(!selected.includes(file.split('/')[0])&&oldDirs.includes(file.split('/')[0]))continue;
     current();const dir=path.dirname(path.join(specs,file));try{fs.mkdirSync(dir,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}

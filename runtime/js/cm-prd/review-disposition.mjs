@@ -86,6 +86,7 @@ export function createPrdDispositionOwner({checkContext,canRecoverRecorded=()=>f
     // policy it was computed under even if a later change rewrites the record.
     const scopeOptions=prdTaskScopeOptions(input.specs,input.feature);
     if(scopeOptions.scopes)draft.taskScopes=scopeOptions.scopes;
+    if(scopeOptions.sessionTasks)draft.sessionTasks=scopeOptions.sessionTasks;
     draft.mechanicalSelfCheck=checkPrdDraftMechanics(draft,scopeOptions);
     draft=json(draft,256*1024);
     const review=inspectPrdFindings({specs:input.specs,stage:input.stage,feature:input.feature});
