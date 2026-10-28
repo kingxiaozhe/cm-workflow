@@ -101,7 +101,7 @@ export const REVIEW_BOUND_MARGIN_MS=60000;
 export const reviewRaceTimeout=(outerTimeoutMs,reviewTimeoutMs)=>Math.max(outerTimeoutMs,reviewTimeoutMs+REVIEW_BOUND_MARGIN_MS);
 export function createConversationExecution(definition,hostContextId,bridge,review=null,reservedReviewAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','soloMember','verificationPrecheck','executionPolicy','controlPolicy'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','soloMember','verificationPrecheck','executionPolicy','controlPolicy','memberDevelopment'].filter(key=>Object.hasOwn(options,key))]);
   const controlPolicy=options.controlPolicy?readControlPolicy(options.controlPolicy):null;
   need(!Object.hasOwn(options,'verificationPrecheck')||typeof options.verificationPrecheck==='boolean','invalid_input');
   const executionPolicy=options.executionPolicy?readExecutionPolicy(options.executionPolicy):null;
@@ -112,8 +112,14 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   const soloMember=options.soloMember??false;need(typeof soloMember==='boolean'&&(!soloMember||parallelMember),'invalid_input');
   const deferMemberQa=parallelMember&&!soloMember;
   const provider=options.providerDevelopment??null;
+  // memberDevelopment 'session': a batch execution table (batch-plan.mjs) has the
+  // current session develop this member, so it never carries providerDevelopment, even
+  // under a provider policy; every other member of such a policy carries it.
+  need(!Object.hasOwn(options,'memberDevelopment')||options.memberDevelopment==='session','invalid_input');
+  const sessionMember=options.memberDevelopment==='session';
+  need(!sessionMember||!provider,'invalid_arguments');
   if(controlPolicy){
-    need((controlPolicy.development==='provider')===Boolean(provider),'invalid_arguments');
+    need((controlPolicy.development==='provider'&&!sessionMember)===Boolean(provider),'invalid_arguments');
     need(controlPolicy.bootstrap!=='write'||Boolean(options.bootstrap),'invalid_arguments');
     need(controlPolicy.qa!=='run'||workflow?.qa!=null,'invalid_arguments');
     need(!options.bootstrap||controlPolicy.bootstrap==='write','invalid_arguments');
