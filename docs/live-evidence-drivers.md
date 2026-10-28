@@ -60,9 +60,10 @@ v2 控制策略 `development:"provider"` 的批次里，`batch.memberDevelopment
   - 完成：`{"status":"succeeded","value":{"outcome":…,"application":…,"retrospective":…,"requirements":…},"edits":[{"path":…,"beforeSha256":…,"content":…}]}`；
   - 业务上做不了（如走查环境不可用）：`{"status":"succeeded","value":{"outcome":"blocked","reason":…,…},"edits":[]}`，任务停在 blocked 等人决定；
   - 传输失败：沿用 `{"status":"failed","code":…}`，不附 `edits`。
-- 等待时限取 `timeoutMs` 与「宿主开发应答上限 + 1 分钟」中较大者。宿主上限默认 30 分钟
-  （`CM_HOST_ANSWER_TIMEOUT_MINUTES` 更大时取它），超时由宿主记为 `call_timeout` 并按原恢复规则重发，
-  而不是驾驶员先关宿主留下未决调用。
+- 会话成员开发的**宿主期限固定 30 分钟**（`host-conversation-execution.mjs` 的会话开发上限），到时由宿主记为
+  `call_timeout` 并按原恢复规则重发。驾驶员的文件等待取 `timeoutMs` 与「30 分钟与 `CM_HOST_ANSWER_TIMEOUT_MINUTES`
+  中较大者 + 1 分钟」的较大值，只为保证不早于宿主超时、不由驾驶员先关宿主留下未决调用；
+  `CM_HOST_ANSWER_TIMEOUT_MINUTES` **不会**延长宿主自己的 30 分钟期限。
 
 ## 中断与恢复
 
