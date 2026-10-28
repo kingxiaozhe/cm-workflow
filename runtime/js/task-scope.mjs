@@ -119,6 +119,19 @@ export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
   }
   return {tasks:result,serial,sessions,errors};
 }
+// Grammar 3's narrow rule for session-developed tasks: at most one per feature, and
+// only its last task (the last one not dropped, the task that runs last and is never
+// a parallel member). tasks: the feature's tasks in tasks.md order ({id,dropped}).
+// null, or {code,tasks}.
+export function sessionTaskProblem(tasks,sessions){
+  const live=tasks.filter(task=>!task.dropped).map(task=>task.id),marked=live.filter(id=>sessions.has(id));
+  if(marked.length>1)return {code:'session_task_multiple',tasks:marked};
+  if(marked.length===1&&marked[0]!==live.at(-1))return {code:'session_task_not_final',tasks:marked};
+  return null;
+}
+export const sessionTaskReason=problem=>problem.code==='session_task_multiple'
+  ?`标了「开发: 会话」的任务有 ${problem.tasks.length} 个（${problem.tasks.join(', ')}），一个功能最多一个`
+  :`标了「开发: 会话」的任务 ${problem.tasks[0]} 不是功能的最后一个任务；会话任务只能是功能的串行末项`;
 
 
 // Two tasks may run at the same time only when neither writes a path the other writes.

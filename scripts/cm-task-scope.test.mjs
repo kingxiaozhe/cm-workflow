@@ -6,8 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {parseTaskScopes,declaredTaskScope,sameScope,validScopePath} from '../runtime/js/task-scope.mjs';
-import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
+import {parseTaskScopes,declaredTaskScope,sameScope,validScopePath,sessionTaskProblem} from '../runtime/js/task-scope.mjs';
+import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES,sessionTaskFindings} from '../runtime/js/cm-prd/self-check.mjs';
 import {recordPrdTaskScopes,prdTaskScopeOptions,approvedScopeExemptions} from '../runtime/js/cm-prd/task-scope-record.mjs';
 import {createHash} from 'node:crypto';
 import {normalizeRuntimeMarkBytes} from './cm-spec-manifest.mjs';
@@ -70,6 +70,25 @@ test('开发 sub-item: grammar 3 reads it, grammar 1 and 2 keep it prose',t=>{
     if(refused)assert.throws(()=>declaredTaskScope(root,'1.work','T-001'),{code:'task_scope_invalid'});
     else assert.deepEqual(declaredTaskScope(root,'1.work','T-001').scope,['a.js'],JSON.stringify(status));
   }
+});
+
+test('a session task is at most one per feature and only its last task',()=>{
+  const lines=(...marks)=>tasksText(['- [ ] T-001: a','  - 范围: `a.js`',...(marks.includes(1)?['  - 开发: 会话']:[]),
+    '- [ ] T-002: b','  - 范围: `b.js`',...(marks.includes(2)?['  - 开发: 会话']:[]),
+    '- [ ] T-003: c ~~[DROPPED 不做]~~','  - 范围: `c.js`',...(marks.includes(3)?['  - 开发: 会话']:[])]);
+  const codes=(text,grammar=3)=>sessionTaskFindings('1.work',text,{grammar}).map(item=>item.code);
+  assert.deepEqual(codes(lines()),[]);
+  // A dropped task after it does not count: T-002 is the last task to run.
+  assert.deepEqual(codes(lines(2)),[]);
+  assert.deepEqual(codes(lines(1)),['session_task_not_final']);
+  assert.deepEqual(codes(lines(1,2)),['session_task_multiple']);
+  // A dropped task's mark is history, not a second session task.
+  assert.deepEqual(codes(lines(2,3)),[]);
+  // Grammar 2 never reads the mark.
+  assert.deepEqual(codes(lines(1),2),[]);assert.deepEqual(codes(lines(1,2),2),[]);
+  const finding=sessionTaskFindings('1.work',lines(1),{grammar:3})[0];
+  assert.deepEqual(finding.reason.tasks,['T-001']);assert.match(finding.reason.expected,/最后一个任务/);
+  assert.equal(sessionTaskProblem([{id:'T-001'},{id:'T-002'}],new Set(['T-002'])),null);
 });
 
 test('only exact relative file paths in backticks are accepted',()=>{

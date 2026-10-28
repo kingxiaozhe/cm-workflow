@@ -1,7 +1,7 @@
 // Mechanical subset of the existing Step 10.5 checklist. No semantic approval.
 import {parseFeatureTaskText,validDependencies,declaredAcceptanceIds,DEPENDENCY} from '../cm-ai/cm-ai-admission.mjs';
-import {specLines,taskLines} from '../spec-task-line.mjs';
-import {parseTaskScopes,BOOTSTRAP_FEATURE} from '../task-scope.mjs';
+import {specLines,taskLines,TASK_GRAMMAR} from '../spec-task-line.mjs';
+import {parseTaskScopes,BOOTSTRAP_FEATURE,sessionTaskProblem,sessionTaskReason} from '../task-scope.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
 import {json,shape,need,digest} from '../cm-ai/effect-contract.mjs';
 
@@ -162,4 +162,17 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
     pending:['task_boundary_and_existing_asset_overlap','acceptance_verifiability','user_case_semantics',
       'test_contract_applicability','brownfield_references_and_B2_B3_B5_if_applicable'],
     completeSelfCheck:false,independentReview:false,completionAuthorized:false});
+}
+
+// Grammar 3 mechanical check (task-scope.mjs sessionTaskProblem): only the explicit
+// `开发: 会话` marks, never a guess at which task needs a session. Findings shaped like
+// checkPrdDraftMechanics' own; empty under grammar 1/2, where the mark is prose, and for
+// a tasks.md the parser already refuses (that finding is reported on its own).
+export function sessionTaskFindings(directory,source,{grammar=TASK_GRAMMAR}={}){
+  if(grammar!==TASK_GRAMMAR)return [];
+  const parsed=parseFeatureTaskText(source,{grammar});
+  if(parsed.error)return [];
+  const problem=sessionTaskProblem(parsed.tasks,parseTaskScopes(source,{grammar}).sessions);
+  return problem?[{feature:directory,code:problem.code,reason:{field:`${directory}/tasks.md`,tasks:problem.tasks,
+    expected:sessionTaskReason(problem)}}]:[];
 }
