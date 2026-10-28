@@ -23,7 +23,7 @@ function fixture(t){
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   return root;
 }
-function fakeWorker(cwd,{value=proposal,mode='normal',timeoutMs=3000,noticeEvents=[],noticeAt=1,onNotice,
+function fakeWorker(cwd,{value=proposal,mode='normal',timeoutMs=3000,noticeEvents=[],noticeAt=1,heartbeats=0,onNotice,
   resultFields={},toolName='Read',toolResultId='read-1',
   assistantContent=[{type:'text',text:'proposal'}]}={}){
   // The timeout mode hangs; the guard ends it if this test process dies first.
@@ -40,7 +40,9 @@ function fakeWorker(cwd,{value=proposal,mode='normal',timeoutMs=3000,noticeEvent
       ${JSON.stringify(mode)}==='write'?[{type:'tool_use',id:'bad',name:'Write',input:{}}]:${JSON.stringify(assistantContent)}}},
       {type:'result',session_id,subtype:${JSON.stringify(mode)}==='failed'?'error_during_execution':'success',
       is_error:${JSON.stringify(mode)}==='failed',num_turns:1,result:JSON.stringify(value),...${JSON.stringify(resultFields)}});
-    events.splice(${JSON.stringify(noticeAt)},0,...${JSON.stringify(noticeEvents)});
+    // Heartbeats are generated here: thousands of them inlined would exceed the per-argument limit.
+    const heartbeats=Array.from({length:${JSON.stringify(heartbeats)}},()=>({type:'system',subtype:'thinking_tokens',session_id,estimated_tokens:10}));
+    events.splice(${JSON.stringify(noticeAt)},0,...heartbeats,...${JSON.stringify(noticeEvents)});
     for(const event of events)process.stdout.write(JSON.stringify(event)+'\\n');
   });`;
   return claudeDeveloperWorker({cwd,model:'fixture',timeoutMs,onNotice,spawnProcess:(cli,args,options)=>{
@@ -140,7 +142,7 @@ test('developer thinking events preserve proposal and read tool pairing with dev
   // 回归：长开发会话的思考心跳曾在第 65 条被拒（aihot T-001）；上限与审查端同为 4096。
   for(const [mode,noticeAt,count] of [['normal',1,2],['normal',2,64],['normal',2,65],['normal',2,4096],['read',2,2]]){
     const result=await fakeWorker(root,{mode,noticeAt,
-      noticeEvents:[rateLimit(),...Array.from({length:count},thinkingTokens),thoughts],
+      heartbeats:count,noticeEvents:[rateLimit(),thoughts],
       assistantContent:[...thoughts.message.content,{type:'text',text:'proposal'}]})({prompt:prompt()},control);
     assert.deepEqual(result,baseline);
   }
@@ -151,15 +153,15 @@ test('developer thinking events preserve proposal and read tool pairing with dev
 });
 test('developer thinking preserves initial, terminal, count and unknown-system rejection',async t=>{
   const root=fixture(t),control={signal:new AbortController().signal};
-  for(const [noticeEvents,noticeAt,code] of [
-    [Array.from({length:4097},thinkingTokens),1,'unexpected_event'],
+  for(const [noticeEvents,noticeAt,code,heartbeats=0] of [
+    [[],1,'unexpected_event',4097],
     [[{...thinkingTokens(),subtype:'unknown'}],1,'unexpected_event'],
     [[{...thinkingTokens(),subtype:'init'}],1,'unexpected_event'],
     [[{...thinkingTokens(),session_id:'other'}],1,'session_mismatch'],
     [[thinkingTokens()],0,'missing_init'],
     [[thinkingTokens()],3,'invalid_event'],
   ]){
-    const result=await fakeWorker(root,{noticeEvents,noticeAt})({prompt:prompt()},control);
+    const result=await fakeWorker(root,{noticeEvents,noticeAt,heartbeats})({prompt:prompt()},control);
     assert.deepEqual(result,{status:'unknown',code});
   }
   const result=await fakeWorker(root,{assistantContent:thoughts.message.content})({prompt:prompt()},control);
