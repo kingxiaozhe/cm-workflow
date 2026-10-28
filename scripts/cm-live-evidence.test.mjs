@@ -62,3 +62,48 @@ test('future parallel worktree roots are protected before they exist, including 
   assert.throws(()=>createLiveEvidence({directory:path.join(future,'run','exchange'),kinds:['qa_logic']},
     {protectedRoots:[path.join(alias,'.cm-worktrees')]}),/live_evidence_protected_directory/);
 });
+
+// Batch session member develop (design 3.4): the bridge package travels unchanged
+// and each of the three reply shapes comes back exactly as the session wrote it.
+const bridgePackage={request:{identity:{repositoryId:'r',runId:'task-a',taskId:'T-002',attempt:1},payload:{scope:['docs/qa.md']}},
+  prompt:'Implement T-002',codeProject:'/fixture/app',route:{role:'developer'},editMode:'protected-text-v1',expected:{'docs/qa.md':null}};
+const developRow={...row,kind:'develop',callId:'call-develop',payload:bridgePackage};
+const replies={
+  proposal:{status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+    retrospective:{status:'no_new_lesson',candidates:[],reason:null},requirements:[]},
+    edits:[{path:'docs/qa.md',beforeSha256:null,content:'# QA walk-through\n'}]},
+  blocked:{status:'succeeded',value:{outcome:'blocked',reason:'browser environment unavailable',
+    application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}},edits:[]},
+  failed:{status:'failed',code:'session_unavailable'}};
+for(const [name,reply] of Object.entries(replies))test(`develop live request passes the full bridge package and returns the ${name} reply unchanged`,async t=>{
+  const f=fixture(t);let request;
+  const live=createLiveEvidence({directory:f.directory,kinds:['develop'],timeoutMs:1000},{base:f.root,protectedRoots:[f.project],
+    allowedKinds:['develop'],notify:p=>{request=JSON.parse(fs.readFileSync(p,'utf8'));
+      fs.writeFileSync(p.replace('.request.json','.result.json'),JSON.stringify({type:'host_result',sessionId:request.sessionId,
+        callId:request.callId,requestDigest:request.requestDigest,result:reply}));}});
+  assert.deepEqual(await live.answer(developRow),reply);
+  assert.deepEqual(request,developRow);
+});
+test('develop is opt-in and its wait floor applies to develop only',t=>{
+  const f=fixture(t),options={base:f.root,protectedRoots:[f.project]};
+  assert.throws(()=>createLiveEvidence({directory:f.directory,kinds:['develop']},options),/live_evidence_invalid_config/);
+  const live=createLiveEvidence({directory:f.directory,kinds:['develop','qa_logic'],timeoutMs:1000},
+    {...options,allowedKinds:['develop','qa_logic'],minimumTimeouts:{develop:1860000}});
+  assert.equal(live.timeoutFor('develop'),1860000);assert.equal(live.timeoutFor('qa_logic'),1000);
+  assert.equal(live.timeoutFor('qa_browser'),null);
+  // A longer configured wait is kept; the floor never shortens it.
+  assert.equal(createLiveEvidence({directory:f.directory,kinds:['develop'],timeoutMs:3600000},
+    {...options,allowedKinds:['develop'],minimumTimeouts:{develop:1860000}}).timeoutFor('develop'),3600000);
+  for(const minimumTimeouts of [{develop:0},{develop:'1'},{unknown:1000}])
+    assert.throws(()=>createLiveEvidence({directory:f.directory,kinds:['develop']},{...options,allowedKinds:['develop'],minimumTimeouts}),/live_evidence_invalid_limit/);
+});
+test('develop wait uses its floor, not the shorter configured timeout',async t=>{
+  const f=fixture(t);
+  const live=createLiveEvidence({directory:f.directory,kinds:['develop','qa_logic'],timeoutMs:20},{base:f.root,protectedRoots:[f.project],
+    allowedKinds:['develop','qa_logic'],minimumTimeouts:{develop:400}});
+  const started=Date.now();
+  await assert.rejects(live.answer(developRow),/live_evidence_timeout/);
+  assert.ok(Date.now()-started>=400,'develop waits for its floor');
+  const quick=Date.now();await assert.rejects(live.answer({...row,callId:'call-q'}),/live_evidence_timeout/);
+  assert.ok(Date.now()-quick<400,'other kinds keep the configured timeout');
+});
