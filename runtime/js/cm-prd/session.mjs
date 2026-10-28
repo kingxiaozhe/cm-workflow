@@ -6,6 +6,8 @@ import {need,json,digest,shape} from '../cm-ai/effect-contract.mjs';
 import {readExecutionPolicy} from '../cm-ai/execution-policy.mjs';
 import {recoverPrdResponse,readPrdRepairBinding} from './response-recovery.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
+import {TASK_GRAMMAR} from '../spec-task-line.mjs';
+import {PRD_SELF_CHECK_RULES,PRD_SELF_CHECK_RULE_VERSIONS} from './self-check.mjs';
 
 export function readPrdSessionFile(root,relative){
   if(!['state.json','inputs-replaced.json'].includes(relative))return readCmInitSource(root,relative)?.toString('utf8')??null;
@@ -28,6 +30,16 @@ export function replaceSessionFile(root,relative,before,after){
   }finally{if(fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(tmp);}catch(e){if(e.code!=='ENOENT')throw e;}}
 }
 export const MAX_ANSWER_DISCARDS=2;
+// The task grammar and self-check rule a session binds when it is created; they
+// govern only operations it starts later (an active operation keeps its own rule).
+// A session created before they were recorded keeps what was published then, as
+// literals that never follow the current constants.
+export const PRD_SESSION_LEGACY_VERSIONS=Object.freeze({taskGrammar:2,selfCheckRules:3});
+// No state yet: the session about to be created binds the current ones.
+export function prdSessionVersions(state){
+  if(state==null)return {taskGrammar:TASK_GRAMMAR,selfCheckRules:PRD_SELF_CHECK_RULES};
+  return Object.hasOwn(state,'selfCheckRules')?{taskGrammar:state.taskGrammar,selfCheckRules:state.selfCheckRules}:{...PRD_SESSION_LEGACY_VERSIONS};
+}
 export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
   need(/^prd-[a-zA-Z0-9-]{1,80}$/.test(sessionId),'prd_session_id_invalid');
   for(const relative of ['.reviews','.reviews/prd-sessions',`.reviews/prd-sessions/${sessionId}`]){
@@ -45,8 +57,12 @@ export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
   const lockBytes=JSON.stringify({pid:process.pid,nonce:randomUUID()});
   const fd=fs.openSync(lock,'wx',0o600);try{fs.writeFileSync(fd,lockBytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
   let bytes=read(),state=bytes===null?{version:executionPolicy===null?1:2,identity,checkpoint:null,active:null,segments:{},
+    taskGrammar:TASK_GRAMMAR,selfCheckRules:PRD_SELF_CHECK_RULES,
     ...(executionPolicy===null?{}:{executionPolicy:readExecutionPolicy(executionPolicy),responseRepairs:[]})}:JSON.parse(bytes);
   try{need([1,2].includes(state.version)&&digest(state.identity)===digest(identity),'prd_session_identity_changed');
+    need(Object.hasOwn(state,'taskGrammar')===Object.hasOwn(state,'selfCheckRules')&&(!Object.hasOwn(state,'taskGrammar')
+      ||Number.isSafeInteger(state.taskGrammar)&&state.taskGrammar>=2&&state.taskGrammar<=TASK_GRAMMAR
+      &&PRD_SELF_CHECK_RULE_VERSIONS.includes(state.selfCheckRules)),'prd_session_versions_invalid');
     if(state.version===2){readExecutionPolicy(state.executionPolicy);need(Array.isArray(state.responseRepairs),'prd_recovery_binding');}
     else need(executionPolicy===null,'execution_policy_legacy_run');}
   catch(e){fs.unlinkSync(lock);throw e;}
@@ -101,6 +117,7 @@ export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
     begin(request,before,{selfCheckRules=null}={}){need(state.active===null,'prd_operation_recovery_required');
       state.active={request,before,calls:[],...(selfCheckRules===null?{}:{selfCheckRules})};cursor=0;save();},
     selfCheckRules(){return state.active?.selfCheckRules??1;},
+    versions(){return prdSessionVersions(state);},
     replay(){need(state.active!==null,'prd_nothing_to_resume');cursor=0;return json(state.active,12*1024*1024);},
     commit(checkpoint){state.checkpoint=checkpoint;state.active=null;save();},
     checkpoint(checkpoint){state.checkpoint=checkpoint;save();},
