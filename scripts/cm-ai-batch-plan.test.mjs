@@ -374,6 +374,18 @@ test('the CLI writes --workflow-config into every member workflows entry',t=>{
   assert.equal(code,0);
   assert.ok(Object.values(JSON.parse(writes.join('')).config.workflows).every(item=>JSON.stringify(item)===JSON.stringify(workflowConfig)));
 });
+test('grammar 3: a task waiting for the session task, directly or transitively, is refused by the planner',t=>{
+  const text=deps=>[1,2,3].map(n=>`- [ ] T-00${n}: t${n}${scope(`${n}.js`)}${n===3?walkthrough:''}`).join('\n')+'\n\n'+deps.join('\n')+'\n';
+  const refused=(deps,dependents)=>assert.throws(()=>project(t,text(deps),{taskGrammar:3}).plan(legacy),
+    error=>error.code==='session_task_depended_on'&&error.reason.includes(`任务 ${dependents} 直接或间接依赖`)&&error.reason.includes('T-003'),deps.join(' / '));
+  // Declared last, but the dependency order would run T-003 before T-001.
+  refused(['- T-001 依赖 T-003'],'T-001');
+  refused(['- T-001 依赖 T-002','- T-002 依赖 T-003'],'T-001, T-002');
+  // Legal: the session task waits for the others and is the last task the batch runs.
+  const plan=project(t,text(['- T-003 依赖 T-001, T-002']),{taskGrammar:3}).plan(legacy);
+  assert.equal(plan.mode,'batch');assert.equal(plan.config.batch.tasks.at(-1).taskId,'T-003');
+  assert.deepEqual(plan.config.batch.memberDevelopment,{'1.work/T-003':'session'});
+});
 test('grammar 3 session tasks: not final, several, or (defensively) grouped are refused by code',t=>{
   const chain=(marks)=>[1,2,3].map(n=>`- [ ] T-00${n}: t${n}${scope(`${n}.js`)}${marks.includes(n)?walkthrough:''}`).join('\n')+'\n';
   assert.throws(()=>project(t,chain([2]),{taskGrammar:3}).plan(),{code:'session_task_not_final'});

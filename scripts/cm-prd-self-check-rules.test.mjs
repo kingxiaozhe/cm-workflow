@@ -137,6 +137,22 @@ test('a new session binds grammar 3 only where the specs directory has none or g
   const state=JSON.parse(fs.readFileSync(path.join(dir,'.reviews/prd-sessions/prd-g2-fixture/state.json'),'utf8'));
   assert.deepEqual([state.taskGrammar,state.selfCheckRules],[2,3]);
 });
+test('rule 4 refuses a task that waits for the session task, directly or transitively',()=>{
+  const draft=deps=>({draftDigest:'d'.repeat(64),features:[{directory:'1.walk',name:'walk',documents:[
+    {path:'requirements.md',content:'## 功能需求\n1. [F-001] Walk\n- [ ] [AC-001] Walk it.'},
+    {path:'design.md',content:'## 方案摘要\nx'},
+    {path:'tasks.md',content:['- [ ] T-001: Build','  - 范围: `src/a.js`','- [ ] T-002: Wire','  - 范围: `src/b.js`',
+      '- [ ] T-003: Walk','  - 范围: `docs/qa.md`','  - 开发: 会话','','## 依赖关系',...deps,''].join('\n')}]}]});
+  const session=(deps,rules=4)=>checkPrdDraftMechanics(draft(deps),{rules}).findings.filter(item=>item.code.startsWith('session_task'));
+  // The reviewed counterexample: dependencies are legal and T-003 is declared last, yet it would run first.
+  const direct=session(['- T-001 依赖 T-003']);
+  assert.deepEqual(direct.map(item=>[item.code,item.reason.dependents]),[['session_task_depended_on',['T-001']]]);
+  const transitive=session(['- T-001 依赖 T-002','- T-002 依赖 T-003']);
+  assert.deepEqual(transitive.map(item=>[item.code,item.reason.dependents]),[['session_task_depended_on',['T-001','T-002']]]);
+  // The session task waiting for the others, last of all, is the intended shape.
+  assert.deepEqual(session(['- T-002 依赖 T-001','- T-003 依赖 T-002']),[]);
+  assert.deepEqual(session(['- T-001 依赖 T-003'],3),[],'rule 3 keeps 开发: as prose');
+});
 test('rule 4 reads the developer mark and checks session tasks; rules 1-3 keep it as prose',()=>{
   const tasks=['- [ ] T-001: Build','  - 范围: `src/a.js`','  - 开发: 会话','- [ ] T-002: Walk','  - 范围: `docs/qa.md`','','## 依赖关系','- T-002 依赖 T-001',''].join('\n');
   const draft={draftDigest:'d'.repeat(64),features:[{directory:'1.walk',name:'walk',documents:[

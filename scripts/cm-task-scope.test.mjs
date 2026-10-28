@@ -88,7 +88,28 @@ test('a session task is at most one per feature and only its last task',()=>{
   assert.deepEqual(codes(lines(1),2),[]);assert.deepEqual(codes(lines(1,2),2),[]);
   const finding=sessionTaskFindings('1.work',lines(1),{grammar:3})[0];
   assert.deepEqual(finding.reason.tasks,['T-001']);assert.match(finding.reason.expected,/最后一个任务/);
-  assert.equal(sessionTaskProblem([{id:'T-001'},{id:'T-002'}],new Set(['T-002'])),null);
+  assert.equal(sessionTaskProblem([{id:'T-001'},{id:'T-002'}],new Set(['T-002']),new Map()),null);
+});
+
+test('rule 4: no task may wait for the session task, directly or through another task',()=>{
+  const text=(...deps)=>tasksText(['- [ ] T-001: a','  - 范围: `a.js`','- [ ] T-002: b','  - 范围: `b.js`',
+    '- [ ] T-003: walk','  - 范围: `qa.md`','  - 开发: 会话','- [ ] T-004: gone ~~[DROPPED 不做]~~','  - 范围: `d.js`','','## 依赖关系',...deps]);
+  const findings=(...deps)=>sessionTaskFindings('1.work',text(...deps),{grammar:3});
+  // Direct: T-003 is declared last, but the batch would run T-001 after it.
+  const direct=findings('- T-001 依赖 T-003');
+  assert.deepEqual(direct.map(item=>item.code),['session_task_depended_on']);
+  assert.deepEqual([direct[0].reason.tasks,direct[0].reason.dependents],[['T-003'],['T-001']]);
+  assert.match(direct[0].reason.expected,/T-001 直接或间接依赖.*T-003/);
+  // Transitive: T-001 waits for T-002, which waits for T-003.
+  const transitive=findings('- T-001 依赖 T-002','- T-002 依赖 T-003');
+  assert.deepEqual(transitive.map(item=>[item.code,item.reason.dependents]),[['session_task_depended_on',['T-001','T-002']]]);
+  // Legal: the session task waits for the others; a dropped task waiting for it holds
+  // nothing back, nor does a dropped task in the middle of a chain.
+  assert.deepEqual(findings('- T-003 依赖 T-001, T-002','- T-002 依赖 T-001'),[]);
+  assert.deepEqual(findings('- T-004 依赖 T-003'),[]);
+  assert.deepEqual(findings('- T-001 依赖 T-004','- T-004 依赖 T-003'),[]);
+  // Grammar 2 never reads the mark.
+  assert.deepEqual(sessionTaskFindings('1.work',text('- T-001 依赖 T-003'),{grammar:2}),[]);
 });
 
 test('only exact relative file paths in backticks are accepted',()=>{
