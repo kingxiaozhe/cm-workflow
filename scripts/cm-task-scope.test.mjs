@@ -152,7 +152,7 @@ const draft=(tasks)=>({draftDigest:'d',features:[{directory:'1.sample',name:'sam
 const codes=report=>report.findings.map(item=>item.code);
 
 test('rule 3: every task of a new draft must declare its files; earlier rules do not ask',()=>{
-  assert.equal(PRD_SELF_CHECK_RULES,3);
+  assert.equal(PRD_SELF_CHECK_RULES,4,'rule 4 keeps the rule-3 scope check');
   const without=draft('- [ ] T-001: a\n- [ ] T-002: b\n  - 范围: `b.js`\n');
   const report=checkPrdDraftMechanics(without,{rules:3});
   assert.deepEqual(codes(report),['task_scope_missing']);

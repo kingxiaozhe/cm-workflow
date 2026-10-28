@@ -75,7 +75,7 @@ test('an ordinary draft gets the same report under both rules; records match onl
   assert.ok(matchesPrdDraftMechanics(odd,legacy));
   assert.ok(matchesPrdDraftMechanics(odd,checkPrdDraftMechanics(odd,R2)));
   assert.ok(!matchesPrdDraftMechanics(odd,{...legacy,status:'failed'}));
-  assert.throws(()=>checkPrdDraftMechanics(odd,{rules:4}),{code:'prd_self_check_rules_invalid'});
+  assert.throws(()=>checkPrdDraftMechanics(odd,{rules:5}),{code:'prd_self_check_rules_invalid'});
 });
 test('a self-check revision recorded under rule 1 still verifies after rule 2',()=>{
   const sha=value=>createHash('sha256').update(value).digest('hex');
@@ -115,7 +115,7 @@ test('only a fresh draft round and a change proposal use rule 2; re-checks keep 
   assert.match(drive,/draft\.mechanicalSelfCheck=checkPrdDraftMechanics\(draft,prdTaskScopeOptions\(specs,request\.feature\)\);/);
   assert.match(read('review-disposition.mjs'),/scopeOptions=prdTaskScopeOptions\(input\.specs,input\.feature\);[\s\S]*checkPrdDraftMechanics\(draft,scopeOptions\)/);
   assert.doesNotMatch(drive,/PRD_SELF_CHECK_RULES/);
-  assert.match(drive,/const rules=ctx\.operation==='resume'\?ctx\.state\.active\?\.selfCheckRules\?\?1:prdSessionVersions\(ctx\.state\)\.selfCheckRules;/);
+  assert.match(drive,/const rules=ctx\.operation==='resume'\?ctx\.state\.active\?\.selfCheckRules\?\?1:prdSessionVersions\(ctx\.state,ctx\.specs\)\.selfCheckRules;/);
 });
 test('a rule-3 report recorded with the earlier missing-scope hint still matches',()=>{
   const missing=draft('- [ ] T-001: Implement behavior');
