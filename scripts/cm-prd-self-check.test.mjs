@@ -109,12 +109,13 @@ test('only a fresh draft round and a change proposal use rule 2; re-checks keep 
   for(const file of ['review-disposition.mjs','review-correction.mjs','summary.mjs','failed-correction.mjs','self-check-revision.mjs'])
     assert.doesNotMatch(read(file),/PRD_SELF_CHECK_RULES|rules:\s*2/,file);
   // The driver's disposition re-check stays on rule 1 (plus the saved scope record, as the
-  // host's disposition does); its change preflight follows the operation.
+  // host's disposition does); its change preflight follows the operation, and a new
+  // operation the rule its session bound (never the current constant).
   const drive=fs.readFileSync(new URL('./cm-prd-drive.mjs',import.meta.url),'utf8');
   assert.match(drive,/draft\.mechanicalSelfCheck=checkPrdDraftMechanics\(draft,prdTaskScopeOptions\(specs,request\.feature\)\);/);
   assert.match(read('review-disposition.mjs'),/scopeOptions=prdTaskScopeOptions\(input\.specs,input\.feature\);[\s\S]*checkPrdDraftMechanics\(draft,scopeOptions\)/);
-  assert.equal([...drive.matchAll(/PRD_SELF_CHECK_RULES/g)].length,2,'import plus the change preflight rule');
-  assert.match(drive,/const rules=ctx\.operation==='resume'\?ctx\.state\.active\?\.selfCheckRules\?\?1:PRD_SELF_CHECK_RULES;/);
+  assert.doesNotMatch(drive,/PRD_SELF_CHECK_RULES/);
+  assert.match(drive,/const rules=ctx\.operation==='resume'\?ctx\.state\.active\?\.selfCheckRules\?\?1:prdSessionVersions\(ctx\.state\)\.selfCheckRules;/);
 });
 test('a rule-3 report recorded with the earlier missing-scope hint still matches',()=>{
   const missing=draft('- [ ] T-001: Implement behavior');

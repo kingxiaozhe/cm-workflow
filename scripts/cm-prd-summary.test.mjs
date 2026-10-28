@@ -13,6 +13,8 @@ import {inspectPrdSummaryEvidence,createPrdSummaryOwner,publishPrdAwaitingReview
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange} from '../runtime/js/cm-prd/change.mjs';
 import {approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
+import {TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
+import {writeSpecsStatus} from '../runtime/js/specs-status.mjs';
 const sha=content=>createHash('sha256').update(content).digest('hex');
 function fixture(t,{pendingCorrection=false}={}){
   const specs=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-summary-marks-')));
@@ -144,6 +146,23 @@ test('legacy completed history registers notes; current summary publishes the fu
   // First publication: no earlier approval to reinterpret, so it carries the shared grammar.
   assert.equal(status.taskGrammar,2);
   assert.equal(publishPrdAwaitingReview({specs,summary,writeEnabled:true,recover:true}).status,'awaiting_review');
+});
+// Design 3.7: a first publication writes the grammar its session bound; an earlier
+// status keeps its own grammar, and grammar 1 (no field) stays without one.
+test('first publication writes the session-bound grammar; an earlier legacy status keeps none',async t=>{
+  const {specs,mark}=fixture(t);mark();legacy(specs);
+  const summary=await summaryOwner()(specs,currentScope),file=path.join(specs,'.cm-specs-status');
+  for(const taskGrammar of [1,TASK_GRAMMAR+1,'2'])
+    assert.throws(()=>publishPrdAwaitingReview({specs,summary,writeEnabled:true,taskGrammar}),/prd_task_grammar_invalid/);
+  assert.equal(fs.existsSync(file),false);
+  assert.equal(publishPrdAwaitingReview({specs,summary,writeEnabled:true,taskGrammar:TASK_GRAMMAR}).status,'awaiting_review');
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).taskGrammar,TASK_GRAMMAR);
+  const status=JSON.parse(fs.readFileSync(file,'utf8'));delete status.taskGrammar;
+  writeSpecsStatus(specs,{...status,status:'approved',approval:{response:'开始',at:status.at}});
+  const next=await summaryOwner()(specs,currentScope);
+  assert.equal(publishPrdAwaitingReview({specs,summary:next,writeEnabled:true,taskGrammar:TASK_GRAMMAR}).status,'awaiting_review');
+  const published=JSON.parse(fs.readFileSync(file,'utf8'));
+  assert.equal(published.status,'awaiting_review');assert.equal(Object.hasOwn(published,'taskGrammar'),false);
 });
 test('current missing disposition remains a blocker',async t=>{
   const {specs}=fixture(t);fs.unlinkSync(path.join(specs,'.reviews/prd-appendix-split-disposition.json'));

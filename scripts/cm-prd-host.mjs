@@ -10,7 +10,6 @@ import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {inspectCmPrdAdmission} from './cm-prd-entry.mjs';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
-import {PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
 import {runPrdHostReview,validatePrdReviewMode} from '../runtime/js/cm-prd/review-host.mjs';
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
 import {createPrdDispositionOwner} from '../runtime/js/cm-prd/review-disposition.mjs';
@@ -198,7 +197,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         analysis.validateCurrent();
         need(summaryState!==null&&summaryState.summaryDigest===request.summaryDigest,'prd_summary_not_ready');
         need(!reviewController.signal.aborted,'cancelled');
-        const result=publishPrdAwaitingReview({specs:admission.specs,summary:summaryState,writeEnabled:specWriteEnabled,recover:replaying});
+        const result=publishPrdAwaitingReview({specs:admission.specs,summary:summaryState,writeEnabled:specWriteEnabled,recover:replaying,
+          taskGrammar:session.versions().taskGrammar});
         // Even an uncertain status write must not be silently retried.
         publishedSummary=true;
         if(result.status==='awaiting_review')for(const phase of ['generated','awaiting_review'])
@@ -336,7 +336,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
             packageDigest:prepared.packageDigest,authorContextId:original.payload.authorContextId,response})};
           session.commit(checkpoint());return status();
         }
-      }else{replaying=false;session.begin(request,checkpoint(),{selfCheckRules:PRD_SELF_CHECK_RULES});}
+      }else{
+        // A new operation runs under the rule its session bound at creation, never the current one.
+        replaying=false;session.begin(request,checkpoint(),{selfCheckRules:session.versions().selfCheckRules});}
       if(!contextLogged){
         const segment=session.segment('context_load');
         record({event:'progress',phase:'start',at:contextStartedAt,data:{operation_id:'prd-context',phase_name:'context_load',segment}});

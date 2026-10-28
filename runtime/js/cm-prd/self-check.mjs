@@ -51,6 +51,9 @@ function outsideFences(source){
 // instead of a session's guess. Tasks an approved tasks.md already had may stay
 // without scope (they simply run serially).
 export const PRD_SELF_CHECK_RULES=3;
+// Every rule a session, an operation or a recorded report may carry. Earlier rules
+// stay listed explicitly so raising the current one never drops them.
+export const PRD_SELF_CHECK_RULE_VERSIONS=Object.freeze([...new Set([PRD_SELF_CHECK_RULES,3,2,1])]);
 // Task- or dependency-looking lines the parser skips: a task written this way
 // would silently drop out of execution.
 const TASK_LIKE=/^\s*-\s*\[[^\]]*\]\s+(?:~~)?T-/,DEPENDENCY_LIKE=/^\s*-\s*T-\S*\s+依赖(?:\s|$)/;
@@ -92,7 +95,7 @@ const SCOPE_HINT='每个任务下写一行缩进子项，例如 - 范围: `src/a
 const SCOPE_HINTS=[SCOPE_HINT,'每个任务下写一行缩进子项，例如 - 范围: `src/a.js`, `test/a.test.js`；列不出文件的任务写 - 范围: 串行'];
 export function matchesPrdDraftMechanics(draft,recorded,options={}){
   const want=digest(recorded);
-  return [PRD_SELF_CHECK_RULES,2,1].some(rules=>{
+  return PRD_SELF_CHECK_RULE_VERSIONS.some(rules=>{
     const report=checkPrdDraftMechanics(draft,{...options,rules});
     return SCOPE_HINTS.some(hint=>digest({...report,findings:report.findings.map(item=>
       item.code==='task_scope_missing'?{...item,reason:{...item.reason,expected:hint}}:item)})===want);
@@ -104,7 +107,7 @@ export function matchesPrdDraftMechanics(draft,recorded,options={}){
 // carried scopes (task-scope-record.mjs), so a correction cannot drop them while
 // every other check stays on its old rule.
 export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1,scopes=null}={}){
-  need([1,2,PRD_SELF_CHECK_RULES].includes(rules),'prd_self_check_rules_invalid');
+  need(PRD_SELF_CHECK_RULE_VERSIONS.includes(rules),'prd_self_check_rules_invalid');
   const findings=[],features=[];
   for(const feature of draft.features){
     const files=new Map(feature.documents.map(document=>[document.path,document.content]));
