@@ -155,6 +155,13 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
       if(missing.length)add('task_scope_missing',{field:`${feature.directory}/tasks.md`,tasks:missing,
         expected:SCOPE_HINT});
     }
+    else if(grammar3&&!parsed.error){
+      // A rule-4 re-check without the scope check still reports the 开发 line's own
+      // grammar errors (bad value, repeated, not under a task), not the rest of rule 3.
+      const problems=parseTaskScopes(files.get('tasks.md'),{grammar:TASK_GRAMMAR}).errors.filter(item=>item.developer)
+        .map(item=>`${item.taskId??'(无任务)'} 第 ${item.line} 行：${item.message}`);
+      if(problems.length)add('task_scope_invalid',{field:`${feature.directory}/tasks.md`,problems:problems.slice(0,10)});
+    }
     if(grammar3&&!parsed.error)for(const item of sessionTaskFindings(feature.directory,files.get('tasks.md')))add(item.code,item.reason);
     if(files.has('test-cases.json')){
       let cases;try{cases=JSON.parse(files.get('test-cases.json'));}catch{add('test_cases_invalid');}

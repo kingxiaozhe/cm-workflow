@@ -48,12 +48,14 @@ function pathList(raw){
 }
 
 // {tasks: Map<taskId,{scope,tests,device,line}>, serial, sessions: Set<taskId>,
-// errors: [{taskId,line,message}]}. A task without any scope sub-item is simply
-// absent from `tasks`; `sessions` holds the tasks marked 开发: 会话 (grammar 3).
+// errors: [{taskId,line,message,developer?}]}. A task without any scope sub-item is simply
+// absent from `tasks`; `sessions` holds the tasks marked 开发: 会话 (grammar 3), and
+// `developer: true` marks the errors of that 开发 line itself.
 export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
   const tasks=new Map(),errors=[],sessions=new Set(),developers=new Set();let current=null;
   const developer=grammar===TASK_GRAMMAR;
-  const fail=(line,message)=>errors.push({taskId:current?.id??null,line:line.index+1,message});
+  const fail=(line,message,developer=false)=>errors.push({taskId:current?.id??null,line:line.index+1,message,
+    ...(developer?{developer:true}:{})});
   for(const line of taskLines(text,{grammar})){
     if(!line.body.trim())continue;
     if(line.declaration){current={id:line.declaration.id,indent:indentOf(line.body),fields:new Map()};continue;}
@@ -65,12 +67,12 @@ export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
     if(developer&&match&&(DEVELOPER_KEYS.has(match[2])||DEVELOPER_KEYS.has(match[2].toLowerCase()))){
       const value=developerValue(match[3].trim());
       if(current===null){
-        if(value!==null)errors.push({taskId:null,line:line.index+1,message:`${match[2]} 不在任何任务行下面（要缩进写在任务行的下一行，用空格缩进）`});
+        if(value!==null)errors.push({taskId:null,line:line.index+1,message:`${match[2]} 不在任何任务行下面（要缩进写在任务行的下一行，用空格缩进）`,developer:true});
         continue;
       }
-      if(developers.has(current.id)){fail(line,`${match[2]} 重复`);continue;}
+      if(developers.has(current.id)){fail(line,`${match[2]} 重复`,true);continue;}
       developers.add(current.id);
-      if(value===null){fail(line,'开发只能写「会话」或 session；由开发进程开发时不写这一项');continue;}
+      if(value===null){fail(line,'开发只能写「会话」或 session；由开发进程开发时不写这一项',true);continue;}
       if(value==='session')sessions.add(current.id);
       continue;
     }

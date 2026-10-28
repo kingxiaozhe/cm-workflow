@@ -169,6 +169,35 @@ test('rule 4 reads the developer mark and checks session tasks; rules 1-3 keep i
   assert.ok(!badCodes(3).includes('task_scope_invalid'),'rule 3 reads tasks.md as grammar 2, where the line is prose');
 });
 
+// R2-03: a re-check that carries only `sessionTasks` (no scope record) still rejects the
+// 开发 line's own grammar errors, without the rest of rule 3's scope check.
+test('a sessionTasks-only re-check reports a bad, repeated or stray developer line',()=>{
+  const draft=lines=>({draftDigest:'d'.repeat(64),features:[{directory:'1.walk',name:'walk',documents:[
+    {path:'requirements.md',content:'## 功能需求\n1. [F-001] Walk\n- [ ] [AC-001] Walk it.'},
+    {path:'design.md',content:'## 方案摘要\nx'},{path:'tasks.md',content:[...lines,''].join('\n')}]}]});
+  const invalid=(lines,options)=>checkPrdDraftMechanics(draft(lines),options).findings.filter(item=>item.code==='task_scope_invalid');
+  const only={rules:1,sessionTasks:['1.walk']};
+  // T-001 has no scope at all: the scope check stays off, so only the 开发 line can fail.
+  const valid=['- [ ] T-001: Build','- [ ] T-002: Walk','  - 开发: 会话'];
+  assert.deepEqual(invalid(valid,only),[]);
+  for(const [lines,message] of [
+    [['- [ ] T-001: Build','- [ ] T-002: Walk','  - 开发: 外包'],'开发只能写'],
+    [['- [ ] T-001: Build','- [ ] T-002: Walk','  - 开发: 会话','  - 开发: 会话'],'重复'],
+    [['- 开发: 会话','- [ ] T-001: Build'],'不在任何任务行下面']]){
+    for(const options of [only,{...only,rules:2}]){
+      const found=invalid(lines,options);
+      assert.equal(found.length,1,`${lines.join(' / ')} rules ${options.rules}`);
+      assert.match(found[0].reason.problems.join('\n'),new RegExp(message));
+    }
+    assert.deepEqual(invalid(lines,{rules:1}),[],'without the rule-4 record the line stays prose');
+  }
+  // With the scope record too, the scope check reports it once, not twice.
+  const both=invalid(['- [ ] T-001: Build','  - 范围: `src/a.js`','- [ ] T-002: Walk','  - 范围: `docs/qa.md`','  - 开发: 外包'],
+    {...only,scopes:{'1.walk':{exempt:[]}}});
+  assert.equal(both.length,1);
+  assert.equal(both[0].reason.problems.length,1);
+});
+
 // R1-03: re-checks of saved files (correction, disposition, summary, driver) run
 // outside the saving operation; the task-scope record carries a rule-4 save's rule.
 test('a save records rule 4 for the re-checks; an earlier rule or an operation without a rule keeps the old record',t=>{
