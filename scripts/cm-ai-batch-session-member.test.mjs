@@ -150,18 +150,23 @@ test('factory: a user default changed after construction refuses a session membe
 // The batch host with createCmAiBatch and the factory stubbed, so production parsing
 // and executionFor run while the factory boundary is captured (as cm-ai-batch-host.test.mjs).
 const cli=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
-async function stubbedHost(root){
+async function stubbedHost(root,{parallel=false}={}){
   const stub=path.join(root,'stub.mjs'),host=path.join(root,'batch-host.mjs');
   const hostModule=new URL('./cm-ai-host.mjs',import.meta.url).href,sessionModule=new URL('../runtime/js/cm-ai/host-session.mjs',import.meta.url).href;
   fs.writeFileSync(stub,`
-export {readConversationReviewConfiguration,readConversationReviewConfigurationValue,readConversationProtection,runReviewPreflight} from ${JSON.stringify(hostModule)};
+export {readConversationReviewConfiguration,readConversationReviewConfigurationValue,readConversationProtection} from ${JSON.stringify(hostModule)};
+import {syntheticReviewConfig} from ${JSON.stringify(new URL('./cm-ai-host-fixture.mjs',import.meta.url).href)};
+// A parallel member's review loopback, recorded by runtime instead of spawning a CLI.
+export const preflights=[];
+export async function runReviewPreflight(definition,{model,runtime}){preflights.push(runtime);return syntheticReviewConfig(definition.codeProject,runtime,model);}
 export {parseHostInputLimit,inputLimitReason} from ${JSON.stringify(sessionModule)};
 export const calls=[];export let scheduler;
 export {batchTaskRunId,BATCH_MEMBER_ACTIONS} from ${JSON.stringify(new URL('./cm-ai-batch-run.mjs',import.meta.url).href)};
 export function createConversationExecution(...args){calls.push(args);return {};}
 export function createCmAiBatch(options){scheduler=options;return {async handle(){
   for(const task of options.configuration.tasks)await options.executionFor({feature:task.feature,identity:{taskId:task.taskId},
-    codeProject:options.configuration.codeProject},{parallelMember:false});return {};}};}
+    codeProject:options.configuration.codeProject},{parallelMember:${parallel}&&(options.configuration.parallel??[]).flat().includes(task.feature+'/'+task.taskId)});
+  return {};}};}
 export async function serveCmAiHost({host}){await host.handle({});}
 `);
   const stubUrl=pathToFileURL(stub).href;
@@ -222,4 +227,43 @@ test('batch host: a legacy provider grant cannot name a session member',async t=
   stderr='';assert.equal(await main([...base,'--allow-provider-development','1.work/T-001:1'],io),0,stderr);
   assert.equal(capture.calls.at(-1)[8].memberDevelopment,'session');
   assert.equal(Object.hasOwn(capture.calls.at(-1)[8],'reviewRuntime'),false,'legacy batches keep their reviewer');
+});
+
+// Found by the third sample run: the project declares Claude as coder and Codex as
+// reviewer, and the batch has a parallel group. The session member's coder is the host,
+// so the host runs with --runtime claude; a parallel member's review loopback must still
+// use the declared reviewer (codex), not the host runtime.
+const claudeCodesRoles='version: 1\nruntimes: {available: both}\nroles:\n  coder: {adapter: claude-cli, source: subscription}\n  reviewer: {adapter: codex-cli, source: subscription}\n';
+test('batch host: Claude codes and Codex reviews; --runtime claude keeps the parallel members on the Codex reviewer',async t=>{
+  const text=['- [ ] T-001: t1'+scope('t1.js'),'- [ ] T-002: t2'+scope('t2.js'),'- [ ] T-003: t3'+scope('t3.js')+session,'',
+    '## 依赖关系','','- T-003 依赖 T-001, T-002',''].join('\n');
+  const f=specs(t,text),{batch,workflows}=f.plan().config;
+  assert.deepEqual(batch.parallel,[['1.work/T-001','1.work/T-002']]);
+  fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),claudeCodesRoles);
+  const write=(name,value)=>{const file=path.join(f.root,name);fs.writeFileSync(file,JSON.stringify(value));return file;};
+  const files={bundle:write('batch.json',{batch,workflows}),control:write('control.json',providerPolicy),
+    review:write('review.json',syntheticReviewConfig(f.codeProject,'codex')),
+    protected:write('protected.json',{model:'fixture-coder',checkCommands:[{id:'syntax',command:[process.execPath,'--check','t1.js']}],timeoutMs:12345})};
+  const {main,capture}=await stubbedHost(f.root,{parallel:true});
+  let stderr='';const io={input:{},output:{write(){}},error:{write(value){stderr+=value;}}};
+  const args=(...extra)=>['serve','--config',files.bundle,'--host-context','session-member-host','--control-config',files.control,
+    '--review-config',files.review,'--protected-config',files.protected,...extra];
+  // Without --runtime the host is taken as codex, which is not the declared coder: refused before any member, with the fix in the reason.
+  assert.equal(await main(args(),io),1);
+  const refused=JSON.parse(stderr).error;
+  assert.equal(refused.code,'session_coder_runtime_mismatch');
+  assert.match(refused.reason,/--runtime claude/);
+  assert.equal(capture.calls.length,0);
+  stderr='';assert.equal(await main(args('--runtime','claude'),io),0,stderr);
+  const byTask=Object.fromEntries(capture.calls.map(call=>[call[0].identity.taskId,call]));
+  for(const id of ['T-001','T-002']){
+    const [,,,memberReview,,,,runtime,options]=byTask[id];
+    assert.deepEqual(options.providerDevelopment,{model:'fixture-coder',attempt:1,coderRuntime:'claude',reviewerRuntime:'codex'});
+    assert.equal(options.parallelMember,true);assert.equal(runtime,'claude');
+    assert.equal(memberReview.preflight.provider,'codex',`${id} review loopback runs on the declared reviewer`);
+  }
+  assert.deepEqual(capture.preflights,['codex','codex']);
+  const [,,,review,,,,runtime,options]=byTask['T-003'];
+  assert.equal(options.memberDevelopment,'session');assert.equal(options.reviewRuntime,'codex');assert.equal(runtime,'claude');
+  assert.equal(review.preflight.provider,'codex');
 });

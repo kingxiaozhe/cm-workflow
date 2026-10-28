@@ -279,7 +279,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // declared coder; it is reviewed by the declared reviewer like the provider members
     // (reviewRuntime), never by the host itself.
     const sessionReviewRuntime=controlPolicy?.development==='provider'&&sessionMembers.size?routes.reviewerRuntime:null;
-    if(sessionReviewRuntime!==null)need(routes.coderRuntime===(runtime??'codex'),'session_coder_runtime_mismatch');
+    if(sessionReviewRuntime!==null&&routes.coderRuntime!==(runtime??'codex'))
+      throw Object.assign(new Error('session_coder_runtime_mismatch'),{code:'session_coder_runtime_mismatch',
+        reason:`成员 ${[...sessionMembers].join(', ')} 由当前会话开发，宿主运行时必须是项目声明的写代码方 ${routes.coderRuntime}；`
+          +`现在是 ${runtime??'codex（未传 --runtime 时的缺省值）'}。在 PLAN.permissions 加 --runtime ${routes.coderRuntime}`});
     review=review===null?null:readConversationReviewConfiguration(review,externalModels?.providers[routes.reviewerRuntime]??null);
     need(!developments.size||providerConfig!==null,'protected_configuration_required');
     // Same launch-time assertion as the single-task host, evaluated across every
@@ -319,7 +322,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         await freezeBatchExecutionPolicy(batch,executionPolicy);
         freezeBatchExternalModels(batch,externalModels);
         const key=`${definition.feature}/${definition.identity.taskId}`;
-        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,externalModels?routes.reviewerRuntime:runtime??'codex',externalModels?.providers[routes.reviewerRuntime]??null,!reconciling,Boolean(executionPolicy)):review;
+        // A parallel member's review loopback runs on the reviewer: the declared one under a
+        // protected CLI config (the host runtime may be the coder there), else the host runtime.
+        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,routes.reviewerRuntime,externalModels?.providers[routes.reviewerRuntime]??null,!reconciling,Boolean(executionPolicy)):review;
         const execution=createConversationExecution(definition,hostContextId,parallelMember?memberBridge:bridge,memberReview,null,workflows[key],allowQa,runtime??'codex',
           {parallelMember,...(soloMember?{soloMember}:{}),...(controlPolicy?{controlPolicy}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),
             // A batch without an execution table keeps its exact projection.
@@ -355,7 +360,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     try{await serveHostTransport({host,input,output,toolBridge:bridge},inputLimitRaw);}
     finally{if(rawMode)input.setRawMode(false);}
     return 0;
-  }catch(cause){const code=safeCode(cause);error.write(JSON.stringify({error:{code,...(['browser_capability_required','browser_capability_unavailable','invalid_arguments','review_configuration_required','protected_scope',...Object.keys(UNSUPPORTED_REASON)].includes(code)
+  }catch(cause){const code=safeCode(cause);error.write(JSON.stringify({error:{code,...(['browser_capability_required','browser_capability_unavailable','invalid_arguments','review_configuration_required','protected_scope','session_coder_runtime_mismatch',...Object.keys(UNSUPPORTED_REASON)].includes(code)
     &&typeof cause.reason==='string'?{reason:cause.reason}:{}),...(code==='request_too_large'?{reason:inputLimitReason(cause.limit)}:{})}})+'\n');return 1;}
   finally{bridge?.close();}
 }

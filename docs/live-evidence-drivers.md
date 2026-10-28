@@ -53,6 +53,9 @@ v2 控制策略 `development:"provider"` 的批次里，`batch.memberDevelopment
 
 - 有会话成员时，`advance` 的 PLAN 必须在 `liveEvidence.kinds` 声明 `develop`，否则启动前拒绝；
   声明了 `develop` 而批次没有会话成员也拒绝。单任务驾驶员不接受 `develop`。
+- 会话成员的写代码方就是宿主所在的当前会话，所以宿主运行时必须等于项目声明的写代码方：例如 Claude 写、Codex 审时，
+  PLAN.permissions 要带 `--runtime claude`（不传时按 codex 算），否则启动前拒绝 `session_coder_runtime_mismatch`，原因里写明该传什么。
+  开发进程成员（含并行成员）的审查与审查前连通检查始终按项目声明的审查方，不随 `--runtime` 改变。
 - 会话成员不预写 `develop.json`/`develop-a2.json`，驾驶员也不再为它们加 `revision_answer_required` 停点；
   其余成员的静态答案预检不变。第 2 轮由宿主带审查意见另发新请求，第 1 轮回复不能复用。
 - 请求文件是宿主原样的开发请求（`payload` 含完整 `request`、`prompt`、`codeProject`、`editMode`、`expected`）。
