@@ -96,7 +96,9 @@ function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null){
           need(noticeCount<32,'unexpected_event');noticeCount++;
           startupNotice(event.subtype,onNotice);return;
         }
-        need(event.subtype==='thinking_tokens'&&thinkingCount<64,'unexpected_event');thinkingCount++;return;
+        // Long developer turns emit one usage heartbeat per thinking step; same cap as the
+        // reviewer stream (claude-review-stream.mjs), with the 4 MB output limit behind it.
+        need(event.subtype==='thinking_tokens'&&thinkingCount<4096,'unexpected_event');thinkingCount++;return;
       }
       if(event.type==='assistant'){
         // CLI 2.1.x reports an API failure as a synthetic assistant message carrying the

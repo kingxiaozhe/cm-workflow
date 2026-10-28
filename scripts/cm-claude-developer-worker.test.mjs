@@ -137,7 +137,8 @@ const thoughts={type:'assistant',session_id:'synthetic-claude-developer',parent_
 test('developer thinking events preserve proposal and read tool pairing with developer schema',async t=>{
   const root=fixture(t),control={signal:new AbortController().signal};
   const baseline=await fakeWorker(root)({prompt:prompt()},control);
-  for(const [mode,noticeAt,count] of [['normal',1,2],['normal',2,64],['read',2,2]]){
+  // 回归：长开发会话的思考心跳曾在第 65 条被拒（aihot T-001）；上限与审查端同为 4096。
+  for(const [mode,noticeAt,count] of [['normal',1,2],['normal',2,64],['normal',2,65],['normal',2,4096],['read',2,2]]){
     const result=await fakeWorker(root,{mode,noticeAt,
       noticeEvents:[rateLimit(),...Array.from({length:count},thinkingTokens),thoughts],
       assistantContent:[...thoughts.message.content,{type:'text',text:'proposal'}]})({prompt:prompt()},control);
@@ -151,7 +152,7 @@ test('developer thinking events preserve proposal and read tool pairing with dev
 test('developer thinking preserves initial, terminal, count and unknown-system rejection',async t=>{
   const root=fixture(t),control={signal:new AbortController().signal};
   for(const [noticeEvents,noticeAt,code] of [
-    [Array.from({length:65},thinkingTokens),1,'unexpected_event'],
+    [Array.from({length:4097},thinkingTokens),1,'unexpected_event'],
     [[{...thinkingTokens(),subtype:'unknown'}],1,'unexpected_event'],
     [[{...thinkingTokens(),subtype:'init'}],1,'unexpected_event'],
     [[{...thinkingTokens(),session_id:'other'}],1,'session_mismatch'],
