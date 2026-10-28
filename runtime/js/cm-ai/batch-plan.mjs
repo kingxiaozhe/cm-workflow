@@ -155,7 +155,8 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   // feature's last task to run, so nothing may be scheduled after it.
   const lateSession=schedule.findIndex(task=>scopes.sessions.has(task.id));
   if(lateSession!==-1&&lateSession!==schedule.length-1){
-    const problem={code:'session_task_depended_on',tasks:[schedule[lateSession].id],dependents:schedule.slice(lateSession+1).map(task=>task.id)};
+    const after=new Set(schedule.slice(lateSession+1).map(task=>task.id));
+    const problem={code:'session_task_depended_on',tasks:[schedule[lateSession].id],dependents:parsed.tasks.map(task=>task.id).filter(id=>after.has(id))};
     throw Object.assign(new Error(problem.code),{code:problem.code,reason:`${selected}/tasks.md：${sessionTaskReason(problem)}`});
   }
   need(schedule[0].id===admission.nextTask.id,'batch_plan_order_mismatch');
