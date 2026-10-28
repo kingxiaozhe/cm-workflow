@@ -50,7 +50,8 @@ function outsideFences(source){
 // files it may change, so parallel work is decided from the approved tasks.md
 // instead of a session's guess. Tasks an approved tasks.md already had may stay
 // without scope (they simply run serially).
-export const PRD_SELF_CHECK_RULES=3;
+// Rule 4 reads tasks.md as task grammar 3 (`开发: 会话`) and adds the session-task checks.
+export const PRD_SELF_CHECK_RULES=4;
 // Every rule a session, an operation or a recorded report may carry. Earlier rules
 // stay listed explicitly so raising the current one never drops them.
 export const PRD_SELF_CHECK_RULE_VERSIONS=Object.freeze([...new Set([PRD_SELF_CHECK_RULES,3,2,1])]);
@@ -134,7 +135,8 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
     }
     const scope=scopes!==null&&Object.hasOwn(scopes,feature.directory)?scopes[feature.directory]:null;
     if((rules>=3||scope!==null)&&!parsed.error){
-      const scopes=parseTaskScopes(files.get('tasks.md'));
+      // Rules 1-3 predate grammar 3: a `开发:` line there stays prose, as it was then.
+      const scopes=parseTaskScopes(files.get('tasks.md'),{grammar:rules>=4?TASK_GRAMMAR:2});
       const problems=scopes.errors.map(item=>`${item.taskId??'(无任务)'} 第 ${item.line} 行：${item.message}`);
       // 串行 is the scaffold generator's exit (a N.bootstrap feature), not an opt-out for business tasks.
       if(!BOOTSTRAP_FEATURE.test(feature.directory))for(const id of scopes.serial)problems.push(`${id}：范围: 串行 只用于脚手架功能（N.bootstrap），其余任务要列出文件`);
@@ -147,6 +149,7 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
       if(missing.length)add('task_scope_missing',{field:`${feature.directory}/tasks.md`,tasks:missing,
         expected:SCOPE_HINT});
     }
+    if(rules>=4&&!parsed.error)for(const item of sessionTaskFindings(feature.directory,files.get('tasks.md')))add(item.code,item.reason);
     if(files.has('test-cases.json')){
       let cases;try{cases=JSON.parse(files.get('test-cases.json'));}catch{add('test_cases_invalid');}
       if(cases){

@@ -250,7 +250,7 @@ function validate(kind,value,ctx){
       if(ctx.stage==='change_tasks'||ctx.stage==='change_check_failed'){
         // Same rule the host applies: a resumed operation keeps the rule it began
         // under (none recorded = rule 1); a new operation uses the one its session bound.
-        const rules=ctx.operation==='resume'?ctx.state.active?.selfCheckRules??1:prdSessionVersions(ctx.state).selfCheckRules;
+        const rules=ctx.operation==='resume'?ctx.state.active?.selfCheckRules??1:prdSessionVersions(ctx.state,ctx.specs).selfCheckRules;
         try{inspectPrdChangeProposal(inspectPrdChangeSnapshot(ctx.specs),value,ctx.state.checkpoint.change.selected,ctx.config,{rules});}
         catch(e){fail('generate.json 不符合变更草稿或 scope',e.code??e.message);}
       }else{

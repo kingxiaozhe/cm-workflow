@@ -7,6 +7,7 @@ import {readExecutionPolicy} from '../cm-ai/execution-policy.mjs';
 import {recoverPrdResponse,readPrdRepairBinding} from './response-recovery.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {TASK_GRAMMAR} from '../spec-task-line.mjs';
+import {readSpecsStatus} from '../specs-status.mjs';
 import {PRD_SELF_CHECK_RULES,PRD_SELF_CHECK_RULE_VERSIONS} from './self-check.mjs';
 
 export function readPrdSessionFile(root,relative){
@@ -35,9 +36,16 @@ export const MAX_ANSWER_DISCARDS=2;
 // A session created before they were recorded keeps what was published then, as
 // literals that never follow the current constants.
 export const PRD_SESSION_LEGACY_VERSIONS=Object.freeze({taskGrammar:2,selfCheckRules:3});
-// No state yet: the session about to be created binds the current ones.
-export function prdSessionVersions(state){
-  if(state==null)return {taskGrammar:TASK_GRAMMAR,selfCheckRules:PRD_SELF_CHECK_RULES};
+// No state yet: the session about to be created binds the current ones, unless its
+// specs directory was already published under an earlier grammar (a status without
+// taskGrammar is grammar 1, an explicit 2 stays 2): one directory keeps one grammar,
+// so a `开发:` line is never checked as grammar 3 and then published as prose.
+export function prdSessionVersions(state,specs=null){
+  if(state==null){
+    const status=specs===null?{kind:'missing'}:readSpecsStatus(specs);
+    return status.kind==='missing'||status.kind==='valid'&&status.value.taskGrammar===TASK_GRAMMAR
+      ?{taskGrammar:TASK_GRAMMAR,selfCheckRules:PRD_SELF_CHECK_RULES}:{...PRD_SESSION_LEGACY_VERSIONS};
+  }
   return Object.hasOwn(state,'selfCheckRules')?{taskGrammar:state.taskGrammar,selfCheckRules:state.selfCheckRules}:{...PRD_SESSION_LEGACY_VERSIONS};
 }
 export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
@@ -57,7 +65,7 @@ export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
   const lockBytes=JSON.stringify({pid:process.pid,nonce:randomUUID()});
   const fd=fs.openSync(lock,'wx',0o600);try{fs.writeFileSync(fd,lockBytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
   let bytes=read(),state=bytes===null?{version:executionPolicy===null?1:2,identity,checkpoint:null,active:null,segments:{},
-    taskGrammar:TASK_GRAMMAR,selfCheckRules:PRD_SELF_CHECK_RULES,
+    ...prdSessionVersions(null,specs),
     ...(executionPolicy===null?{}:{executionPolicy:readExecutionPolicy(executionPolicy),responseRepairs:[]})}:JSON.parse(bytes);
   try{need([1,2].includes(state.version)&&digest(state.identity)===digest(identity),'prd_session_identity_changed');
     need(Object.hasOwn(state,'taskGrammar')===Object.hasOwn(state,'selfCheckRules')&&(!Object.hasOwn(state,'taskGrammar')
