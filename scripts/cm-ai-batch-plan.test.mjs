@@ -10,7 +10,7 @@ import {main} from './cm-ai-batch-plan.mjs';
 import {planCmAiBatch,parallelSettings} from '../runtime/js/cm-ai/batch-plan.mjs';
 
 const scope=file=>`\n  - 范围: \`${file}\``;
-function project(t,tasks,{feature='1.work',emptyCode=false,caseKinds=null}={}){
+function project(t,tasks,{feature='1.work',emptyCode=false,caseKinds=null,taskGrammar=null}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-plan-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const specsDir=path.join(root,'specs'),codeProject=path.join(root,'code');
@@ -25,7 +25,7 @@ function project(t,tasks,{feature='1.work',emptyCode=false,caseKinds=null}={}){
       cases:caseKinds.map((kind,index)=>({id:`TC-${String(index+1).padStart(3,'0')}`,origin:'user',kind,blocking:true,acIds:['AC-001'],
         taskIds:['T-001'],title:`${kind} fixture`,preconditions:[],steps:['Observe fixture'],expected:['Fixture evidence'],cleanup:[]}))}));
   }
-  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir),...(taskGrammar?{taskGrammar}:{})}));
   return {root,specsDir,codeProject,plan:(settings,workflow)=>planCmAiBatch({specsDir,codeProject,repositoryId:'r',batchId:'plan-batch-1',...(settings?{settings}:{}),...(workflow?{workflow}:{})})};
 }
 // worktree_all:false keeps the earlier planner: only groups of two or more.
@@ -336,4 +336,50 @@ test('the CLI reads --workflow-config and keeps a task hitting a registered QA p
   let code;try{code=main(['--specs-dir',f.specsDir,'--code-project',f.codeProject,'--repository-id','r','--batch-id','plan-batch-1','--workflow-config',workflow]);}
   finally{process.stdout.write=original;}
   assert.equal(code,0);assert.deepEqual(JSON.parse(writes.join('')).groups,[['T-002','T-003']]);
+});
+
+// Grammar 3 (design 3.3/3.5): the session's walkthrough stays in the batch as the
+// serial last task; the plan lists it in batch.memberDevelopment and fills workflows.
+const workflowConfig=Object.freeze({qa:null,documentationPaths:[],applicableAgentFiles:[]});
+const walkthrough='\n  - 开发: 会话';
+test('grammar 3: the session last task stays serial in the batch and is listed in memberDevelopment',t=>{
+  const tasks=diamond().replace(`- [ ] T-004: final${scope('d.js')}`,`- [ ] T-004: final${scope('d.js')}${walkthrough}`);
+  const f=project(t,tasks,{taskGrammar:3}),plan=f.plan(legacy,workflowConfig);
+  assert.deepEqual(plan.groups,[['T-002','T-003']]);
+  assert.deepEqual(plan.config.batch.tasks.map(task=>task.taskId),['T-001','T-002','T-003','T-004']);
+  assert.deepEqual(plan.config.batch.memberDevelopment,{'1.work/T-004':'session'});
+  assert.deepEqual(Object.keys(plan.config.batch),['version','repositoryId','batchId','specsDir','codeProject','tasks','parallel','memberDevelopment']);
+  assert.deepEqual(Object.values(plan.config.workflows),[workflowConfig,workflowConfig,workflowConfig,workflowConfig]);
+  // Under grammar 2 the same bytes have no session task: the field is absent.
+  const two=project(t,tasks,{taskGrammar:2}).plan(legacy,workflowConfig);
+  assert.equal(Object.hasOwn(two.config.batch,'memberDevelopment'),false);
+});
+test('without a session task the plan has the exact pre-grammar-3 shape; a workflow config fills workflows',t=>{
+  for(const taskGrammar of [null,2,3]){
+    const f=project(t,diamond(),{taskGrammar}),plan=f.plan(legacy);
+    assert.deepEqual(plan.config,{batch:{version:1,repositoryId:'r',batchId:'plan-batch-1',specsDir:f.specsDir,codeProject:f.codeProject,
+      tasks:[['T-001','a.js'],['T-002','b.js'],['T-003','c.js'],['T-004','d.js']].map(([taskId,file])=>({feature:'1.work',taskId,scope:[file],requirements:[]})),
+      parallel:[['1.work/T-002','1.work/T-003']]},
+      workflows:{'1.work/T-001':null,'1.work/T-002':null,'1.work/T-003':null,'1.work/T-004':null}});
+    assert.deepEqual(f.plan(legacy,workflowConfig).config.workflows,Object.fromEntries(['T-001','T-002','T-003','T-004'].map(id=>[`1.work/${id}`,workflowConfig])));
+  }
+});
+test('the CLI writes --workflow-config into every member workflows entry',t=>{
+  const f=project(t,diamond()),file=path.join(f.root,'workflow.json');
+  fs.writeFileSync(file,JSON.stringify(workflowConfig));
+  const writes=[];const original=process.stdout.write.bind(process.stdout);
+  process.stdout.write=chunk=>{writes.push(String(chunk));return true;};
+  let code;try{code=main(['--specs-dir',f.specsDir,'--code-project',f.codeProject,'--repository-id','r','--batch-id','plan-batch-1','--workflow-config',file]);}
+  finally{process.stdout.write=original;}
+  assert.equal(code,0);
+  assert.ok(Object.values(JSON.parse(writes.join('')).config.workflows).every(item=>JSON.stringify(item)===JSON.stringify(workflowConfig)));
+});
+test('grammar 3 session tasks: not final, several, or (defensively) grouped are refused by code',t=>{
+  const chain=(marks)=>[1,2,3].map(n=>`- [ ] T-00${n}: t${n}${scope(`${n}.js`)}${marks.includes(n)?walkthrough:''}`).join('\n')+'\n';
+  assert.throws(()=>project(t,chain([2]),{taskGrammar:3}).plan(),{code:'session_task_not_final'});
+  assert.throws(()=>project(t,chain([2,3]),{taskGrammar:3}).plan(),{code:'session_task_multiple'});
+  assert.equal(project(t,chain([2]),{taskGrammar:2}).plan().mode,'batch','grammar 2 ignores the mark');
+  // The final task is never a group member; one marked session is still listed alone.
+  const plan=project(t,chain([3]),{taskGrammar:3}).plan();
+  assert.ok(plan.groups.every(group=>!group.includes('T-003')));assert.deepEqual(plan.config.batch.memberDevelopment,{'1.work/T-003':'session'});
 });
