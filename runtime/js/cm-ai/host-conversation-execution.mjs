@@ -191,6 +191,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
   // Preserve P4a's unauthorizable placeholder bytes for existing unconfigured runs.
   const reviewProvider=review?reviewerRuntime:'codex', adapterId=`${reviewProvider}-review-adapter`;
   // Reread role declarations at each boundary; never switch a bound invocation.
+  // A session member's review (bound pair checked at construction) is rechecked too.
   // onWorker (provider development, task-runner.mjs) journals the worker's
   // identity right before and right after the spawn; a journal failure kills
   // the new process group like a refused role route does.
@@ -380,7 +381,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       run:(request,control)=>{
         need(review!==null,'review_configuration_required');
         let observedUsage=null;const usageLog=executionPolicy?createNativeUsageLog({definition,request,provider:reviewerRuntime,role:'reviewer'}):null;
-        const selectedOptions={...reviewOptions,...(usageLog?{onUsageClaim:()=>usageLog.claimed(),onUsage:value=>{observedUsage=value;}}:{}),...(provider?{spawnProcess:dispatchSpawn('reviewer',request.identity,control.signal)}:{})};
+        const selectedOptions={...reviewOptions,...(usageLog?{onUsageClaim:()=>usageLog.claimed(),onUsage:value=>{observedUsage=value;}}:{}),...(provider||sessionMember&&options.reviewRuntime!==undefined?{spawnProcess:dispatchSpawn('reviewer',request.identity,control.signal)}:{})};
         return progress(request,control,'review_starting',async observation=>{
           const observedControl={...control,onEvent:event=>{
             control.onEvent(event);

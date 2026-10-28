@@ -105,6 +105,31 @@ test('factory: under a provider policy a session member carries no providerDevel
   }finally{bridge.close();fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
+// Review R1-01: a session member's review is rechecked against the declared pair right
+// before dispatch, like a provider member's; the legacy --review-runtime session is not.
+test('factory: a user default changed after construction refuses a session member review before dispatch',async()=>{
+  const f=hostFixture(),bridge=createHostToolBridge(),userFile=path.join(process.env.CM_WORKFLOW_HOME,'runtimes.yml');
+  try{
+    fs.mkdirSync(path.dirname(userFile),{recursive:true});
+    const preset=name=>fs.writeFileSync(userFile,`runtimes: {available: ${name==='codex-only'?'codex':'both'}}\npreset: ${name}\n`);
+    const definition=readRunDefinition(f.config),protection={checkCommands:[{id:'syntax',command:[process.execPath,'--check','target.mjs']}],timeoutMs:5000};
+    const make=options=>createConversationExecution(definition,'session-member-host',bridge,syntheticReviewConfig(f.codeProject,'claude'),null,null,false,'codex',options);
+    // An empty request: the recheck runs before the request is read, so only a run past it reaches invalid_input.
+    const reviewOnce=execution=>execution.reviewers[0].run({},{signal:new AbortController().signal,onEvent(){}});
+    preset('codex-codes');
+    const member=make({controlPolicy:providerPolicy,protection,memberDevelopment:'session',reviewRuntime:'claude'});
+    const providerMember=make({controlPolicy:providerPolicy,protection,providerDevelopment:{model:'fixture',attempt:1,coderRuntime:'codex',reviewerRuntime:'claude'}});
+    const legacy=make({reviewRuntime:'claude'});
+    preset('codex-only');
+    // Refused synchronously, before any worker or review process exists.
+    assert.throws(()=>reviewOnce(member),{code:'runtime_selection_mismatch'});
+    assert.throws(()=>reviewOnce(providerMember),{code:'runtime_selection_mismatch'});
+    // The legacy session path keeps its old dispatch: no recheck, it goes on to read the request.
+    await assert.rejects(reviewOnce(legacy),{code:'invalid_input'});
+    preset('codex-codes');await assert.rejects(reviewOnce(member),{code:'invalid_input'});
+  }finally{fs.rmSync(userFile,{force:true});bridge.close();fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
 // The batch host with createCmAiBatch and the factory stubbed, so production parsing
 // and executionFor run while the factory boundary is captured (as cm-ai-batch-host.test.mjs).
 const cli=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
