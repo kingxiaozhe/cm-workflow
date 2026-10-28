@@ -505,3 +505,26 @@ test('completion_rework accepts a reviewed mode-only repair (real CLI)',t=>{
   assert.equal(run('decision',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'approved');
   assert.equal(run('complete',{identity:{...identity,attempt:2},packageDigest:revised.packageDigest}).state,'fixture_completed');
 });
+
+// Design 3.4: a session member of a v2 provider batch answers develop only live.
+test('v2 provider batch with a session member refuses a plan without live develop before launch',t=>{
+  const f=fixture(t,true),run=path.join(f.root,'run.json'),config=JSON.parse(fs.readFileSync(run,'utf8'));
+  config.batch.memberDevelopment={[key]:'session'};fs.writeFileSync(run,JSON.stringify(config));
+  fs.writeFileSync(path.join(f.root,'control.json'),JSON.stringify({...policy,development:'provider'}));
+  const r=f.drive(f.plan({permissions:['--protected-config','protected.json','--review-config','review.json']}));
+  assert.equal(r.status,2,r.stderr);assert.match(r.stderr,/1\.work\/T-001.*liveEvidence\.kinds 需要声明 develop/);
+  assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews/.execution')),false);
+});
+// Design 3.5: a new qa:"run" batch needs every member's QA workflow; an existing batch keeps its boundary.
+test('new v2 qa:"run" batch with a member lacking its QA workflow is refused with batch_workflow_missing',t=>{
+  const f=fixture(t,true,true),run=path.join(f.root,'run.json'),config=JSON.parse(fs.readFileSync(run,'utf8'));
+  config.workflows[key]=null;fs.writeFileSync(run,JSON.stringify(config));
+  const r=f.drive(f.plan());
+  assert.equal(r.status,2,r.stderr);assert.match(r.stderr,/batch_workflow_missing: .*1\.work\/T-001.*cm-ai-batch-plan --workflow-config/);
+  assert.equal(fs.existsSync(path.join(f.specsDir,'.reviews/.execution')),false);
+  // An existing batch (its scheduler rows are in the project log) is not refused by this new check.
+  fs.writeFileSync(path.join(f.specsDir,'运行日志.jsonl'),JSON.stringify({workflow:'cm-ai',event:'decision',run_id:'v2-batch-drive-run',phase:'batch_start'})+'\n');
+  const resumed=f.drive(f.plan({mode:'resume',originalHostContext:'v2-fixture-host'}));
+  // The driver launches the host, which keeps judging the batch as before (here the fake log mismatches its plan).
+  assert.doesNotMatch(resumed.stderr,/batch_workflow_missing/);assert.equal(JSON.parse(resumed.stdout).requestId,'drive',resumed.stderr);
+});

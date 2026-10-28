@@ -10,7 +10,8 @@
 
 | 驾驶员 | 允许的 kinds |
 | --- | --- |
-| `cm-ai-drive.mjs`、`cm-ai-batch-drive.mjs` | `qa_logic`、`qa_browser`、`verification_precheck` |
+| `cm-ai-drive.mjs` | `qa_logic`、`qa_browser`、`verification_precheck` |
+| `cm-ai-batch-drive.mjs` | `qa_logic`、`qa_browser`、`verification_precheck`、`develop`（只给会话成员，见下节） |
 | `cm-prd-drive.mjs` | `prd_materials` |
 | `cm-test-drive.mjs` | `qa_browser` |
 
@@ -44,6 +45,24 @@ timeoutMs 为 1..3600000 毫秒，默认 900000；宿主自己的调用超时仍
 workflow.qa.timeoutMs 明确调整。回复文件上限默认 64 KiB；cm-ai 两个驾驶员沿用宿主
 `--input-limit`。超限、非法 JSON、链接、非普通文件或身份不匹配均停止并关闭宿主，不生成结果。
 请求文件留存供诊断，包含本地任务材料，使用后由用户清理私有 exchange。
+
+## 批次会话成员的实时开发（develop）
+
+v2 控制策略 `development:"provider"` 的批次里，`batch.memberDevelopment` 写成
+`{"功能/任务":"session"}` 的成员由当前会话开发，其余成员仍由开发进程开发；没有这个字段的旧批次行为不变。
+
+- 有会话成员时，`advance` 的 PLAN 必须在 `liveEvidence.kinds` 声明 `develop`，否则启动前拒绝；
+  声明了 `develop` 而批次没有会话成员也拒绝。单任务驾驶员不接受 `develop`。
+- 会话成员不预写 `develop.json`/`develop-a2.json`，驾驶员也不再为它们加 `revision_answer_required` 停点；
+  其余成员的静态答案预检不变。第 2 轮由宿主带审查意见另发新请求，第 1 轮回复不能复用。
+- 请求文件是宿主原样的开发请求（`payload` 含完整 `request`、`prompt`、`codeProject`、`editMode`、`expected`）。
+  会话**不直接改代码根**，只回受保护编辑提案，驾驶员原样交回宿主，由宿主核对后应用并跑检查：
+  - 完成：`{"status":"succeeded","value":{"outcome":…,"application":…,"retrospective":…,"requirements":…},"edits":[{"path":…,"beforeSha256":…,"content":…}]}`；
+  - 业务上做不了（如走查环境不可用）：`{"status":"succeeded","value":{"outcome":"blocked","reason":…,…},"edits":[]}`，任务停在 blocked 等人决定；
+  - 传输失败：沿用 `{"status":"failed","code":…}`，不附 `edits`。
+- 等待时限取 `timeoutMs` 与「宿主开发应答上限 + 1 分钟」中较大者。宿主上限默认 30 分钟
+  （`CM_HOST_ANSWER_TIMEOUT_MINUTES` 更大时取它），超时由宿主记为 `call_timeout` 并按原恢复规则重发，
+  而不是驾驶员先关宿主留下未决调用。
 
 ## 中断与恢复
 
