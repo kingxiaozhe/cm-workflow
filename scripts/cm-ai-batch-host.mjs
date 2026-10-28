@@ -322,9 +322,12 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         await freezeBatchExecutionPolicy(batch,executionPolicy);
         freezeBatchExternalModels(batch,externalModels);
         const key=`${definition.feature}/${definition.identity.taskId}`;
-        // A parallel member's review loopback runs on the reviewer: the declared one under a
-        // protected CLI config (the host runtime may be the coder there), else the host runtime.
-        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,routes.reviewerRuntime,externalModels?.providers[routes.reviewerRuntime]??null,!reconciling,Boolean(executionPolicy)):review;
+        // A parallel member's review loopback runs on the reviewer the factory will bind: the
+        // declared one for a provider-developed member (the host runtime may be the coder
+        // there), else the one this member always had (host runtime, or the external route).
+        const memberReviewer=developments.has(key)?resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime??'codex').reviewerRuntime
+          :externalModels?routes.reviewerRuntime:runtime??'codex';
+        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,memberReviewer,externalModels?.providers[routes.reviewerRuntime]??null,!reconciling,Boolean(executionPolicy)):review;
         const execution=createConversationExecution(definition,hostContextId,parallelMember?memberBridge:bridge,memberReview,null,workflows[key],allowQa,runtime??'codex',
           {parallelMember,...(soloMember?{soloMember}:{}),...(controlPolicy?{controlPolicy}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),
             // A batch without an execution table keeps its exact projection.

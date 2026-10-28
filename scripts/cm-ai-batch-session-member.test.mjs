@@ -267,3 +267,27 @@ test('batch host: Claude codes and Codex reviews; --runtime claude keeps the par
   assert.equal(options.memberDevelopment,'session');assert.equal(options.reviewRuntime,'codex');assert.equal(runtime,'claude');
   assert.equal(review.preflight.provider,'codex');
 });
+
+// Review R1 of that fix: a legacy batch with --protected-config gives the provider only the
+// granted members; an ungranted parallel member is still developed by the host and
+// reviewed on the host runtime, so its loopback stays there.
+test('batch host: a legacy ungranted parallel member keeps its review loopback on the host runtime',async t=>{
+  const text=['- [ ] T-001: t1'+scope('t1.js'),'- [ ] T-002: t2'+scope('t2.js'),'- [ ] T-003: t3'+scope('t3.js'),'',
+    '## 依赖关系','','- T-003 依赖 T-001, T-002',''].join('\n');
+  const f=specs(t,text),{batch,workflows}=f.plan().config;
+  assert.deepEqual(batch.parallel,[['1.work/T-001','1.work/T-002']]);
+  fs.writeFileSync(path.join(f.codeProject,'.cm-workflow.yml'),claudeCodesRoles);
+  const write=(name,value)=>{const file=path.join(f.root,name);fs.writeFileSync(file,JSON.stringify(value));return file;};
+  const bundle=write('batch.json',{batch,workflows}),review=write('review.json',syntheticReviewConfig(f.codeProject,'codex'));
+  const protectedFile=write('protected.json',{model:'fixture-coder',checkCommands:[],timeoutMs:1000});
+  const {main,capture}=await stubbedHost(f.root,{parallel:true});
+  let stderr='';const io={input:{},output:{write(){}},error:{write(value){stderr+=value;}}};
+  assert.equal(await main(['serve','--config',bundle,'--host-context','session-member-host','--allow-development','--runtime','claude',
+    '--review-config',review,'--protected-config',protectedFile,'--allow-provider-development','1.work/T-001:1'],io),0,stderr);
+  const byTask=Object.fromEntries(capture.calls.map(call=>[call[0].identity.taskId,call]));
+  assert.deepEqual(byTask['T-001'][8].providerDevelopment,{model:'fixture-coder',attempt:1,coderRuntime:'claude',reviewerRuntime:'codex'});
+  assert.equal(byTask['T-001'][3].preflight.provider,'codex','the granted member is reviewed by the declared reviewer');
+  assert.equal(Object.hasOwn(byTask['T-002'][8],'providerDevelopment'),false);
+  assert.equal(byTask['T-002'][3].preflight.provider,'claude','the ungranted member keeps the host runtime reviewer');
+  assert.deepEqual(capture.preflights,['codex','claude']);
+});
