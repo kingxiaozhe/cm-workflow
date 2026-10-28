@@ -157,6 +157,8 @@ test('first publication writes the session-bound grammar; an earlier legacy stat
   assert.equal(fs.existsSync(file),false);
   assert.equal(publishPrdAwaitingReview({specs,summary,writeEnabled:true,taskGrammar:TASK_GRAMMAR}).status,'awaiting_review');
   assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).taskGrammar,TASK_GRAMMAR);
+  // While TASK_GRAMMAR is 2 the value alone cannot tell a binding from a literal.
+  assert.match(fs.readFileSync(new URL('../runtime/js/cm-prd/summary.mjs',import.meta.url),'utf8'),/prior\.kind==='missing'\?\{taskGrammar\}:/);
   const status=JSON.parse(fs.readFileSync(file,'utf8'));delete status.taskGrammar;
   writeSpecsStatus(specs,{...status,status:'approved',approval:{response:'开始',at:status.at}});
   const next=await summaryOwner()(specs,currentScope);
