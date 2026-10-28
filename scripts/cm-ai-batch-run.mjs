@@ -23,7 +23,7 @@ import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durab
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readControlPolicy,controlTarget,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
 import {BATCH_SEGMENT_FIELD,batchSegment,batchSegments,batchStarted,batchMemberWorktree,batchMemberBranch} from '../runtime/js/cm-ai/batch-location.mjs';
-import {declaredTaskScope,assertDeclaredScope,parseTaskScopes,sessionTaskProblem,sessionTaskReason} from '../runtime/js/task-scope.mjs';
+import {declaredTaskScope,assertDeclaredScope,parseTaskScopes,sessionTaskProblem,sessionTaskReason,taskDependents} from '../runtime/js/task-scope.mjs';
 import {soloWorktreeBlocker,soloQaCounter,soloQaBase,workflowDecidesQa} from '../runtime/js/cm-ai/batch-plan.mjs';
 import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
@@ -1073,8 +1073,8 @@ function validateGroups(config,plans,{declared=false,workflows=null}={}){
 // the session develops, {"feature/T-xxx":"session"}. It is part of the configuration (so
 // of planDigest) and absent from batches without such members, which keep their exact
 // plan digest. Present, it must match tasks.md (the 开发: 会话 marks of the approved
-// grammar 3) and the narrow rule: one session task per feature, its last task, never a
-// parallel member. A new batch on grammar 3 without the table is refused the same way;
+// grammar 3) and the narrow rule: one session task per feature, its last task (last in
+// this configuration too, and no task waits for it), never a parallel member. A new batch on grammar 3 without the table is refused the same way;
 // a started one without it resumes as it began.
 function validateMemberDevelopment(config,plans,groups,{declared}){
   const table=config.memberDevelopment,grammar=approvedTaskGrammar(config.specsDir);
@@ -1089,8 +1089,21 @@ function validateMemberDevelopment(config,plans,groups,{declared}){
     const text=fs.readFileSync(path.join(config.specsDir,feature,'tasks.md'),'utf8');
     const parsed=parseFeatureTaskText(text,{allowDependencyPunctuation:true,grammar});need(!parsed.error,'parallel_task_invalid');
     const sessions=grammar===TASK_GRAMMAR?parseTaskScopes(text,{grammar}).sessions:new Set();
-    const problem=sessionTaskProblem(parsed.tasks,sessions);
+    const problem=sessionTaskProblem(parsed.tasks,sessions,parsed.dependencies);
     if(problem)throw Object.assign(new Error(problem.code),{code:problem.code,reason:`${feature}/tasks.md：${sessionTaskReason(problem)}`});
+    // The same rule on this configuration's own order (a hand-written one too, whatever
+    // planned it): the session member runs last among the feature's members, and no task
+    // of the feature waits for it.
+    const members=[...plans.keys()].filter(taskKey=>plans.get(taskKey).feature===feature);
+    for(const taskKey of members.filter(item=>sessions.has(plans.get(item).identity.taskId))){
+      const taskId=plans.get(taskKey).identity.taskId,dependents=taskDependents(parsed.tasks,parsed.dependencies,taskId);
+      if(dependents.length){
+        const late={code:'session_task_depended_on',tasks:[taskId],dependents};
+        throw Object.assign(new Error(late.code),{code:late.code,reason:`${feature}/tasks.md：${sessionTaskReason(late)}`});
+      }
+      if(taskKey!==members.at(-1))throw Object.assign(new Error('session_task_not_final'),{code:'session_task_not_final',
+        reason:`${taskKey}：会话任务在批次配置里排在 ${members.slice(members.indexOf(taskKey)+1).join(', ')} 前面；它只能是该功能最后执行的成员，用 cm-ai-batch-plan.mjs 重新生成批次配置`});
+    }
     for(const [taskKey,plan] of plans){
       if(plan.feature!==feature)continue;
       const session=sessions.has(plan.identity.taskId);

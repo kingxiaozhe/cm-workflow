@@ -52,6 +52,23 @@ test('the batch owner accepts the planned table and checks it against tasks.md a
   assert.throws(()=>create(f,batch),{code:'session_task_multiple'});
 });
 
+test('the batch owner refuses a hand-written configuration whose session member is not the last to run',t=>{
+  const f=specs(t,tasks()),{parallel,...batch}=f.plan().config.batch;
+  const write=deps=>fs.writeFileSync(path.join(f.specsDir,'1.work','tasks.md'),tasks()+'\n'+deps.join('\n')+'\n');
+  // Dependencies the planner would refuse; this configuration is written by hand, in tasks.md order.
+  write(['- T-001 依赖 T-003']);
+  assert.throws(()=>create(f,batch),error=>error.code==='session_task_depended_on'&&/任务 T-001 直接或间接依赖.*T-003/.test(error.reason));
+  write(['- T-001 依赖 T-002','- T-002 依赖 T-003']);
+  assert.throws(()=>create(f,batch),error=>error.code==='session_task_depended_on'&&/任务 T-001, T-002 直接或间接依赖.*T-003/.test(error.reason));
+  // Without dependencies, a configuration that lists the session member before another member.
+  write([]);
+  const reordered={...batch,tasks:[batch.tasks[0],batch.tasks[2],batch.tasks[1]]};
+  assert.throws(()=>create(f,reordered),error=>error.code==='session_task_not_final'&&/1\.work\/T-003.*1\.work\/T-002/.test(error.reason));
+  // Legal: the session member waits for the others and runs last.
+  write(['- T-003 依赖 T-001, T-002']);
+  assert.ok(create(f,batch));
+});
+
 test('a batch without session members keeps its configuration; grammar 2 never reads the mark',t=>{
   for(const taskGrammar of [null,2]){
     const f=specs(t,tasks(),{taskGrammar}),{batch}=f.plan().config;

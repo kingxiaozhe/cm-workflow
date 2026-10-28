@@ -141,7 +141,7 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   const parsed=parseFeatureTaskText(text,{allowDependencyPunctuation:true,grammar});
   need(!parsed.error,'batch_plan_tasks_invalid');
   const scopes=parseTaskScopes(text,{grammar});
-  const sessionProblem=sessionTaskProblem(parsed.tasks,scopes.sessions);
+  const sessionProblem=sessionTaskProblem(parsed.tasks,scopes.sessions,parsed.dependencies);
   if(sessionProblem)throw Object.assign(new Error(sessionProblem.code),{code:sessionProblem.code,reason:`${selected}/tasks.md：${sessionTaskReason(sessionProblem)}`});
   const remaining=parsed.tasks.filter(task=>!task.completed&&!task.dropped);
   need(remaining.length>0,'batch_plan_not_ready');
@@ -151,6 +151,14 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   // reached, so every task must come after its prerequisites still to run.
   const schedule=executionOrder(remaining,parsed.dependencies);
   if(schedule===null)return {mode:'serial',feature:selected,reason:'dependency_order'};
+  // The narrow rule once more on the order the batch really runs: a session task is the
+  // feature's last task to run, so nothing may be scheduled after it.
+  const lateSession=schedule.findIndex(task=>scopes.sessions.has(task.id));
+  if(lateSession!==-1&&lateSession!==schedule.length-1){
+    const after=new Set(schedule.slice(lateSession+1).map(task=>task.id));
+    const problem={code:'session_task_depended_on',tasks:[schedule[lateSession].id],dependents:parsed.tasks.map(task=>task.id).filter(id=>after.has(id))};
+    throw Object.assign(new Error(problem.code),{code:problem.code,reason:`${selected}/tasks.md：${sessionTaskReason(problem)}`});
+  }
   need(schedule[0].id===admission.nextTask.id,'batch_plan_order_mismatch');
   // The host requires the feature's last task in every batch with a group (its QA
   // collects the members' deferred QA); a completed last task leaves no such task.

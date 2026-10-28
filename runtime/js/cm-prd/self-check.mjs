@@ -178,7 +178,7 @@ export function sessionTaskFindings(directory,source,{grammar=TASK_GRAMMAR}={}){
   if(grammar!==TASK_GRAMMAR)return [];
   const parsed=parseFeatureTaskText(source,{grammar});
   if(parsed.error)return [];
-  const problem=sessionTaskProblem(parsed.tasks,parseTaskScopes(source,{grammar}).sessions);
+  const problem=sessionTaskProblem(parsed.tasks,parseTaskScopes(source,{grammar}).sessions,parsed.dependencies);
   return problem?[{feature:directory,code:problem.code,reason:{field:`${directory}/tasks.md`,tasks:problem.tasks,
-    expected:sessionTaskReason(problem)}}]:[];
+    ...(problem.dependents?{dependents:problem.dependents}:{}),expected:sessionTaskReason(problem)}}]:[];
 }

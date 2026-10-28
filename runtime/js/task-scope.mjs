@@ -121,17 +121,33 @@ export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
 }
 // Grammar 3's narrow rule for session-developed tasks: at most one per feature, and
 // only its last task (the last one not dropped, the task that runs last and is never
-// a parallel member). tasks: the feature's tasks in tasks.md order ({id,dropped}).
-// null, or {code,tasks}.
-export function sessionTaskProblem(tasks,sessions){
+// a parallel member). Last in tasks.md is not enough: the batch runs a task after its
+// prerequisites, so a task that waits for the session task, directly or through others,
+// would run after it. tasks: the feature's tasks in tasks.md order ({id,dropped});
+// dependencies: id -> the ids it waits for. null, or {code,tasks[,dependents]}.
+export function sessionTaskProblem(tasks,sessions,dependencies){
   const live=tasks.filter(task=>!task.dropped).map(task=>task.id),marked=live.filter(id=>sessions.has(id));
   if(marked.length>1)return {code:'session_task_multiple',tasks:marked};
   if(marked.length===1&&marked[0]!==live.at(-1))return {code:'session_task_not_final',tasks:marked};
+  const dependents=marked.length===1?taskDependents(tasks,dependencies,marked[0]):[];
+  if(dependents.length)return {code:'session_task_depended_on',tasks:marked,dependents};
   return null;
+}
+// The tasks not dropped that wait for taskId, directly or through other such tasks, in
+// tasks.md order. A dropped task holds nothing back (admission counts it as satisfied).
+export function taskDependents(tasks,dependencies,taskId){
+  const live=new Set(tasks.filter(task=>!task.dropped).map(task=>task.id));
+  const waits=(id,seen)=>{
+    if(seen.has(id))return false;seen.add(id);
+    return (dependencies.get(id)??[]).some(dep=>dep===taskId||live.has(dep)&&waits(dep,seen));
+  };
+  return [...live].filter(id=>id!==taskId&&waits(id,new Set()));
 }
 export const sessionTaskReason=problem=>problem.code==='session_task_multiple'
   ?`标了「开发: 会话」的任务有 ${problem.tasks.length} 个（${problem.tasks.join(', ')}），一个功能最多一个`
-  :`标了「开发: 会话」的任务 ${problem.tasks[0]} 不是功能的最后一个任务；会话任务只能是功能的串行末项`;
+  :problem.code==='session_task_depended_on'
+    ?`任务 ${problem.dependents.join(', ')} 直接或间接依赖标了「开发: 会话」的任务 ${problem.tasks[0]}，会排到它后面执行；会话任务只能是功能实际执行的最后一个任务，别的任务不能依赖它`
+    :`标了「开发: 会话」的任务 ${problem.tasks[0]} 不是功能的最后一个任务；会话任务只能是功能的串行末项`;
 
 
 // Two tasks may run at the same time only when neither writes a path the other writes.
