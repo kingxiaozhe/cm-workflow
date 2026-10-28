@@ -8,7 +8,7 @@ import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {buildManifest,verifyApprovedManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
-import {taskLines,taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR,TASK_ID_SOURCE,isTaskId} from '../spec-task-line.mjs';
+import {taskLines,taskDeclarations,approvedTaskGrammar,recordedTaskGrammar,TASK_GRAMMAR,SHARED_TASK_GRAMMAR,LEGACY_TASK_GRAMMAR,TASK_ID_SOURCE,isTaskId} from '../spec-task-line.mjs';
 export {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 
 export const DEPENDENCY=new RegExp(`^\\s*-\\s*(${TASK_ID_SOURCE})\\s+依赖\\s+(.+)$`);
@@ -396,7 +396,7 @@ export function approveCmAiSpecs(options){
   try{
     const discovered=discoverFeatures(specsDir);
     if(discovered.error)return refuse(discovered.error);
-    // An approval binds grammar 2 to every feature, including ones this change
+    // An approval binds a shared grammar (2 or 3) to every feature, including ones this change
     // did not touch. Refuse rather than silently re-reading bytes that an older
     // approval parsed differently (e.g. an unfenced `- [ ] T-001：例` becoming a
     // duplicate of the real T-001), and rather than keeping grammar 1, which
@@ -404,17 +404,22 @@ export function approveCmAiSpecs(options){
     // Moving from the pre-grammar parse must not change which lines are tasks
     // either (e.g. a unique `- [ ] T-099：示例` would become a pending task). The
     // status carries the last approval's grammar through cm-prd publication;
-    // once a project is on grammar 2 there is nothing to reconcile.
+    // once a project is on grammar 2 or 3 there is nothing to reconcile.
     // No status at all means nothing was approved before: no earlier meaning to keep.
-    const fromLegacy=status.kind==='valid'&&status.value.taskGrammar!==TASK_GRAMMAR;
+    const fromLegacy=status.kind==='valid'&&recordedTaskGrammar(status.value.taskGrammar)===LEGACY_TASK_GRAMMAR;
+    // Grammar 2 and 3 share declarations; 3 adds `- 开发: 会话`. The approval binds the
+    // grammar the publication carried (the cm-prd session's), so a grammar-2 draft never
+    // gains that meaning; with none carried (legacy, first approval) it binds 2, the
+    // grammar such drafts were written with.
+    const grammar=status.kind==='valid'&&!fromLegacy?status.value.taskGrammar:SHARED_TASK_GRAMMAR;
     for(const name of discovered.names){
       const source=fs.readFileSync(path.join(specsDir,name,'tasks.md'),'utf8');
-      const parsed=parseFeatureTaskText(source,{allowDependencyPunctuation:true,grammar:TASK_GRAMMAR});
+      const parsed=parseFeatureTaskText(source,{allowDependencyPunctuation:true,grammar});
       if(parsed.error)return refuse('task_grammar_conflict',`${name}/tasks.md 第 ${parsed.detail.line} 行在新任务行语法下无效（${parsed.error}）：`
         +`${parsed.detail.text}。此前的批准把它当作说明文字；把这类示例放进 \`\`\` 围栏或删去后再批准。`);
       if(!fromLegacy)continue;
       const view=grammar=>taskDeclarations(source,{grammar}).map(item=>({line:item.index+1,key:`${item.id}\0${item.completed}\0${item.body.trim()}`,text:item.body.trim()}));
-      const legacy=view(LEGACY_TASK_GRAMMAR),current=view(TASK_GRAMMAR);
+      const legacy=view(LEGACY_TASK_GRAMMAR),current=view(grammar);
       const legacyKeys=new Set(legacy.map(item=>item.key)),currentKeys=new Set(current.map(item=>item.key));
       const differing=[...current.filter(item=>!legacyKeys.has(item.key)),...legacy.filter(item=>!currentKeys.has(item.key))]
         .sort((a,b)=>a.line-b.line);
@@ -425,7 +430,7 @@ export function approveCmAiSpecs(options){
     const specFiles=buildManifest(specsDir),at=new Date().toISOString();
     writeSpecsStatus(specsDir,{status:'approved',summaryDigest:status.value?.summaryDigest??null,at,
       features:discovered.names,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
-      approval:{response:options.approvalResponse,at},taskGrammar:TASK_GRAMMAR,
+      approval:{response:options.approvalResponse,at},taskGrammar:grammar,
       ...(status.value&&Object.hasOwn(status.value,'revisionDigest')?{revisionDigest:status.value.revisionDigest}:{})});
   }catch(error){return refuse(error.code??error.message);}
   return {projectResults:inspect()};

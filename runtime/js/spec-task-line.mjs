@@ -10,16 +10,25 @@
 // spec revision for punctuation alone. Lines inside ``` / ~~~ fences (the
 // manifest's original fence rule) are examples, never declarations.
 //
-// The grammar is versioned by the approval that bound the bytes: approvals
-// written by this version record taskGrammar 2 in .cm-specs-status. Approvals
-// recorded earlier keep the exact pre-grammar parse (grammar 1) so an existing
-// approved tasks.md never changes meaning, e.g. an unfenced `- [ ] T-001：例`
-// beside the real `- [ ] T-001:` stays prose instead of becoming a duplicate.
-// cm-prd drafts and new approvals always use grammar 2.
+// The grammar is versioned by the approval that bound the bytes, recorded as
+// taskGrammar in .cm-specs-status. Approvals recorded without it keep the exact
+// pre-grammar parse (grammar 1) so an existing approved tasks.md never changes
+// meaning, e.g. an unfenced `- [ ] T-001：例` beside the real `- [ ] T-001:` stays
+// prose instead of becoming a duplicate. Grammar 2 is this declaration grammar;
+// grammar 3 reads the same declarations and adds the `- 开发: 会话` sub-item
+// (task-scope.mjs). Each version is its own branch: 2 never falls back to 1, and
+// text that grammar 3 gives meaning to stays prose under 1 and 2.
+// cm-prd drafts and new approvals use grammar 3.
 import fs from 'node:fs';
 import path from 'node:path';
-export const TASK_GRAMMAR=2;
+export const TASK_GRAMMAR=3;
+export const SHARED_TASK_GRAMMAR=2;
 export const LEGACY_TASK_GRAMMAR=1;
+// A recorded taskGrammar as the grammar it binds: 2 and 3 as written, anything else
+// (absent, unknown) the pre-grammar parse.
+export const recordedTaskGrammar=value=>value===TASK_GRAMMAR||value===SHARED_TASK_GRAMMAR?value:LEGACY_TASK_GRAMMAR;
+// Whether a grammar reads declarations with the shared (fence-aware) grammar.
+export const sharedDeclarations=grammar=>grammar===TASK_GRAMMAR||grammar===SHARED_TASK_GRAMMAR;
 // IDs are intentionally broader than numbered tasks (for example T-FIX-api).
 // Test references and new-draft dependency checks use this same declaration ID.
 export const TASK_ID_SOURCE='T-[A-Za-z0-9][A-Za-z0-9._-]*';
@@ -55,7 +64,7 @@ export function specLines(text){
 // Lines of tasks.md with their declaration (or null) under the given grammar.
 // `description` is the text after the id with the grammar's own separator stripped.
 export function taskLines(text,{grammar=TASK_GRAMMAR}={}){
-  if(grammar===TASK_GRAMMAR)return specLines(text).map(line=>{
+  if(sharedDeclarations(grammar))return specLines(text).map(line=>{
     const declaration=line.fenced?null:matchTaskDeclaration(line.body);
     return {...line,declaration:declaration&&{...declaration,description:declaration.rest.replace(/^[:：\s]+/u,'')}};
   });
@@ -75,13 +84,13 @@ export function taskDeclarations(text,{grammar=TASK_GRAMMAR}={}){
   return taskLines(text,{grammar}).flatMap(line=>line.declaration?[{...line,...line.declaration}]:[]);
 }
 
-// The grammar the current approval bound; anything but an approval written with
-// taskGrammar 2 (older approvals, awaiting review, missing or unreadable status)
-// is read with the pre-grammar parser, which is what approved those bytes.
+// The grammar the current approval bound: 3 or 2 as recorded; anything else (older
+// approvals, awaiting review, missing or unreadable status) is read with the
+// pre-grammar parser, which is what approved those bytes.
 export function approvedTaskGrammar(specsDir){
   try{
     const status=JSON.parse(fs.readFileSync(path.join(specsDir,'.cm-specs-status'),'utf8'));
-    return status?.status==='approved'&&status.taskGrammar===TASK_GRAMMAR?TASK_GRAMMAR:LEGACY_TASK_GRAMMAR;
+    return status?.status==='approved'?recordedTaskGrammar(status.taskGrammar):LEGACY_TASK_GRAMMAR;
   }catch{return LEGACY_TASK_GRAMMAR;}
 }
 

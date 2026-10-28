@@ -8,7 +8,7 @@ import childProcess from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {inspectFixWalkthrough,readFixWalkthrough,fixWalkthroughBinding} from '../runtime/js/cm-fix/walkthrough.mjs';
 import {inspectFixRegressionFailure} from '../runtime/js/cm-fix/regression-evidence.mjs';
-import {taskDeclarations,approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
+import {taskDeclarations,approvedTaskGrammar,LEGACY_TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 import {statesZeroBlockingFindings,ZERO_BLOCKING_PHRASES,REVIEWER_SOURCES} from '../runtime/js/review-findings.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
@@ -1160,7 +1160,7 @@ function splitLinesKeepEnds(text){
 function withoutLineEnding(line){return line.replace(/(?:\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029])$/,'');}
 function escapeRegExp(value){return value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
 
-// An approval recorded with taskGrammar 2 uses the shared declaration grammar
+// An approval recorded with taskGrammar 2 or 3 uses the shared declaration grammar
 // (spec-task-line.mjs): fenced examples are never flipped. Approvals recorded
 // earlier keep the exact original mark-done match on the bytes they approved.
 function parseTaskTarget(task,tasksPath,revision){
@@ -1168,7 +1168,7 @@ function parseTaskTarget(task,tasksPath,revision){
   try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(revision.bytes);}
   catch(error){throw new GateError(`cannot read tasks file ${tasksPath}: ${error.message}`);}
   let matches;
-  if(approvedTaskGrammar(path.dirname(path.dirname(tasksPath)))===TASK_GRAMMAR)
+  if(approvedTaskGrammar(path.dirname(path.dirname(tasksPath)))!==LEGACY_TASK_GRAMMAR)
     matches=taskDeclarations(text).filter(item=>item.id===task).map(item=>({start:item.start,markOffset:item.markOffset,completed:item.completed}));
   else{
     const pattern=new RegExp(`^(\\s*-\\s*)\\[([ xX])\\](\\s+${escapeRegExp(task)}(?=[:\\s]|$).*)$`);

@@ -7,7 +7,9 @@
 //
 // 范围 / scope lists every file the task may change (existing files included);
 // 测试文件 / tests is a subset of it; 设备 / device marks a task whose checks need a
-// device or simulator. Only exact relative file paths in backticks are accepted:
+// device or simulator. Under task grammar 3 only, 开发 / developer: 会话 / session
+// marks a task the current session develops (a provider develops the rest); grammar
+// 1 and 2 leave that line prose, as they always read it. Only exact relative file paths in backticks are accepted:
 // no directories, no globs. The task line itself is untouched, so every existing
 // task-line reader keeps its meaning; the sub-items belong to the task they sit
 // under (specification-material already carries indented lines with their task).
@@ -20,6 +22,10 @@ import {protectedScopePaths} from './cm-ai/developer-adapter.mjs';
 const KEYS=new Map([['范围','scope'],['scope','scope'],['测试文件','tests'],['tests','tests'],['设备','device'],['device','device']]);
 const SUB_ITEM=/^(\s*)-\s+([^\s:：]+)\s*[:：]\s*(.*)$/u;
 const DEVICE_VALUES=new Set(['需要','required']);
+const DEVELOPER_KEYS=new Set(['开发','developer']);
+// 开发进程 / provider is the default, accepted when written out.
+const DEVELOPER_VALUES=new Map([['会话','session'],['session','session'],['开发进程','provider'],['provider','provider']]);
+const developerValue=value=>DEVELOPER_VALUES.get(value)??DEVELOPER_VALUES.get(value.toLowerCase())??null;
 // A task whose files cannot be listed up front (a scaffold generator) says so
 // explicitly; it counts as declared for the split check but never runs in parallel.
 const SERIAL_VALUES=new Set(['串行','serial']);
@@ -41,10 +47,12 @@ function pathList(raw){
   return rest===''&&paths.length>0?paths:null;
 }
 
-// {tasks: Map<taskId,{scope,tests,device,line}>, errors: [{taskId,line,message}]}.
-// A task without any scope sub-item is simply absent from `tasks`.
+// {tasks: Map<taskId,{scope,tests,device,line}>, serial, sessions: Set<taskId>,
+// errors: [{taskId,line,message}]}. A task without any scope sub-item is simply
+// absent from `tasks`; `sessions` holds the tasks marked 开发: 会话 (grammar 3).
 export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
-  const tasks=new Map(),errors=[];let current=null;
+  const tasks=new Map(),errors=[],sessions=new Set(),developers=new Set();let current=null;
+  const developer=grammar===TASK_GRAMMAR;
   const fail=(line,message)=>errors.push({taskId:current?.id??null,line:line.index+1,message});
   for(const line of taskLines(text,{grammar})){
     if(!line.body.trim())continue;
@@ -54,6 +62,18 @@ export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
     if(current!==null&&!(indentOf(line.body)>current.indent&&!/^\s*#/.test(line.body)))current=null;
     if(line.fenced)continue;
     const match=SUB_ITEM.exec(line.body);
+    if(developer&&match&&(DEVELOPER_KEYS.has(match[2])||DEVELOPER_KEYS.has(match[2].toLowerCase()))){
+      const value=developerValue(match[3].trim());
+      if(current===null){
+        if(value!==null)errors.push({taskId:null,line:line.index+1,message:`${match[2]} 不在任何任务行下面（要缩进写在任务行的下一行，用空格缩进）`});
+        continue;
+      }
+      if(developers.has(current.id)){fail(line,`${match[2]} 重复`);continue;}
+      developers.add(current.id);
+      if(value===null){fail(line,'开发只能写「会话」或 session；由开发进程开发时不写这一项');continue;}
+      if(value==='session')sessions.add(current.id);
+      continue;
+    }
     const key=match?KEYS.get(match[2].toLowerCase())??KEYS.get(match[2]):undefined;
     if(current===null){
       // Not under any task: a scope-looking item here is almost always a missing indent. Prose
@@ -97,8 +117,9 @@ export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
     result.set(id,Object.freeze({scope:Object.freeze([...scope]),tests:Object.freeze([...tests]),
       device:task.fields.get('device')?.value===true,line:task.fields.get('scope').line}));
   }
-  return {tasks:result,serial,errors};
+  return {tasks:result,serial,sessions,errors};
 }
+
 
 // Two tasks may run at the same time only when neither writes a path the other writes.
 export function scopesOverlap(a,b){const set=new Set(a);return b.some(item=>set.has(item));}

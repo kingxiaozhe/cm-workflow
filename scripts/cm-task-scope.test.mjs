@@ -28,6 +28,50 @@ test('scope, tests and device sub-items attach to the task line above them',()=>
   assert.equal(tasks.has('T-003'),false);
 });
 
+// Task grammar 3 (spec-task-line.mjs): `- 开发: 会话` has meaning only under an
+// approval that bound grammar 3; 1 and 2 read the very same text exactly as before.
+test('开发 sub-item: grammar 3 reads it, grammar 1 and 2 keep it prose',t=>{
+  const text=tasksText(['- [ ] T-001: impl','  - 范围: `src/a.js`','  - 开发: 开发进程',
+    '- [ ] T-002：walk','  - 范围: `docs/qa.md`','  - developer: session']);
+  const three=parseTaskScopes(text,{grammar:3});
+  assert.deepEqual(three.errors,[]);assert.deepEqual([...three.sessions],['T-002']);
+  assert.deepEqual(three.tasks.get('T-002').scope,['docs/qa.md']);
+  assert.deepEqual(parseTaskScopes(text).sessions,three.sessions,'grammar 3 is the default for drafts');
+  // Grammar 2 keeps its own declaration grammar (the full-width colon is a task) and ignores 开发.
+  const two=parseTaskScopes(text,{grammar:2});
+  assert.deepEqual(two.errors,[]);assert.equal(two.sessions.size,0);assert.deepEqual([...two.tasks.keys()],['T-001','T-002']);
+  // Grammar 1 is the pre-grammar parse: `T-002：` is prose, so its scope is a stray item.
+  const one=parseTaskScopes(text,{grammar:1});
+  assert.equal(one.sessions.size,0);assert.deepEqual([...one.tasks.keys()],['T-001']);
+  assert.deepEqual(one.errors.map(item=>item.taskId),[null]);
+  // A value other than 会话/session (or the written-out default) is refused only under grammar 3.
+  for(const bad of ['  - 开发: 张三','  - 开发: 会话\n  - 开发: session']){
+    const bytes=tasksText(['- [ ] T-001: a','  - 范围: `a.js`',bad]);
+    assert.equal(parseTaskScopes(bytes,{grammar:3}).errors.length,1,bad);
+    assert.deepEqual(parseTaskScopes(bytes,{grammar:2}).errors,[],bad);
+  }
+  assert.match(parseTaskScopes(tasksText(['- [ ] T-001: a','  - 范围: `a.js`','  - 开发: 张三']),{grammar:3}).errors[0].message,/会话/);
+  // Not under any task: reported like a stray scope under 3, prose under 2; prose values stay prose.
+  const stray=tasksText(['- [ ] T-001: a','  - 范围: `a.js`','','## 说明','- 开发: 会话','- 开发: 由前端组负责']);
+  assert.deepEqual(parseTaskScopes(stray,{grammar:3}).errors.map(item=>item.taskId),[null]);
+  assert.deepEqual(parseTaskScopes(stray,{grammar:2}).errors,[]);
+  // 开发 does not count as a scope field: alone it leaves the task without scope, and 串行 may carry it.
+  const alone=parseTaskScopes(tasksText(['- [ ] T-001: a','  - 开发: 会话','- [ ] T-002: b','  - 范围: 串行','  - 开发: 会话']),{grammar:3});
+  assert.deepEqual(alone.errors,[]);assert.equal(alone.tasks.size,0);assert.deepEqual([...alone.serial],['T-002']);
+  assert.deepEqual([...alone.sessions],['T-001','T-002']);
+  // The runtime reads with the grammar the approval bound.
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-task-scope-grammar-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(root,'1.work'));
+  fs.writeFileSync(path.join(root,'1.work','tasks.md'),tasksText(['- [ ] T-001: a','  - 范围: `a.js`','  - 开发: 张三']));
+  for(const [status,refused] of [[{status:'approved',taskGrammar:3},true],[{status:'approved',taskGrammar:2},false],
+    [{status:'approved'},false],[{status:'awaiting_review',taskGrammar:3},false],[{status:'approved',taskGrammar:4},false]]){
+    fs.writeFileSync(path.join(root,'.cm-specs-status'),JSON.stringify(status));
+    if(refused)assert.throws(()=>declaredTaskScope(root,'1.work','T-001'),{code:'task_scope_invalid'});
+    else assert.deepEqual(declaredTaskScope(root,'1.work','T-001').scope,['a.js'],JSON.stringify(status));
+  }
+});
+
 test('only exact relative file paths in backticks are accepted',()=>{
   for(const bad of ['src/*.js','src/','/etc/passwd','../x.js','a/./b.js','a\\b.js','AGENTS.md','.git/config','x?.js'])
     assert.equal(validScopePath(bad),false,bad);

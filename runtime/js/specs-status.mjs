@@ -37,7 +37,7 @@ export function writeSpecsStatus(specsDir,value,{beforeRename=()=>{}}={}){
   if(Object.hasOwn(value,'revisionDigest'))need(revisionHex(value.revisionDigest));
   // The grammar the last approval bound (spec-task-line.mjs). An awaiting_review
   // status only carries it forward; parsing honours it only once approved.
-  if(Object.hasOwn(value,'taskGrammar'))need(value.taskGrammar===2);
+  if(Object.hasOwn(value,'taskGrammar'))need(value.taskGrammar===2||value.taskGrammar===3);
   need(iso(value.at)&&Array.isArray(value.features)&&value.features.length>0
     &&value.features.every(name=>typeof name==='string'&&/^\d+\.[^/\\]+$/.test(name))
     &&new Set(value.features).size===value.features.length);
