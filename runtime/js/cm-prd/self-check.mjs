@@ -107,8 +107,13 @@ export function matchesPrdDraftMechanics(draft,recorded,options={}){
 // (correction, disposition, summary) pass it when the save recorded that the draft
 // carried scopes (task-scope-record.mjs), so a correction cannot drop them while
 // every other check stays on its old rule.
-export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1,scopes=null}={}){
+// `sessionTasks` ([directory...]) likewise applies only what rule 4 adds (tasks.md
+// read as grammar 3, with the session-task checks) to the features whose save
+// recorded rule 4, so a correction cannot move or add a `开发: 会话` mark unnoticed.
+export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1,scopes=null,sessionTasks=null}={}){
   need(PRD_SELF_CHECK_RULE_VERSIONS.includes(rules),'prd_self_check_rules_invalid');
+  need(sessionTasks===null||Array.isArray(sessionTasks)&&sessionTasks.every(item=>typeof item==='string'),
+    'prd_self_check_rules_invalid');
   const findings=[],features=[];
   for(const feature of draft.features){
     const files=new Map(feature.documents.map(document=>[document.path,document.content]));
@@ -134,9 +139,10 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
         if(!reported.has(code))add(code);
     }
     const scope=scopes!==null&&Object.hasOwn(scopes,feature.directory)?scopes[feature.directory]:null;
+    const grammar3=rules>=4||sessionTasks?.includes(feature.directory)===true;
     if((rules>=3||scope!==null)&&!parsed.error){
       // Rules 1-3 predate grammar 3: a `开发:` line there stays prose, as it was then.
-      const scopes=parseTaskScopes(files.get('tasks.md'),{grammar:rules>=4?TASK_GRAMMAR:2});
+      const scopes=parseTaskScopes(files.get('tasks.md'),{grammar:grammar3?TASK_GRAMMAR:2});
       const problems=scopes.errors.map(item=>`${item.taskId??'(无任务)'} 第 ${item.line} 行：${item.message}`);
       // 串行 is the scaffold generator's exit (a N.bootstrap feature), not an opt-out for business tasks.
       if(!BOOTSTRAP_FEATURE.test(feature.directory))for(const id of scopes.serial)problems.push(`${id}：范围: 串行 只用于脚手架功能（N.bootstrap），其余任务要列出文件`);
@@ -149,7 +155,7 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
       if(missing.length)add('task_scope_missing',{field:`${feature.directory}/tasks.md`,tasks:missing,
         expected:SCOPE_HINT});
     }
-    if(rules>=4&&!parsed.error)for(const item of sessionTaskFindings(feature.directory,files.get('tasks.md')))add(item.code,item.reason);
+    if(grammar3&&!parsed.error)for(const item of sessionTaskFindings(feature.directory,files.get('tasks.md')))add(item.code,item.reason);
     if(files.has('test-cases.json')){
       let cases;try{cases=JSON.parse(files.get('test-cases.json'));}catch{add('test_cases_invalid');}
       if(cases){

@@ -207,7 +207,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       }
       if(request.operation==='save_draft')return (analysis.checkpoint().selfCheckRevision?savePrdDraft:analysis.status().designPromotion?.saved===true?savePrdPromotedDraft:savePrdDraft)({specs:admission.specs,
         writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDraftForSave({selfCheckRevisionSave:true}),getOriginal:()=>analysis.originalPromotedDraft(),
-        getSelfCheckRevision:()=>analysis.checkpoint().selfCheckRevision??null,onSelfCheckRevisionSaved:()=>analysis.acceptSelfCheckRevisionSave()});
+        getSelfCheckRevision:()=>analysis.checkpoint().selfCheckRevision??null,onSelfCheckRevisionSaved:()=>analysis.acceptSelfCheckRevisionSave(),
+        selfCheckRules:session.selfCheckRules()});
       if(request.operation==='save_design')return savePrdDesign({specs:admission.specs,
         writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDesignForSave()});
       if(request.operation==='correct_findings'){
