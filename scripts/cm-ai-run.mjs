@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {digest as sha} from '../runtime/js/cm-ai/contracts.mjs';
 import {resolveCodeProjects,codeProjectPaths,assertCodeProjectSelections} from '../runtime/js/cm-ai/code-projects.mjs';
-import {preQaConfigurations,readQaAttachment} from '../runtime/js/cm-ai/qa-attachment.mjs';
+import {preQaConfigurations,preQaUpgradeConfigurations,readQaAttachment} from '../runtime/js/cm-ai/qa-attachment.mjs';
 import {isImplicitQaDecision} from '../runtime/js/cm-ai/implicit-qa-decision.mjs';
 import {recordCmAiQaAttachment} from '../runtime/js/cm-ai/cm-ai-qa-log.mjs';
 import {writeCmAiQaStatus} from '../runtime/js/cm-ai/cm-ai-run-finalizer.mjs';
@@ -350,9 +350,18 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
       expectedControl=readControlTarget(expectedControl);
     }else if(expectedControl!==null)fail('invalid_input');
   }
+  // savedPolicy: set only when a completed qa:"disabled" run is resumed with
+  // qa:"run" and a QA workflow (control-policy.mjs isControlQaUpgrade). The
+  // runner keeps the saved policy; only the host's QA wiring uses the new one.
+  let savedPolicy=null;
   if(mode==='resume'){
     const snapshot=assertSupportedResumeHistory(definition);
-    if(snapshot?.records.length)assertControlEntry(snapshot,controlPolicy);
+    if(snapshot?.records.length){
+      savedPolicy=assertControlEntry(snapshot,controlPolicy,{allowQaUpgrade:Boolean(execution?.qaExecutor)});
+      // The first upgrade is its own launch; recoveries come after it, on the attached run.
+      if(savedPolicy&&!snapshot.records.some(row=>row.payload.type==='qa-attached')
+        &&(launchRecovery||supersedeTarget!==null||holdRevision))fail('invalid_input');
+    }
   }
   const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
   const {inspectCmAiAdmission,matchesCmAiTaskSelection,explainCmAiTaskSelection,selectedFeature}=await import('../runtime/js/cm-ai/cm-ai-admission.mjs');
@@ -470,7 +479,7 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
         store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:snapshot.fingerprints.config}});
       }
       if(!store){
-        for(const previous of preQaConfigurations(material)){
+        for(const previous of [...preQaConfigurations(material),...(savedPolicy?preQaUpgradeConfigurations(material):[])]){
           try{store=openTaskExecutionStore({...storeOptions,fingerprints:{...fingerprints,config:sha(previous)}});break;}
           catch(cause){if(cause.code!=='fingerprint_mismatch')throw cause;}
         }
@@ -491,6 +500,7 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
         throw Object.assign(new Error('fingerprint_mismatch'),{code:'fingerprint_mismatch',
           reason:'启动配置与事后附加 QA 时绑定的配置不同；请用附加 QA 时的 --workflow-config 与参数恢复'});
       if(attaching&&store.snapshot().records.length===0)fail('qa_attach_not_completed');
+      if(savedPolicy&&!attaching&&!attached)fail('fingerprint_mismatch');
       return {material,fingerprints,store,attaching,priorMaterial,chain,attached};
     }catch(error){store.close();throw error;}
   };
@@ -552,7 +562,7 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
         ...(knowledgeCloseout===null?{}:{knowledgeCloseout}),
         ...(execution?.configuration.executionPolicy?{executionPolicy:execution.configuration.executionPolicy}:{}),
         ...(execution?.configuration.externalModels?{externalModels:execution.configuration.externalModels}:{}),excludedContexts:['control-host'],
-        ...(controlPolicy?{controlPolicy}:{}),
+        ...(controlPolicy?{controlPolicy:savedPolicy??controlPolicy}:{}),
         ...(parallelSelection===null?{}:{parallelSelection}),
         developer:{provider:'codex',requestedModel:'unconfigured',contextId:'control-developer',run:unavailable},
         reviewers:[],check:unavailable,taskCompletion:{reviewsDir,handoffs},taskLearning:{feature},

@@ -33,6 +33,13 @@ control policy v2 把运行能力集中到一个严格的策略文件。原配�
 `qa:"disabled"` 只关闭实际 QA executor，仍执行 `qa_assess` 清单来源确认和固定检查点判定；驾驶员只需合法的 `{"confirmed":true}` 答案。
 关键路径登记使用现有工作流配置的 `qa.criticalPaths`，详见 [JS workflow control](js-workflow-control.md)。未登记关键路径的项目，N6 不做任何风险识别，只有这两个固定点。两点为 feature 完成及连续五项未 QA。`policies.tests` 只控制执行类型，不取消必跑；blocking cases 与环境 BLOCKED 合同不变。
 触发必需 QA 却没有 executor 时，真实停点为 `qa_triggered`、`pendingAction:"qa_execution"`；不得报告 QA PASS 或 `run_done`。
+已完成运行补开 QA：用 `qa:"disabled"` 建的单任务运行到了 `fixture_completed` 后，可以 `mode:"resume"` 换一份只把 `qa` 改成 `run`
+（其余字段逐字不变）的策略，并带含 `qa` 的 `--workflow-config`。宿主按原策略与去掉 QA 的原配置核对原指纹，
+在运行存档追加一条 `qa-attached`（与旧版「已完成任务的一次性 QA 附加」同一记录），日志写 `decision/qa_attach`，
+然后按原 N6 门禁执行 QA；存档里保存的原策略不改写，运行器仍按原策略恢复。之后的恢复都要用补开后的策略和同一份 QA 配置，
+不能再退回 `qa:"disabled"`。补开那次不能同时做其他启动恢复（QA 重跑、配置修订、范围修订等），补开以后照常可用。
+目前只对单任务驾驶员验证过；批次成员没有覆盖测试。
+策略的其他字段一起变、任务未完成、或没有 QA 工作流时仍报 `fingerprint_mismatch`（或原有的参数错误）。
 `qaFix:"auto"` 只启用原自动修复能力，不替代其故障分型、范围、诊断、测试、fresh Review 和完成门禁。
 `verification` 随策略写进运行配置并参与指纹，恢复时必须用同一份策略；此前创建、没有该字段的运行保持原样，恢复时也不能补加。旧的启动参数 `--verification-precheck` 仍可按次开启。
 
@@ -238,7 +245,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-ai-host.mjs" serve \
 | 批次 `qaFix` 不是 disabled | `invalid_arguments` |
 | 显式恢复缺固定目标 | `invalid_input` 或驾驶员启动前拒绝 |
 | 固定目标已陈旧或不匹配当前状态 | `snapshot_changed`，不自动刷新 |
-| 恢复时策略改变 | `fingerprint_mismatch`，不替换原策略 |
+| 恢复时策略改变 | `fingerprint_mismatch`，不替换原策略；唯一例外是下文「已完成运行补开 QA」 |
 | 恢复时原配置发生变化 | 沿原指纹与配置漂移门禁拒绝 |
 | v2 create supersede 缺 `--supersede-target` | `supersede_unavailable` 或 `invalid_input`，不走旧入口作废运行 |
 | v2 create supersede 目标与旧运行当前状态不符 | `snapshot_changed`，不归档、不建新运行 |

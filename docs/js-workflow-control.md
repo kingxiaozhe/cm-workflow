@@ -689,6 +689,9 @@ attachedAt 是 UTC 秒级 ISO 时间。仅允许一条，回放验证完成状�
 日志复用原 writer 写 `event:decision`、`phase:qa_attach`，业务 data 只有 feature/task/qaFingerprint；
 重复恢复去重，journal 成功后日志失败可在同配置恢复时补写。
 
+v2 运行（`--control-config`）用 `qa:"disabled"` 创建、已完成时，同一附加经由把策略 `qa` 改为 `run` 的恢复启动完成，
+不需要 `--allow-qa`；见 [cm-control-policy-v2.md](cm-control-policy-v2.md) 的「已完成运行补开 QA」。
+
 附加只连接原 N6 能力，`qa` 仍请求 `qa_assess`，QA 执行、qa_result、context_refresh、finish
 沿用原门禁，不自动决定，不重跑 develop/review/complete，不清除 correction 阻断。
 （2026-09-17 dogfood 事故：create 漏传 workflow 导致已完成 feature 的强制 QA 永久卡在恢复指纹校验。）

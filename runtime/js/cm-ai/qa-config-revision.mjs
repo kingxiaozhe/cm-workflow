@@ -2,7 +2,8 @@
 import {digest,json,shape,need,hex,id,text} from './effect-contract.mjs';
 import {createHostQaExecutor} from './host-qa-executor.mjs';
 import {validateHostWorkflowConfiguration} from './host-workflow-capabilities.mjs';
-import {preQaConfigurations,readQaAttachment} from './qa-attachment.mjs';
+import {preQaConfigurations,preQaUpgradeConfigurations,readQaAttachment} from './qa-attachment.mjs';
+import {controlPolicyFromSnapshot,isControlQaUpgrade} from './control-policy.mjs';
 
 const workflow=material=>material.execution?.workflow?.configuration??material.execution?.workflow;
 const BUILT_IN='cm-host-qa-executor-v1';
@@ -113,7 +114,11 @@ export function verifyQaRevisionMaterial(snapshot,material,prior=null){
     need(digest(qaConfigurationSlice(candidate))===revisions.at(-1).qaDigest,'fingerprint_mismatch');
   }else{
     const attached=snapshot.records.some(row=>row.payload.type==='qa-attached');
-    need((attached?preQaConfigurations(candidate):[candidate]).some(p=>digest(p)===snapshot.fingerprints.config),'fingerprint_mismatch');
+    // A v2 run that turned QA on (control-policy.mjs isControlQaUpgrade) was
+    // attached from its qa:"disabled" configuration; check against that one.
+    const upgraded=attached&&isControlQaUpgrade(controlPolicyFromSnapshot(snapshot),candidate?.execution?.controlPolicy??null);
+    need((attached?[...preQaConfigurations(candidate),...(upgraded?preQaUpgradeConfigurations(candidate):[])]:[candidate])
+      .some(p=>digest(p)===snapshot.fingerprints.config),'fingerprint_mismatch');
   }
   return revisions;
 }

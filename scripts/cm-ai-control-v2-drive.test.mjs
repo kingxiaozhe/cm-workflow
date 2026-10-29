@@ -528,3 +528,138 @@ test('new v2 qa:"run" batch with a member lacking its QA workflow is refused wit
   // The driver launches the host, which keeps judging the batch as before (here the fake log mismatches its plan).
   assert.doesNotMatch(resumed.stderr,/batch_workflow_missing/);assert.equal(JSON.parse(resumed.stdout).requestId,'drive',resumed.stderr);
 });
+
+// AI潮 specs6 (2026-10-29): every run of the batch was created with qa:"disabled"; each feature's
+// last task stopped at qa_triggered/qa_execution and the project could never reach run_done.
+// Such a completed run may turn QA on once: same policy except qa:"run", with a QA workflow.
+const repro=async t=>{
+  const f=fixture(t);f.review('approved');
+  let r=f.drive(f.plan());assert.equal(r.status,0,r.stderr);
+  let result=JSON.parse(r.stdout).result;
+  for(let n=0;n<3&&result.code!=='qa_triggered';n++){
+    r=f.drive(f.plan({mode:'resume'}));assert.equal(r.status,0,r.stderr);result=JSON.parse(r.stdout).result;
+  }
+  assert.equal(result.code,'qa_triggered',JSON.stringify(result));assert.equal(result.pendingAction,'qa_execution');
+  fs.writeFileSync(path.join(f.root,'control-run.json'),JSON.stringify({...policy,qa:'run'}));
+  fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify({documentationPaths:[],applicableAgentFiles:[],
+    qa:{commands:[{id:'syntax',command:[process.execPath,'--check','target.mjs'],caseIds:[],reuseCheck:'syntax'}],
+      environment:{kind:'web',carrier:'browser',target:'fixture-target',scope:'local'},timeoutMs:60000}}));
+  return f;
+};
+test('a completed v2 run created with qa:"disabled" turns QA on once and reaches run_done',async t=>{
+  const f=await repro(t);
+  const plan=extra=>f.plan({mode:'resume',controlConfig:'control-run.json',
+    permissions:['--review-config','review.json','--workflow-config','workflow.json'],...extra});
+  const r=f.drive(plan());
+  assert.equal(r.status,0,r.stderr);
+  const result=JSON.parse(r.stdout).result;
+  assert.equal(result.state,'run_done',JSON.stringify(result));
+  const rows=fs.readFileSync(path.join(f.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(rows.some(row=>row.event==='test_run'&&row.phase==='complete'&&row.result==='PASS'));
+  assert.equal(rows.filter(row=>row.event==='decision'&&row.phase==='qa_attach').length,1);
+  // The task check result was taken over, not rerun.
+  const start=rows.filter(row=>row.event==='test_run'&&row.phase==='start').at(-1);
+  const report=fs.readFileSync(path.join(f.specsDir,'.reviews',`${start.operation_id}-execution.md`),'utf8');
+  assert.match(report,/"reusedCheck": "syntax"/);
+  const stateFile=path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json');
+  const state=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+  assert.equal(state.records.filter(row=>row.payload.type==='qa-attached').length,1);
+  assert.equal(state.records[0].payload.config.controlPolicy.qa,'disabled','the saved policy is never rewritten');
+  // The upgraded run resumes with the upgraded launch; nothing new is attached.
+  const again=f.drive(plan());assert.equal(again.status,0,again.stderr);
+  assert.equal(JSON.parse(again.stdout).result.state,'run_done');
+  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile,'utf8')).records.filter(row=>row.payload.type==='qa-attached'),
+    state.records.filter(row=>row.payload.type==='qa-attached'));
+  // QA cannot be taken back off once it was attached.
+  const back=f.drive(f.plan({mode:'resume'}));
+  assert.notEqual(back.status,0);assert.match(back.stdout+back.stderr,/fingerprint_mismatch/);
+});
+
+test('turning QA on is refused before completion, with another policy change, or without a QA workflow',async t=>{
+  const f=fixture(t);f.review('approved');
+  fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify({documentationPaths:[],applicableAgentFiles:[],
+    qa:{commands:[{id:'syntax',command:[process.execPath,'--check','target.mjs'],caseIds:[]}],
+      environment:{kind:'web',carrier:'browser',target:'fixture-target',scope:'local'},timeoutMs:60000}}));
+  const upgrade=(control,extra={})=>{fs.writeFileSync(path.join(f.root,'control-up.json'),JSON.stringify(control));
+    return f.drive(f.plan({mode:'resume',controlConfig:'control-up.json',
+      permissions:['--review-config','review.json','--workflow-config','workflow.json'],...extra}),'status');};
+  // Created, but the task is not complete yet: review is still to come.
+  f.review('changes_requested');
+  let r=f.drive(f.plan());assert.equal(r.status,0,r.stderr);
+  const stateFile=path.join(f.specsDir,'.reviews','.execution',identity.runId,'state.json');
+  const before=fs.readFileSync(stateFile,'utf8');
+  r=upgrade({...policy,qa:'run'});
+  assert.notEqual(r.status,0);assert.match(r.stdout+r.stderr,/qa_attach_not_completed|fingerprint_mismatch/);
+  assert.equal(fs.readFileSync(stateFile,'utf8'),before);
+  // Another field changed together with qa: never an upgrade.
+  r=upgrade({...policy,qa:'run',verification:'auto'});
+  assert.notEqual(r.status,0);assert.match(r.stdout+r.stderr,/fingerprint_mismatch/);
+  assert.equal(fs.readFileSync(stateFile,'utf8'),before);
+  // qa:"run" with no QA workflow is not an upgrade either.
+  fs.writeFileSync(path.join(f.root,'control-up.json'),JSON.stringify({...policy,qa:'run'}));
+  r=f.drive(f.plan({mode:'resume',controlConfig:'control-up.json'}),'status');
+  assert.notEqual(r.status,0);assert.match(r.stdout+r.stderr,/fingerprint_mismatch|QA 执行需要同时提供 --workflow-config/);
+  assert.equal(fs.readFileSync(stateFile,'utf8'),before);
+});
+
+test('a QA upgrade is exactly saved qa:"disabled" to qa:"run", and only where the launch allows it',async()=>{
+  const {isControlQaUpgrade,assertControlEntry}=await import('../runtime/js/cm-ai/control-policy.mjs');
+  const snapshot=saved=>({records:[{payload:{type:'init',config:{controlPolicy:saved}}}]});
+  assert.equal(isControlQaUpgrade(policy,{...policy,qa:'run'}),true);
+  assert.equal(isControlQaUpgrade(policy,{...policy,qa:'run',verification:'auto'}),false);
+  assert.equal(isControlQaUpgrade({...policy,qa:'run'},policy),false);
+  assert.equal(isControlQaUpgrade(policy,policy),false);
+  assert.equal(isControlQaUpgrade(policy,{...policy,qa:'run',qaFix:'manual'}),false);
+  assert.equal(isControlQaUpgrade(null,{...policy,qa:'run'}),false);
+  assert.equal(assertControlEntry(snapshot(policy),policy),null);
+  assert.throws(()=>assertControlEntry(snapshot(policy),{...policy,qa:'run'}),{code:'fingerprint_mismatch'});
+  assert.deepEqual(assertControlEntry(snapshot(policy),{...policy,qa:'run'},{allowQaUpgrade:true}),policy);
+  assert.throws(()=>assertControlEntry(snapshot(policy),{...policy,qa:'run',verification:'auto'},{allowQaUpgrade:true}),{code:'fingerprint_mismatch'});
+});
+
+const qaWorkflow=command=>({documentationPaths:[],applicableAgentFiles:[],
+  qa:{commands:[{id:'syntax',command,caseIds:[]}],environment:{kind:'web',carrier:'browser',target:'fixture-target',scope:'local'},timeoutMs:60000}});
+const toTriggered=(f,extra={})=>{
+  let r=f.drive(f.plan(extra));assert.equal(r.status,0,r.stderr);let result=JSON.parse(r.stdout).result;
+  for(let n=0;n<3&&result.code!=='qa_triggered';n++){
+    r=f.drive(f.plan({mode:'resume',...extra}));assert.equal(r.status,0,r.stderr);result=JSON.parse(r.stdout).result;
+  }
+  assert.equal(result.code,'qa_triggered',JSON.stringify(result));
+};
+for(const initial of ['qa-null','qa-config'])
+test(`a completed qa:"disabled" run created with a ${initial} workflow turns QA on too`,t=>{
+  const f=fixture(t);f.review('approved');
+  const check=[process.execPath,'--check','target.mjs'];
+  fs.writeFileSync(path.join(f.root,'workflow-initial.json'),JSON.stringify(initial==='qa-null'?{...qaWorkflow(check),qa:null}:qaWorkflow(check)));
+  toTriggered(f,{permissions:['--review-config','review.json','--workflow-config','workflow-initial.json']});
+  fs.writeFileSync(path.join(f.root,'control-run.json'),JSON.stringify({...policy,qa:'run'}));
+  fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify(qaWorkflow(check)));
+  const r=f.drive(f.plan({mode:'resume',controlConfig:'control-run.json',
+    permissions:['--review-config','review.json','--workflow-config','workflow.json']}));
+  assert.equal(r.status,0,r.stderr);
+  assert.equal(JSON.parse(r.stdout).result.state,'run_done',r.stdout);
+});
+
+test('after turning QA on, a wrong QA configuration is revised on the same run and QA then passes',t=>{
+  const f=fixture(t);f.review('approved');toTriggered(f);
+  fs.writeFileSync(path.join(f.root,'control-run.json'),JSON.stringify({...policy,qa:'run'}));
+  fs.writeFileSync(path.join(f.root,'workflow-wrong.json'),JSON.stringify(qaWorkflow([path.join(f.root,'missing-command')])));
+  const upgraded=f.drive(f.plan({mode:'resume',controlConfig:'control-run.json',
+    permissions:['--review-config','review.json','--workflow-config','workflow-wrong.json']}));
+  assert.equal(upgraded.status,0,upgraded.stderr);
+  assert.equal(JSON.parse(upgraded.stdout).result.code,'qa_result_blocked',upgraded.stdout);
+  const status=f.drive(f.plan({mode:'resume',controlConfig:'control-run.json',
+    permissions:['--review-config','review.json','--workflow-config','workflow-wrong.json']}),'status');
+  assert.equal(status.status,0,status.stderr);
+  const target=JSON.parse(status.stdout).result.launchControlTarget;assert.ok(target,status.stdout);
+  fs.writeFileSync(path.join(f.root,'launch-target.json'),JSON.stringify(target));
+  fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify(qaWorkflow([process.execPath,'--check','target.mjs'])));
+  const revised=f.drive(f.plan({mode:'resume',controlConfig:'control-run.json',
+    permissions:['--review-config','review.json','--workflow-config','workflow.json','--revise-qa-config','workflow-wrong.json',
+      '--qa-config-revision-reason','QA 命令填错，改为语法检查','--expected-control','launch-target.json']}));
+  assert.equal(revised.status,0,revised.stderr);
+  assert.equal(JSON.parse(revised.stdout).result.state,'run_done',revised.stdout);
+  const again=f.drive(f.plan({mode:'resume',controlConfig:'control-run.json',
+    permissions:['--review-config','review.json','--workflow-config','workflow.json']}));
+  assert.equal(again.status,0,again.stderr);assert.equal(JSON.parse(again.stdout).result.state,'run_done');
+});
