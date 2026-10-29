@@ -42,7 +42,8 @@ result 按该请求的原宿主合同填写：PDF 每页文字与真实工具证
 INSUFFICIENT_EVIDENCE；不能以成功形状掩盖缺失。
 
 timeoutMs 为 1..3600000 毫秒，默认 900000；宿主自己的调用超时仍有效，QA 可用原
-workflow.qa.timeoutMs 明确调整。回复文件上限默认 64 KiB；cm-ai 两个驾驶员沿用宿主
+workflow.qa.timeoutMs 明确调整。QA 应答窗口（未填为 60000）短于这里的等待时，新建运行启动前停止，
+续跑只警告。回复文件上限默认 64 KiB；cm-ai 两个驾驶员沿用宿主
 `--input-limit`。超限、非法 JSON、链接、非普通文件或身份不匹配均停止并关闭宿主，不生成结果。
 请求文件留存供诊断，包含本地任务材料，使用后由用户清理私有 exchange。
 

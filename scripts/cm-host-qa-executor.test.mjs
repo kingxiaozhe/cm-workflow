@@ -1363,3 +1363,80 @@ test('a correction never changes anything but evidence: required cleanup not don
     }finally{f.cleanup();}
   }
 });
+
+// AI潮: screenshots taken by the UI tests land outside the specs root; answers that named
+// them were BLOCKED. Each browser case is now told where its evidence is accepted from.
+test('each browser case request names an evidence directory inside .reviews, and files put there pass',async()=>{
+  const f=fixture();
+  try{
+    f.configuration.commands[0].caseIds=[];const seen=[];
+    const executor=createHostQaExecutor({...f.configuration,
+      logic:async()=>({verdict:'INSUFFICIENT_EVIDENCE',evidence:['Synthetic static observation']}),
+      browser:async request=>{seen.push(request);
+        fs.mkdirSync(request.evidenceDirectory,{recursive:true});
+        const file=path.join(request.evidenceDirectory,'walk.txt');fs.writeFileSync(file,'Synthetic observation');
+        return {verdict:'PASS',evidence:[file],environment:request.environment,cleanup:'completed'};}});
+    const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
+    assert(seen.length>=1);
+    for(const request of seen){
+      assert.equal(request.evidenceDirectory,path.join(f.binding.specsDir,'.reviews','qa-evidence',f.binding.testRunId,request.case.id));
+    }
+    const rows=fs.readFileSync(result.report,'utf8').split(/^## /m).slice(1).map(part=>JSON.parse(part.slice(part.indexOf('\n')+1)))
+      .filter(row=>row.kind==='browser');
+    for(const row of rows){assert.equal(row.verdict,'PASS');assert.equal(row.answerCorrection,undefined);}
+  }finally{f.cleanup();}
+});
+
+test('the host only names the evidence directory: nothing is created, and a symlinked location still yields no PASS',async()=>{
+  const f=fixture();
+  try{
+    f.configuration.commands[0].caseIds=[];const seen=[];
+    const outside=path.join(f.root,'elsewhere');fs.mkdirSync(outside);
+    fs.symlinkSync(outside,path.join(f.binding.specsDir,'.reviews','qa-evidence'));
+    const executor=createHostQaExecutor({...f.configuration,
+      logic:async()=>({verdict:'INSUFFICIENT_EVIDENCE',evidence:['Synthetic static observation']}),
+      browser:async request=>{seen.push(request);
+        if(request.correction)return {verdict:'BLOCKED',evidence:[],environment:request.environment,cleanup:'not_needed'};
+        assert.deepEqual(fs.readdirSync(outside),[],'the host wrote nothing through the link');
+        fs.mkdirSync(request.evidenceDirectory,{recursive:true});
+        const file=path.join(request.evidenceDirectory,'walk.txt');fs.writeFileSync(file,'Synthetic observation');
+        return {verdict:'PASS',evidence:[file],environment:request.environment,cleanup:'completed'};}});
+    const binding=begin(f,executor),result=await executor.run(binding,new AbortController().signal);
+    assert(seen.length>=1);
+    const rows=fs.readFileSync(result.report,'utf8').split(/^## /m).slice(1).map(part=>JSON.parse(part.slice(part.indexOf('\n')+1)))
+      .filter(row=>row.kind==='browser');
+    for(const row of rows)assert.equal(row.verdict,'BLOCKED');
+  }finally{f.cleanup();}
+});
+
+test('reuseCheck takes only an identical passed task check; otherwise the command runs and the row says why',async()=>{
+  for(const [name,checks,expected] of [
+    ['passed',[{id:'tests',outcome:'passed',exitCode:0,evidence:'fixture'}],null],
+    ['failed',[{id:'tests',outcome:'failed',exitCode:1,evidence:'fixture'}],'check_not_passed'],
+    ['unavailable',[{id:'tests',outcome:'unavailable',exitCode:null,evidence:'host check: timeout'}],'check_not_passed'],
+    ['not handed over',null,'no_verified_task_checks']]){
+    const f=fixture();
+    try{
+      fs.unlinkSync(path.join(f.configuration.specsDir,f.configuration.feature,'test-cases.json'));
+      const command=[process.execPath,'--test','check.test.mjs'];
+      f.configuration.commands=[{id:'declared-test',command,caseIds:[],reuseCheck:'tests'}];
+      const executor=createHostQaExecutor(f.configuration);
+      const binding=begin(f,executor);
+      const result=await executor.run(checks===null?binding:{...binding,completionChecks:checks.map(item=>({...item,command}))},
+        new AbortController().signal);
+      const row=fs.readFileSync(result.report,'utf8').split(/^## /m).slice(1).map(part=>JSON.parse(part.slice(part.indexOf('\n')+1)))
+        .find(item=>item.id==='declared-test');
+      assert.equal(row.verdict,'PASS',name);
+      if(expected===null){assert.equal(row.reusedCheck,'tests');assert.match(row.evidence[0],/^reused task check tests /);}
+      else{assert.equal(row.reuseUnavailable,expected,name);assert.equal(row.reusedCheck,undefined);}
+      // A reused check holds no command resource; a run one is acquired and released.
+      const resources=fs.readFileSync(path.join(f.binding.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
+        .filter(item=>item.event==='resource');
+      assert.equal(resources.length,expected===null?0:2,name);
+    }finally{f.cleanup();}
+  }
+  const f=fixture();
+  try{
+    assert.throws(()=>createHostQaExecutor({...f.configuration,commands:[{...f.configuration.commands[0],reuseCheck:'bad id'}]}));
+  }finally{f.cleanup();}
+});

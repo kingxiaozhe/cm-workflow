@@ -1042,7 +1042,9 @@ specs `.reviews/` 内。宿主只能写获准报告，不能修产品代码或�
 工作流配置的 `qa.timeoutMs` 是单条 QA 用例给宿主的应答窗口，整数 1–3600000 毫秒，
 不填仍为 60000。一轮真实浏览器走查（造数据、逐步点击、每步读 DOM 与存储）按分钟计，
 60 秒内做不完；超时的用例会被标记 `hostRequestTimeout` 并判 `BLOCKED`，拖垮整轮 QA。
-需要真实走查时按实际耗时调大它。
+需要真实走查时按实际耗时调大它。单任务与批次驾驶员用 `liveEvidence` 应答 `qa_logic`/`qa_browser` 时，
+若这个窗口（含默认 60000）短于 `liveEvidence.timeoutMs`（默认 900000），新建运行启动前停止并说明两边的值；
+`mode:"resume"` 只在 stderr 打 `[drive] 警告:`，已记录的运行照原配置继续。
 
 被阻断的 QA 可以单独重跑，不必重做任务：批次宿主接受 `--rerun-unknown-qa` 与
 `--rerun-blocked-qa`，语义、限制与 qaRound 上限沿用单任务宿主，两者互斥且都要求
@@ -1080,6 +1082,14 @@ cleanup只能为completed/not_needed/failed。有cleanup要求却未完成、载
 environment由可信宿主预先绑定`{kind, carrier, target, scope}`，scope仅local/test；
 Web仅browser，App仅模拟器/真机，小程序仅微信开发者工具/真机，不接受Web替代形态证据。
 真实权限、目标环境、用例解释和具体证据真实性仍由宿主负责，声明路由不是授权。
+
+QA 命令可另带 `reuseCheck: "<任务检查 id>"`（只限单代码根）：本任务审查包里同 id 的检查命令逐项相同、
+结果为 passed 且退出码 0，且运行器 `qaCompletionChecks` 核对代码根仍与该审查包一致时，这条 QA 命令直接取该检查结果，
+不再重跑；报告行记 `reusedCheck` 与证据 `reused task check <id> of reviewed package <摘要前 12 位>: …`，不占命令资源。
+任何一项不满足就照常运行，行上记 `reuseUnavailable`（`no_verified_task_checks`、`check_not_in_package`、
+`command_differs`、`check_not_passed`）。没有该字段的配置及其指纹不变；只有计划里声明了 `reuseCheck` 的执行器才会收到任务检查。
+浏览器用例请求另带 `evidenceDirectory`：建议的证据位置 `{specs}/.reviews/qa-evidence/{testRunId}/{caseId}`。
+宿主只给路径、不创建也不写入，应答方按需创建；每个证据文件仍按原规则校验（须为 `.reviews` 内、非链接的非空文件）。
 
 报告逐项保留静态结论、实际命令退出、覆盖关联及浏览器证据；数量是“声明命令检查+选定用例”，
 不是猜测测试框架内部通过数。配置/合同漂移拒绝继续，源码漂移保留文件并阻断，不回滚用户内容。

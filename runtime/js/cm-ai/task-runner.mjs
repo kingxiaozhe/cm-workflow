@@ -2140,7 +2140,16 @@ export function createTaskRunner(options) {
     need(state==='fixture_completed'&&reviewPackage?.packageDigest===packageDigest,'stale_qa');
     return freeze({paths:reviewPackage.changes.map(change=>change.path),source:'review_package'});
   };
-  const api={qaChangedFiles,reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,reworkCompletion,reworkDevelopment,reviseScope,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,acceptReviewedIntegration,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
+  // Read-only: the reviewed package's task checks, only while the code root
+  // still matches that package, so a QA command may reuse an identical passed
+  // check instead of running it again (host-qa-executor reuseCheck).
+  const qaCompletionChecks=packageDigest=>{
+    need(state==='fixture_completed'&&reviewPackage?.packageDigest===packageDigest,'stale_qa');
+    verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
+      checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
+    return freeze(structuredClone(reviewPackage.checks));
+  };
+  const api={qaChangedFiles,qaCompletionChecks,reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,reworkCompletion,reworkDevelopment,reviseScope,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,acceptReviewedIntegration,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before

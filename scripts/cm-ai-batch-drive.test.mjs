@@ -622,3 +622,18 @@ test('legacy batch refuses a develop live declaration before launch',t=>{
   const r=f.drive(f.plan({liveEvidence:{directory:'exchange',kinds:['develop']}}),'advance');
   assert.equal(r.status,2,r.stderr);assert.match(r.stderr,/没有开发方为会话的成员/);noStore(f);
 });
+// AI潮: workflow qa without timeoutMs gives each case 60 s while the live responder waits
+// 15 minutes by default, so every minutes-long iOS walkthrough came back BLOCKED.
+test('a new batch whose QA answer window is shorter than the live wait stops before starting',async t=>{
+  const f=fixture(t);prepared(f);
+  const cases=['logic','browser'].map((kind,index)=>({id:`TC-00${index+1}`,origin:'user',kind,blocking:true,
+    acIds:[],taskIds:['T-001'],title:'Fixture observation',preconditions:[],steps:['Observe fixture'],expected:['value is 42'],cleanup:[]}));
+  fs.writeFileSync(path.join(f.specsDir,'1.work/test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',cases}));
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  const plan=f.plan({permissions:['--allow-qa','--browser-qa','available'],
+    liveEvidence:{directory:'exchange',kinds:['qa_logic','qa_browser'],timeoutMs:900000}});
+  const r=f.drive(plan,'advance');
+  assert.equal(r.status,2,r.stderr);
+  assert.match(r.stderr,/1\.work\/T-001: workflow 的 qa\.timeoutMs 未填（默认 60000） 毫秒，短于 PLAN\.liveEvidence 对 qa_logic、qa_browser 的等待 900000 毫秒/);
+  noStore(f);
+});

@@ -39,7 +39,7 @@ import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {rateLimitRetryEligible} from '../runtime/js/cm-ai/drive-rate-limit.mjs';
 
-import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
+import {driverLiveEvidence,qaAnswerWindowShortfall} from '../runtime/js/cm-ai/live-evidence.mjs';
 import {HOST_ANSWER_TIMEOUT_DEFAULT_MS,hostAnswerTimeoutMs} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
@@ -313,6 +313,9 @@ function preflight(){
     if(workflow)kinds.push('documentation_inspect');
     const evidence=kinds.filter(kind=>['qa_logic','qa_browser'].includes(kind)&&!live.has(kind));
     if(evidence.length)stop(2,`缺少真实执行 runner: ${evidence.join(', ')}；不能从静态答案文件应答`);
+    const shortWindow=qaAnswerWindowShortfall(workflow?.qa,live,kinds);
+    if(shortWindow&&plan.mode==='create')stop(2,`${key}: ${shortWindow}`);
+    if(shortWindow)process.stderr.write(`[drive] 警告: ${key}: ${shortWindow}\n`);
     if(kinds.includes('check'))checkCommandShape(plan.checks?.[key],key,plan,executionPolicy);
     const taskRoot=root&&path.join(root,task.feature,task.taskId);
     const perAttempt=new Map();

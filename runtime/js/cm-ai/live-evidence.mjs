@@ -96,6 +96,22 @@ export function createLiveEvidence(config,{base,protectedRoots=[],notify=()=>{},
   }};
 }
 
+// The host gives a QA case qa.timeoutMs (60000 when omitted) to answer, while
+// the live responder waits its own timeout. A host window shorter than that wait
+// times the case out while the walkthrough is still running (an iOS UI pass
+// takes minutes) and records it BLOCKED. Drivers refuse that on create and warn
+// on resume, where the recorded configuration is kept.
+export const QA_DEFAULT_ANSWER_WINDOW_MS=60000;
+export function qaAnswerWindowShortfall(qa,live,kinds){
+  if(!qa||typeof qa!=='object')return null;
+  const window=qa.timeoutMs??QA_DEFAULT_ANSWER_WINDOW_MS;
+  const short=[...new Set(kinds)].filter(kind=>['qa_logic','qa_browser'].includes(kind)&&live.has(kind)&&live.timeoutFor(kind)>window);
+  if(!short.length)return null;
+  return `workflow 的 qa.timeoutMs ${Object.hasOwn(qa,'timeoutMs')?`为 ${window}`:`未填（默认 ${window}）`} 毫秒，`
+    +`短于 PLAN.liveEvidence 对 ${short.join('、')} 的等待 ${Math.max(...short.map(kind=>live.timeoutFor(kind)))} 毫秒：`
+    +'宿主会先超时，把还在走查的用例判 BLOCKED。把 qa.timeoutMs 调到实际走查耗时（最多 3600000），或把 liveEvidence.timeoutMs 调到不超过它';
+}
+
 export function driverLiveEvidence(plan,options){
   return createLiveEvidence(plan.liveEvidence,{...options,notify:file=>process.stderr.write(
     `[drive] live_evidence_request: ${file}\n[drive] Read the live request, execute its task, then atomically write the matching .result.json host_result.\n`)});

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
+import {createLiveEvidence,qaAnswerWindowShortfall} from '../runtime/js/cm-ai/live-evidence.mjs';
 
 function fixture(t){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-live-evidence-')));
@@ -106,4 +106,17 @@ test('develop wait uses its floor, not the shorter configured timeout',async t=>
   assert.ok(Date.now()-started>=400,'develop waits for its floor');
   const quick=Date.now();await assert.rejects(live.answer({...row,callId:'call-q'}),/live_evidence_timeout/);
   assert.ok(Date.now()-quick<400,'other kinds keep the configured timeout');
+});
+
+test('the QA answer window is compared with the live wait for qa_logic/qa_browser only',()=>{
+  const live=kinds=>({has:kind=>kinds.includes(kind),timeoutFor:kind=>kinds.includes(kind)?900000:null});
+  assert.equal(qaAnswerWindowShortfall(null,live(['qa_browser']),['qa_browser']),null);
+  assert.match(qaAnswerWindowShortfall({commands:[]},live(['qa_browser']),['qa_assess','qa_browser']),
+    /未填（默认 60000） 毫秒，短于 PLAN\.liveEvidence 对 qa_browser 的等待 900000 毫秒/);
+  assert.match(qaAnswerWindowShortfall({timeoutMs:300000},live(['qa_logic','qa_browser']),['qa_logic','qa_browser','qa_logic']),
+    /为 300000 毫秒，短于 PLAN\.liveEvidence 对 qa_logic、qa_browser 的等待/);
+  assert.equal(qaAnswerWindowShortfall({timeoutMs:900000},live(['qa_browser']),['qa_browser']),null);
+  // Not answered live, or not asked: the window is not this driver's wait.
+  assert.equal(qaAnswerWindowShortfall({},live([]),['qa_browser']),null);
+  assert.equal(qaAnswerWindowShortfall({},live(['verification_precheck']),['verification_precheck','check']),null);
 });

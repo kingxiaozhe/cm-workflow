@@ -610,3 +610,23 @@ test('driver forwards --feature for a later approved feature and --review-runtim
   const unbound=f.drive(f.plan({...bare,mode:'resume'}),'status');
   assert.notEqual(unbound.status,0);assert.match(unbound.stdout+unbound.stderr,/fingerprint_mismatch/);
 });
+test('a QA answer window shorter than the live wait stops a new run and only warns on resume',t=>{
+  const f=fixture(t);prepared(f);
+  const file=qaFixture(f,[{kind:'browser',expected:'Browser evidence'}]);
+  const withLive=extra=>{const plan={...JSON.parse(fs.readFileSync(file,'utf8')),
+    liveEvidence:{directory:'../exchange',kinds:['qa_browser'],timeoutMs:900000},...extra};
+    const target=path.join(f.root,`plan-${Math.random().toString(36).slice(2)}.json`);fs.writeFileSync(target,JSON.stringify(plan));return target;};
+  const refused=f.drive(withLive(),'advance');
+  assert.equal(refused.status,2,refused.stderr);
+  assert.match(refused.stderr,/qa\.timeoutMs 未填（默认 60000） 毫秒，短于 PLAN\.liveEvidence 对 qa_browser 的等待 900000 毫秒/);
+  assert.equal(fs.existsSync(f.store),false);
+  // A window that covers the wait launches as before (nobody answers: the case times out at once).
+  const workflow=JSON.parse(fs.readFileSync(path.join(f.root,'workflow.json'),'utf8'));
+  fs.writeFileSync(path.join(f.root,'workflow.json'),JSON.stringify({...workflow,qa:{...workflow.qa,timeoutMs:1000}}));
+  const created=f.drive(withLive({liveEvidence:{directory:'../exchange',kinds:['qa_browser'],timeoutMs:1000}}),'advance');
+  assert.doesNotMatch(created.stderr,/qa\.timeoutMs/);assert(fs.existsSync(f.store),created.stderr);
+  // The recorded run resumes with the shorter window; the driver only warns.
+  const resumed=f.drive(withLive({mode:'resume'}),'advance');
+  assert.match(resumed.stderr,/\[drive\] 警告: workflow 的 qa\.timeoutMs 为 1000 毫秒，短于 PLAN\.liveEvidence 对 qa_browser 的等待 900000 毫秒/);
+  assert.doesNotMatch(resumed.stderr,/^\[drive\] 停止|invalid_arguments/m);
+});

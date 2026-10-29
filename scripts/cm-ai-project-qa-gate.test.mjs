@@ -400,3 +400,59 @@ test('#17 a skip is fine while tasks remain, but a terminal feature whose latest
   assert.equal(refused.code,'project_qa_not_passed',JSON.stringify(refused));
   assert.deepEqual(refused.outstandingQa,[{feature:'1.work',runId:'run-T-001',taskId:'T-001',attempt:1,status:'qa_skipped'}]);
 });
+
+// AI潮 2026-10 batches: an iOS task check already ran the full unit and UI suites on the
+// reviewed package; the QA round ran the identical command again for minutes. reuseCheck
+// lets a QA command take that passed check while the code root still matches the package.
+test('qaCompletionChecks returns the reviewed checks only while the code root matches the package',async()=>{
+  const p=project(),identity=p.first.identity;
+  const terminal=(request,result)=>({version:1,invocationId:request.invocationId,
+    contextId:request.contextId,provider:request.provider,effectiveModel:'fixture',status:'succeeded',accepted:true,result});
+  const checks=[{id:'syntax',command:[process.execPath,'--check','a.mjs'],outcome:'passed',exitCode:0,evidence:'fixture'}];
+  const runner=createTaskRunner({root:p.codeProject,identity,scope:p.first.scope,requirements:p.first.requirements,
+    excludedContexts:['control'],timeoutMs:5000,
+    developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:request=>{
+      fs.writeFileSync(path.join(p.codeProject,'a.mjs'),'export const a=1;\n');
+      return terminal(request,{outcome:'implemented'});}},
+    reviewers:[{id:'reviewer',provider:'codex',requestedModel:'fixture',allowed:true,available:true,
+      contexts:['review-one','review-two'],run:request=>terminal(request,{verdict:'approved',
+        packageDigest:request.payload.reviewPackage.packageDigest,examinedPaths:reviewPaths(request.payload.reviewPackage),
+        findings:[],summary:'Synthetic review'})}],
+    check:()=>checks,commit:()=>({outcome:'fixture_completed'})});
+  const effect=kind=>({version:1,id:`${kind}-1`,identity,kind});
+  await runner.executeEffect(effect('develop'));
+  const reviewed=await runner.executeEffect(effect('review'));
+  assert.throws(()=>runner.qaCompletionChecks(reviewed.packageDigest),{code:'stale_qa'});
+  const completed=await runner.executeEffect(effect('complete'));
+  assert.equal(completed.state,'fixture_completed',JSON.stringify(completed));
+  assert.deepEqual(runner.qaCompletionChecks(completed.packageDigest),checks);
+  const wrongDigest=(completed.packageDigest[0]==='0'?'1':'0')+completed.packageDigest.slice(1);
+  assert.throws(()=>runner.qaCompletionChecks(wrongDigest),{code:'stale_qa'});
+  // The code root moved on after completion: the checks no longer speak for it.
+  fs.writeFileSync(path.join(p.codeProject,'a.mjs'),'export const a=3;\n');
+  assert.throws(()=>runner.qaCompletionChecks(completed.packageDigest));
+  assert.equal(runner.status().state,'fixture_completed');
+});
+
+test('a QA command with reuseCheck takes the identical passed task check; anything else runs and says why',async()=>{
+  for(const [name,command,expected] of [
+    ['reused','syntax',null],
+    ['other command',null,'command_differs'],
+    ['unknown check','missing','check_not_in_package']]){
+    const p=project();p.state.browserUp=true;
+    const qaCommand={id:'unit',command:[process.execPath,'--check',name==='other command'?'b.mjs':'a.mjs'],caseIds:[],reuseCheck:command??'syntax'};
+    const createExecutor=options=>createHostQaExecutor({...options,commands:[qaCommand]});
+    const done=await p.advance(p.first,p.execution('1.work',{createExecutor,
+      write:()=>fs.writeFileSync(path.join(p.codeProject,'a.mjs'),'export const a=1;\n')}),'create');
+    assert.notEqual(done.code,'qa_result_blocked',`${name}: ${JSON.stringify(done)}`);
+    const start=fs.readFileSync(path.join(p.specsDir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
+      .filter(row=>row.event==='test_run'&&row.phase==='start').at(-1);
+    const report=fs.readFileSync(path.join(p.specsDir,'.reviews',`${start.operation_id}-execution.md`),'utf8');
+    const row=report.split(/^## /m).slice(1).map(part=>JSON.parse(part.slice(part.indexOf('\n')+1))).find(item=>item.id==='unit');
+    assert.equal(row.verdict,'PASS',name);
+    if(expected===null){
+      assert.equal(row.reusedCheck,'syntax');assert.equal(row.reuseUnavailable,undefined);
+      assert.match(row.evidence[0],/^reused task check syntax of reviewed package [0-9a-f]{12}: /);
+    }else{assert.equal(row.reusedCheck,undefined,name);assert.equal(row.reuseUnavailable,expected,name);}
+  }
+});
