@@ -71,7 +71,7 @@ result必须填真实结果，不留空对象。不同kind的合同见当前请�
 | --- | --- |
 | prd_analyze | 按原Step 0–5分析与提问；保留用户用例、形态、平台与范围约束。question交给用户，不能代答。 |
 | prd_materials | 用已可用、已授权的实际工具处理材料；HTML交互只走Codex内置浏览器，PDF逐页覆盖，不伪造截图/页数/证据。能力不足返回blocked。 |
-| prd_generate | 按payload.phase执行：design只做Step6–9的需求/设计；tasks_after_design默认保留acceptedDesign原feature及正文；整稿自检失败时按下文登记同清单修订；full_draft走原Step6–10。保留UI基准与原粒度约束，只回正文不写文件。 |
+| prd_generate | 按payload.phase执行：design只做Step6–9的需求/设计；tasks_after_design默认保留acceptedDesign原feature及正文，每个feature只回tasks.md和适用的test-cases.json，省略的requirements.md/design.md由宿主按原字节补回（64KB只算新回的文档；照旧回全文也须逐字一致）；整稿自检失败时按下文登记同清单修订；full_draft走原Step6–10。保留UI基准与原粒度约束，只回正文不写文件。 |
 | prd_self_check | 读取spec-self-check.md与相关真实代码/地图/用例，逐项返回有依据的结果；机械通过不等于语义通过，不能用自检冒充独立审查。 |
 | prd_review | 按原9.5或10.6，使用实际授权的新上下文独立审查，核对作者与审查者上下文标识、材料摘要并原样回传。无法独立时只允许预先选定的显式self-degraded；开始后不换模式或补审。 |
 | prd_correct | 对原findings提出完整原路径清单与逐项采纳/升级决定；不自行写规格，不新增范围/勾任务/再次review。 |

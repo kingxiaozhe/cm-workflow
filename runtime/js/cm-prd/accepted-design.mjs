@@ -63,3 +63,11 @@ export function inspectAcceptedPrdDesign(specs,original,selection=null,{draftDig
     &&!inventory.some(name=>name!==feature.directory&&name.replace(/^\d+\./,'')===feature.name),'prd_design_inventory_invalid');
   const result={features,evidence,inventory,selection};return json({...result,bindingDigest:digest(result)});
 }
+
+// The acceptedDesign the next prd_generate is built on, from a saved analysis
+// checkpoint: leaving design_ready the host reads it again from the files, later
+// it keeps the one it recorded. Drivers preflight tasks_after_design replies with it.
+export function acceptedPrdDesignForPlanning(specs,analysis){
+  return analysis?.stage==='design_ready'?inspectAcceptedPrdDesign(specs,analysis.designDraft,analysis.designRiskSelection)
+    :analysis?.acceptedDesign??null;
+}

@@ -1720,7 +1720,9 @@ design_ready 可用 `{requestId,operation:"save_design"}` 配合原 --allow-spec
 advance 从每个原 feature 的 design-r1 和已完成原 receipt 读取当前设计，要求需求正文仍等于原稿，
 design 精确匹配处置哈希；冻结当前清单和证据，在生成、自检、保存边界重查。未处置或漂移不派生任务。
 prd_generate phase=tasks_after_design 携 acceptedDesign，只允许增加 tasks/适用测试合同，feature顺序、编号、
-需求和设计正文默认保留。仅整稿自检明确失败后，原重生成可附非空 selfCheckRevisionReason 修订
+需求和设计正文默认保留。回包可省略各 feature 的 requirements.md/design.md，宿主与驾驶员预检都按 acceptedDesign
+原字节补回后再做原有校验，所以每次回包的 64 KiB 上限只计新增的 tasks/测试合同；补回后的整稿上限为 64 KiB 加
+已接受文档的字节。照旧带全文时仍须逐字一致、仍受 64 KiB 回包上限；重复文档、feature 名或数量不符照旧拒绝。仅整稿自检明确失败后，原重生成可附非空 selfCheckRevisionReason 修订
 同清单内的需求/设计正文；不增删 feature 或文件。checkpoint 记录 selfCheckRevision，将原因、
 前后 SHA、轮次与原失败记录绑定，保留历史和两轮上限。自检通过后 save_draft 先归档修订证据，
 再保存新版；部分写入显式恢复，额外漂移仍拒绝。后续优先接受已完成 split 回执，其次已保存自检修订，
