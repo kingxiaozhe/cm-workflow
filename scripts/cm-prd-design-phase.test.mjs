@@ -12,7 +12,7 @@ import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {inspectPrdDesignDraft} from '../runtime/js/cm-prd/draft.mjs';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
 import {savePrdDesign,savePrdDraft,savePrdPromotedDraft} from '../runtime/js/cm-prd/draft-save.mjs';
-import {inspectPrdDraft} from '../runtime/js/cm-prd/draft.mjs';
+import {inspectPrdDraft,inspectPrdDraftReply} from '../runtime/js/cm-prd/draft.mjs';
 import {runPrdHostReview} from '../runtime/js/cm-prd/review-host.mjs';
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
 import {inspectPrdSplitDesign} from '../runtime/js/cm-prd/split-design.mjs';
@@ -379,8 +379,16 @@ test('tasks after design may leave out accepted requirements and design; only th
   const accepted=acceptedPrdDesignForPlanning(dir,host.checkpoint());
   const result=await host.plan('Tasks now');
   assert.ok(['draft_ready','draft_self_check_failed'].includes(result.stage),result.stage);
-  // A driver preflights with the same accepted design the host sends.
+  // A driver preflights with the same accepted design the host sends, and in the
+  // host's order: a reply that still repeats the accepted documents and exceeds
+  // 64 KiB is refused before the host is started, not after it records the answer.
   assert.deepEqual(accepted,seen.payload.acceptedDesign);
+  const options={nextIndex:1,generateCases:true,userCasesProvided:false};
+  const reply=documents=>({status:'draft',summary:'Tasks only',features:accepted.features.map(feature=>({name:feature.name,
+    testCasesReason:'no_observable_behavior',documents:documents(feature)}))});
+  assert.equal(inspectPrdDraftReply(reply(()=>[tasksOnly]),accepted,options).features.length,2);
+  assert.throws(()=>inspectPrdDraftReply(reply(feature=>[...feature.documents,tasksOnly]),accepted,options),
+    error=>(error.code??error.message)==='limit_exceeded');
   assert.match(seen.payload.instructions,/leaving out requirements\.md\/design\.md/);
   const draft=host.status().draft;
   assert.ok(Buffer.byteLength(JSON.stringify(draft.features))>65536);

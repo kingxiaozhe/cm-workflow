@@ -56,6 +56,15 @@ export function withAcceptedPrdDocuments(reply,acceptedDesign){
   return {reply:{...reply,features},
     limit:PRD_DRAFT_LIMIT+Buffer.byteLength(JSON.stringify(acceptedDesign.features.map(feature=>feature.documents)))};
 }
+// A driver's preflight of a draft reply, in the host's order: the 64 KiB limit on
+// the reply as sent first, then the draft checks on the draft with accepted
+// documents restored. The revision reason is an envelope field, not draft schema.
+export function inspectPrdDraftReply(value,acceptedDesign,options){
+  prdDraftJson(value);
+  const assembled=withAcceptedPrdDocuments(value,acceptedDesign);
+  const {selfCheckRevisionReason,...draftReply}=assembled.reply;
+  return inspectPrdDraft(draftReply,{...options,limit:assembled.limit});
+}
 export function inspectPrdDraft(raw,{nextIndex,generateCases,userCasesProvided,limit=PRD_DRAFT_LIMIT}){
   const reply=prdDraftJson(raw,limit);shape(reply,['status','summary','features']);
   need(reply.status==='draft'&&typeof reply.summary==='string'&&reply.summary.trim()

@@ -32,7 +32,7 @@ import {createHash} from 'node:crypto';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {inspectCmPrdAdmission,inspectCmPrdSources} from './cm-prd-entry.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
-import {inspectPrdDraft,inspectPrdDesignDraft,nextPrdFeatureIndex,prdFeatureInventory,withAcceptedPrdDocuments} from '../runtime/js/cm-prd/draft.mjs';
+import {inspectPrdDraftReply,inspectPrdDesignDraft,nextPrdFeatureIndex,prdFeatureInventory} from '../runtime/js/cm-prd/draft.mjs';
 import {acceptedPrdDesignForPlanning} from '../runtime/js/cm-prd/accepted-design.mjs';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal} from '../runtime/js/cm-prd/change.mjs';
 import {checkPrdDraftMechanics} from '../runtime/js/cm-prd/self-check.mjs';
@@ -266,13 +266,9 @@ function validate(kind,value,ctx){
         ??ctx.state?.checkpoint?.analysis?.draft?.features?.[0]?.directory?.split('.')[0]
         ??nextPrdFeatureIndex(prdFeatureInventory(ctx.specs)));
       try{if(value.status==='design')inspectPrdDesignDraft(value,{nextIndex});
-        else{
-          // Same as the host: the revision reason is a top-level envelope field, not draft
-          // schema, and requirements/design left out are restored from the accepted design.
-          const assembled=withAcceptedPrdDocuments(value,acceptedPrdDesignForPlanning(ctx.specs,ctx.state?.checkpoint?.analysis));
-          const {selfCheckRevisionReason,...draftReply}=assembled.reply;
-          inspectPrdDraft(draftReply,{nextIndex,generateCases:ctx.config.policies.generate_cases,
-            userCasesProvided:ctx.sources.sourceInspection.userCases!==null,limit:assembled.limit});}}
+        // Same order as the host; requirements/design left out are restored from the accepted design.
+        else inspectPrdDraftReply(value,acceptedPrdDesignForPlanning(ctx.specs,ctx.state?.checkpoint?.analysis),
+          {nextIndex,generateCases:ctx.config.policies.generate_cases,userCasesProvided:ctx.sources.sourceInspection.userCases!==null});}
       catch(e){fail('generate.json 不符合草稿 schema',e.code??e.message);}
     }
   }else if(kind==='prd_review'){
