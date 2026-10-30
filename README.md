@@ -17,6 +17,14 @@
 
 ## 最近更新
 
+**0.18.0**
+
+- **升级注意**：`/cm-ai` 默认按 `tasks.md` 自动分组，每个任务在自己的 worktree 里开发，能并行的并行；项目配置可用 `parallel` 关掉或限并发。升级前已开始的运行和批次按原配置恢复。
+- **人工走查能留在批次里**：任务语法升到第 3 版，功能末任务可标 `- 开发: 会话`，由当前会话实时完成；进行中的 `/cm:prd` 会话保持原来的规则版本。
+- **iOS 等原生项目能开着自动质检**：质检可复用任务检查结果；关着质检做完的 v2 运行能补开一次；答复窗口太短会提前拦下。
+- **宿主自己验证「先失败、后通过」**：新增 v2 策略 `verification:"auto"`，开发进程交付后由宿主实跑闸门。
+- **限流与提醒更可靠**：Codex、Claude 的 429 限流能认出来并自动等待重试；手机提醒只在真要你处理时才响，并写清要做什么。详见[更新日志](CHANGELOG.md)。
+
 **0.17.1**
 
 - **PRD 历史回执不再阻断当前新批次**：旧 feature 的归档问题只登记附注，当前规格和准备后的漂移仍严格核对。
@@ -247,7 +255,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.17.1 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.18.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
