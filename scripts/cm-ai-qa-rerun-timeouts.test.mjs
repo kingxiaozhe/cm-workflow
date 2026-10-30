@@ -41,7 +41,7 @@ if(mode==='exit65')process.exit(65);
 if(mode!=='ready')process.exit(1);
 `;
 
-function fixture(t,{browser=false}={}){
+function fixture(t,{browser=false,cleanup=[]}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-qa-rerun-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const codeProject=path.join(root,'code'),specsDir=path.join(root,'specs'),feature='1.work';
@@ -52,7 +52,7 @@ function fixture(t,{browser=false}={}){
   if(browser)fs.writeFileSync(path.join(specsDir,feature,'test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',
     cases:Array.from({length:browser===true?1:browser},(_,index)=>({id:`TC-00${index+1}`,origin:'generated',kind:'browser',
       blocking:true,acIds:['AC-001'],taskIds:['T-001'],title:'four tabs',
-      preconditions:['UI test'],steps:['launch on simulator'],expected:['four tabs visible'],cleanup:[]}))}));
+      preconditions:['UI test'],steps:['launch on simulator'],expected:['four tabs visible'],cleanup}))}));
   const manifest=buildManifest(specsDir);
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:manifest,
     ...(browser?{testCases:manifest.filter(item=>item.path.endsWith('/test-cases.json'))}:{})}));
@@ -247,6 +247,40 @@ test('#13 a host-declared BLOCKED simulator case re-runs on unchanged code with 
   assert.deepEqual(superseded[0].blocked_cases,['TC-001']);
   assert.deepEqual(testRuns(f,'start').map(row=>row.attempt),[1,2]);
   assert.deepEqual(testRuns(f,'complete').map(row=>row.result),['BLOCKED','PASS']);
+});
+
+// A case whose contract requires cleanup, answered PASS without completing it, is
+// BLOCKED for cleanup by the host (blocked_reason in the durable case row). A
+// completed round reruns it like a failed cleanup; a downgraded FAIL never does.
+test('#13 a PASS that skipped the required cleanup re-runs on unchanged code with --rerun-blocked-qa',POSIX,async t=>{
+  const f=fixture(t,{browser:true,cleanup:['remove the seeded fixture']}),workflow=f.workflow('workflow',probeQa({environment:simulator}));
+  const evidence=path.join(f.specsDir,'.reviews','tc-001.png');
+  const answer=(verdict,cleanup)=>row=>{fs.writeFileSync(evidence,'png');
+    return {verdict,evidence:[evidence],environment:row.payload.environment,cleanup};};
+  const first=done(await launch(f,{mode:'create',workflow,extra:['--browser-qa','available'],answers:{qa_browser:answer('PASS','not_needed')}}));
+  assert.equal(first.code,'qa_result_blocked',JSON.stringify(first));
+  const blocked=testRuns(f,'case_blocked');
+  assert.equal(blocked.length,1);assert.equal(blocked[0].blocked_reason,'cleanup');assert.equal(blocked[0].answered_verdict,'PASS');
+  const rerun=done(await launch(f,{workflow,extra:['--browser-qa','available','--rerun-blocked-qa'],answers:{qa_browser:answer('PASS','completed')}}));
+  assert.equal(rerun.state,'run_done',JSON.stringify(rerun));
+  const superseded=testRuns(f,'superseded');
+  assert.equal(superseded.length,1);assert.equal(superseded[0].reason,'host_evidence_problem');
+  assert.deepEqual(superseded[0].blocked_cases,['TC-001']);
+  assert.deepEqual(testRuns(f,'complete').map(row=>row.result),['BLOCKED','PASS']);
+});
+
+test('#13 a FAIL the host downgraded for a skipped cleanup still refuses --rerun-blocked-qa',POSIX,async t=>{
+  const f=fixture(t,{browser:true,cleanup:['remove the seeded fixture']}),workflow=f.workflow('workflow',probeQa({environment:simulator}));
+  const first=done(await launch(f,{mode:'create',workflow,extra:['--browser-qa','available'],
+    answers:{qa_browser:row=>{const evidence=path.join(f.specsDir,'.reviews','tc-001.png');fs.writeFileSync(evidence,'png');
+      return {verdict:'FAIL',evidence:[evidence],environment:row.payload.environment,cleanup:'not_needed'};}}}));
+  assert.equal(first.code,'qa_result_blocked',JSON.stringify(first));
+  const blocked=testRuns(f,'case_blocked');
+  assert.equal(blocked[0].blocked_reason,'cleanup');assert.equal(blocked[0].answered_verdict,'FAIL');
+  const before=f.rows().length;
+  const rerun=done(await launch(f,{workflow,extra:['--browser-qa','available','--rerun-blocked-qa'],answers:{qa_browser:'IGNORE'}}));
+  assert.equal(rerun.code,'qa_rerun_not_blocked_by_evidence',JSON.stringify(rerun));
+  assert.equal(f.rows().length,before);assert.equal(testRuns(f,'superseded').length,0);
 });
 
 // Q14: rounds ended by a host or environment gap (here a killed command) do not

@@ -1144,7 +1144,7 @@ workflow 配置的 `qa` 在 `commands/environment` 之外可选 `timeoutMs`（1�
 取消、断连与超时保留各自原因，迟到答复不会被采纳。
 
 已 complete 的 BLOCKED 结果用 `--rerun-blocked-qa` 在同一代码上重跑，除原有宿主证据问题外，还接受会话自己回答的
-browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报告无此标记仍不适用）、没有退出码的命令结果
+browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报告无此标记仍不适用）、用例要求清理而会话回答未完成清理（报告行 `cleanup` 不是 `completed`，且应答时追加的 `case_blocked` 日志行记 `blocked_reason: "cleanup"`；会话原回答 FAIL 的不适用）、没有退出码的命令结果
 （host-check 的 timeout、signal_exit、spawn_failed、output_*、cleanup_failed）以及只因这类映射命令阻断的 logic 用例
 （执行器写 `commandUnavailable: true`；`[需确认]` 的 logic 用例写 `needsConfirmation: true`，任何路径都不适用）。
 没有声明命令、延后用例、`[需确认]`、缺少浏览器能力仍不适用。源码漂移（执行期间范围内文件被改，执行器把全部行改为 BLOCKED 并标 `sourceChanged`）只在该行漂移前的判定是 PASS、或本身符合上述可重跑条件的 BLOCKED 时适用；执行器在报告行另记 `verdictBeforeSourceChange`，并与命令退出码、browser 的 `case_complete`/`case_blocked` 日志行、logic 映射命令的退出码交叉核对，不符按未知拒绝；没有该字段的旧报告由命令退出码和 browser 日志行推出，logic 行无法推出即拒绝。漂移前为 FAIL 的行一律不适用。重跑前运行须回到 `fixture_completed` 且无 code（代码已还原到审查包）。判定以权威输入为准：`[需确认]` 读该 feature 的
