@@ -10,7 +10,8 @@
 
 | 驾驶员 | 允许的 kinds |
 | --- | --- |
-| `cm-ai-drive.mjs`、`cm-ai-batch-drive.mjs` | `qa_logic`、`qa_browser`、`verification_precheck` |
+| `cm-ai-drive.mjs` | `qa_logic`、`qa_browser`、`verification_precheck` |
+| `cm-ai-batch-drive.mjs` | `qa_logic`、`qa_browser`、`verification_precheck`、`develop`（只给会话成员，见下节） |
 | `cm-prd-drive.mjs` | `prd_materials` |
 | `cm-test-drive.mjs` | `qa_browser` |
 
@@ -41,9 +42,32 @@ result 按该请求的原宿主合同填写：PDF 每页文字与真实工具证
 INSUFFICIENT_EVIDENCE；不能以成功形状掩盖缺失。
 
 timeoutMs 为 1..3600000 毫秒，默认 900000；宿主自己的调用超时仍有效，QA 可用原
-workflow.qa.timeoutMs 明确调整。回复文件上限默认 64 KiB；cm-ai 两个驾驶员沿用宿主
+workflow.qa.timeoutMs 明确调整。QA 应答窗口（未填为 60000）短于这里的等待时，新建运行启动前停止，
+续跑只警告。回复文件上限默认 64 KiB；cm-ai 两个驾驶员沿用宿主
 `--input-limit`。超限、非法 JSON、链接、非普通文件或身份不匹配均停止并关闭宿主，不生成结果。
 请求文件留存供诊断，包含本地任务材料，使用后由用户清理私有 exchange。
+
+## 批次会话成员的实时开发（develop）
+
+v2 控制策略 `development:"provider"` 的批次里，`batch.memberDevelopment` 写成
+`{"功能/任务":"session"}` 的成员由当前会话开发，其余成员仍由开发进程开发；没有这个字段的旧批次行为不变。
+
+- 有会话成员时，`advance` 的 PLAN 必须在 `liveEvidence.kinds` 声明 `develop`，否则启动前拒绝；
+  声明了 `develop` 而批次没有会话成员也拒绝。单任务驾驶员不接受 `develop`。
+- 会话成员的写代码方就是宿主所在的当前会话，所以宿主运行时必须等于项目声明的写代码方：例如 Claude 写、Codex 审时，
+  PLAN.permissions 要带 `--runtime claude`（不传时按 codex 算），否则启动前拒绝 `session_coder_runtime_mismatch`，原因里写明该传什么。
+  开发进程成员（含并行成员）的审查与审查前连通检查始终按项目声明的审查方，不随 `--runtime` 改变。
+- 会话成员不预写 `develop.json`/`develop-a2.json`，驾驶员也不再为它们加 `revision_answer_required` 停点；
+  其余成员的静态答案预检不变。第 2 轮由宿主带审查意见另发新请求，第 1 轮回复不能复用。
+- 请求文件是宿主原样的开发请求（`payload` 含完整 `request`、`prompt`、`codeProject`、`editMode`、`expected`）。
+  会话**不直接改代码根**，只回受保护编辑提案，驾驶员原样交回宿主，由宿主核对后应用并跑检查：
+  - 完成：`{"status":"succeeded","value":{"outcome":…,"application":…,"retrospective":…,"requirements":…},"edits":[{"path":…,"beforeSha256":…,"content":…}]}`；
+  - 业务上做不了（如走查环境不可用）：`{"status":"succeeded","value":{"outcome":"blocked","reason":…,…},"edits":[]}`，任务停在 blocked 等人决定；
+  - 传输失败：沿用 `{"status":"failed","code":…}`，不附 `edits`。
+- 会话成员开发的**宿主期限固定 30 分钟**（`host-conversation-execution.mjs` 的会话开发上限），到时由宿主记为
+  `call_timeout` 并按原恢复规则重发。驾驶员的文件等待取 `timeoutMs` 与「30 分钟与 `CM_HOST_ANSWER_TIMEOUT_MINUTES`
+  中较大者 + 1 分钟」的较大值，只为保证不早于宿主超时、不由驾驶员先关宿主留下未决调用；
+  `CM_HOST_ANSWER_TIMEOUT_MINUTES` **不会**延长宿主自己的 30 分钟期限。
 
 ## 中断与恢复
 

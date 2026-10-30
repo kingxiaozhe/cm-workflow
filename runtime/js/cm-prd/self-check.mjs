@@ -1,7 +1,7 @@
 // Mechanical subset of the existing Step 10.5 checklist. No semantic approval.
 import {parseFeatureTaskText,validDependencies,declaredAcceptanceIds,DEPENDENCY} from '../cm-ai/cm-ai-admission.mjs';
-import {specLines,taskLines} from '../spec-task-line.mjs';
-import {parseTaskScopes,BOOTSTRAP_FEATURE} from '../task-scope.mjs';
+import {specLines,taskLines,TASK_GRAMMAR} from '../spec-task-line.mjs';
+import {parseTaskScopes,BOOTSTRAP_FEATURE,sessionTaskProblem,sessionTaskReason} from '../task-scope.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
 import {json,shape,need,digest} from '../cm-ai/effect-contract.mjs';
 
@@ -50,7 +50,11 @@ function outsideFences(source){
 // files it may change, so parallel work is decided from the approved tasks.md
 // instead of a session's guess. Tasks an approved tasks.md already had may stay
 // without scope (they simply run serially).
-export const PRD_SELF_CHECK_RULES=3;
+// Rule 4 reads tasks.md as task grammar 3 (`开发: 会话`) and adds the session-task checks.
+export const PRD_SELF_CHECK_RULES=4;
+// Every rule a session, an operation or a recorded report may carry. Earlier rules
+// stay listed explicitly so raising the current one never drops them.
+export const PRD_SELF_CHECK_RULE_VERSIONS=Object.freeze([...new Set([PRD_SELF_CHECK_RULES,3,2,1])]);
 // Task- or dependency-looking lines the parser skips: a task written this way
 // would silently drop out of execution.
 const TASK_LIKE=/^\s*-\s*\[[^\]]*\]\s+(?:~~)?T-/,DEPENDENCY_LIKE=/^\s*-\s*T-\S*\s+依赖(?:\s|$)/;
@@ -92,7 +96,7 @@ const SCOPE_HINT='每个任务下写一行缩进子项，例如 - 范围: `src/a
 const SCOPE_HINTS=[SCOPE_HINT,'每个任务下写一行缩进子项，例如 - 范围: `src/a.js`, `test/a.test.js`；列不出文件的任务写 - 范围: 串行'];
 export function matchesPrdDraftMechanics(draft,recorded,options={}){
   const want=digest(recorded);
-  return [PRD_SELF_CHECK_RULES,2,1].some(rules=>{
+  return PRD_SELF_CHECK_RULE_VERSIONS.some(rules=>{
     const report=checkPrdDraftMechanics(draft,{...options,rules});
     return SCOPE_HINTS.some(hint=>digest({...report,findings:report.findings.map(item=>
       item.code==='task_scope_missing'?{...item,reason:{...item.reason,expected:hint}}:item)})===want);
@@ -103,8 +107,13 @@ export function matchesPrdDraftMechanics(draft,recorded,options={}){
 // (correction, disposition, summary) pass it when the save recorded that the draft
 // carried scopes (task-scope-record.mjs), so a correction cannot drop them while
 // every other check stays on its old rule.
-export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1,scopes=null}={}){
-  need([1,2,PRD_SELF_CHECK_RULES].includes(rules),'prd_self_check_rules_invalid');
+// `sessionTasks` ([directory...]) likewise applies only what rule 4 adds (tasks.md
+// read as grammar 3, with the session-task checks) to the features whose save
+// recorded rule 4, so a correction cannot move or add a `开发: 会话` mark unnoticed.
+export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1,scopes=null,sessionTasks=null}={}){
+  need(PRD_SELF_CHECK_RULE_VERSIONS.includes(rules),'prd_self_check_rules_invalid');
+  need(sessionTasks===null||Array.isArray(sessionTasks)&&sessionTasks.every(item=>typeof item==='string'),
+    'prd_self_check_rules_invalid');
   const findings=[],features=[];
   for(const feature of draft.features){
     const files=new Map(feature.documents.map(document=>[document.path,document.content]));
@@ -130,8 +139,10 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
         if(!reported.has(code))add(code);
     }
     const scope=scopes!==null&&Object.hasOwn(scopes,feature.directory)?scopes[feature.directory]:null;
+    const grammar3=rules>=4||sessionTasks?.includes(feature.directory)===true;
     if((rules>=3||scope!==null)&&!parsed.error){
-      const scopes=parseTaskScopes(files.get('tasks.md'));
+      // Rules 1-3 predate grammar 3: a `开发:` line there stays prose, as it was then.
+      const scopes=parseTaskScopes(files.get('tasks.md'),{grammar:grammar3?TASK_GRAMMAR:2});
       const problems=scopes.errors.map(item=>`${item.taskId??'(无任务)'} 第 ${item.line} 行：${item.message}`);
       // 串行 is the scaffold generator's exit (a N.bootstrap feature), not an opt-out for business tasks.
       if(!BOOTSTRAP_FEATURE.test(feature.directory))for(const id of scopes.serial)problems.push(`${id}：范围: 串行 只用于脚手架功能（N.bootstrap），其余任务要列出文件`);
@@ -144,6 +155,14 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
       if(missing.length)add('task_scope_missing',{field:`${feature.directory}/tasks.md`,tasks:missing,
         expected:SCOPE_HINT});
     }
+    else if(grammar3&&!parsed.error){
+      // A rule-4 re-check without the scope check still reports the 开发 line's own
+      // grammar errors (bad value, repeated, not under a task), not the rest of rule 3.
+      const problems=parseTaskScopes(files.get('tasks.md'),{grammar:TASK_GRAMMAR}).errors.filter(item=>item.developer)
+        .map(item=>`${item.taskId??'(无任务)'} 第 ${item.line} 行：${item.message}`);
+      if(problems.length)add('task_scope_invalid',{field:`${feature.directory}/tasks.md`,problems:problems.slice(0,10)});
+    }
+    if(grammar3&&!parsed.error)for(const item of sessionTaskFindings(feature.directory,files.get('tasks.md')))add(item.code,item.reason);
     if(files.has('test-cases.json')){
       let cases;try{cases=JSON.parse(files.get('test-cases.json'));}catch{add('test_cases_invalid');}
       if(cases){
@@ -162,4 +181,17 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
     pending:['task_boundary_and_existing_asset_overlap','acceptance_verifiability','user_case_semantics',
       'test_contract_applicability','brownfield_references_and_B2_B3_B5_if_applicable'],
     completeSelfCheck:false,independentReview:false,completionAuthorized:false});
+}
+
+// Grammar 3 mechanical check (task-scope.mjs sessionTaskProblem): only the explicit
+// `开发: 会话` marks, never a guess at which task needs a session. Findings shaped like
+// checkPrdDraftMechanics' own; empty under grammar 1/2, where the mark is prose, and for
+// a tasks.md the parser already refuses (that finding is reported on its own).
+export function sessionTaskFindings(directory,source,{grammar=TASK_GRAMMAR}={}){
+  if(grammar!==TASK_GRAMMAR)return [];
+  const parsed=parseFeatureTaskText(source,{grammar});
+  if(parsed.error)return [];
+  const problem=sessionTaskProblem(parsed.tasks,parseTaskScopes(source,{grammar}).sessions,parsed.dependencies);
+  return problem?[{feature:directory,code:problem.code,reason:{field:`${directory}/tasks.md`,tasks:problem.tasks,
+    ...(problem.dependents?{dependents:problem.dependents}:{}),expected:sessionTaskReason(problem)}}]:[];
 }

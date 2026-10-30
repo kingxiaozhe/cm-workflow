@@ -17,6 +17,15 @@
 
 ## 最近更新
 
+**0.18.0**
+
+- **升级注意（开发方式）**：`/cm-ai` 新批次默认按 `tasks.md` 自动分组，符合条件的任务各自在 worktree 开发，独立任务可并行；功能末任务、要用设备的任务和部分 QA 场景仍在主目录串行。项目配置写 `parallel: {enabled: false}` 完全不建 worktree，写 `parallel: {worktree_all: false}` 恢复以前只让可并行任务进 worktree 的做法。升级前已开始的运行和批次按原配置恢复。
+- **升级注意（安装）**：安装器默认装上缺的作者技能，并默认挂上技能提醒钩子。有 TypeSafe 密钥时，三个自动调用技能会把消息前 500 字发给外部服务判断。不想要时：安装加 `--no-matt-skills`、`--no-skill-hints`；已挂的钩子在本地文件写 `"enabled": false` 关掉，写 `"judge": false` 只用本机关键词。详见[安装指南](docs/installation.md#optional-skill-hints-trial)。
+- **人工走查能留在批次里**：任务语法升到第 3 版，功能末任务可标 `- 开发: 会话`，由当前会话实时完成；进行中的 `/cm:prd` 会话保持原来的规则版本。
+- **iOS 等原生项目能开着自动质检**：质检可复用任务检查结果；关着质检做完的 v2 运行能补开一次；答复窗口太短会提前拦下。
+- **宿主自己验证「先失败、后通过」**：新增 v2 策略 `verification:"auto"`，开发进程交付后由宿主实跑闸门。
+- **限流与提醒更可靠**：Codex、Claude 的审查限流在受支持入口会自动等待并限次重试；开发进程限流会明确提醒，仍需你授权重做。手机提醒只在真要你处理时才响，并写清要做什么。详见[更新日志](CHANGELOG.md)。
+
 **0.17.1**
 
 - **PRD 历史回执不再阻断当前新批次**：旧 feature 的归档问题只登记附注，当前规格和准备后的漂移仍严格核对。
@@ -247,7 +256,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.17.1 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.18.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 

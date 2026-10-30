@@ -112,6 +112,7 @@ API、广告/支付测试环境和真机差异。`kind: "browser"` 在此表示�
 
 - 每条 AC 至少映射一个用例；无法验证的 AC 仍生成 blocking 用例并写清阻塞前提。
 - 每个 `taskIds`、`acIds` 都能在同 feature 三件套中找到。
+- `expected` 依赖二开防护网基线的用例（如「用例数不少于基线」），`taskIds` 含首个改代码任务，文字锚点写「首个改代码任务的宿主重放基线」，不再指向单列的基线任务（见 `skills/cm-prd/references/brownfield.md` B3）。
 - 根字段、case 必需字段、类型、枚举和唯一 ID 全部符合结构合同。
 - browser 用例的每个关键动作都有对应 expected。
 - 有副作用的用例包含 cleanup；无法安全清理时标为执行阻塞，不得对生产环境试跑。

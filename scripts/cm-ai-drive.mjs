@@ -64,7 +64,7 @@ import {rateLimitRetryEligible} from '../runtime/js/cm-ai/drive-rate-limit.mjs';
 import {cmAiSessionBoundary} from '../runtime/js/session-boundary.mjs';
 import {printHandoff} from '../runtime/js/session-handoff.mjs';
 import {attemptAnswerName,inspectDriverBootstrap,readBootstrapRulesAnswers,createBootstrapRulesResponder} from '../runtime/js/cm-ai/drive-bootstrap.mjs';
-import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
+import {driverLiveEvidence,qaAnswerWindowShortfall} from '../runtime/js/cm-ai/live-evidence.mjs';
 import {readControlPolicyFile,isControlRecovery as controlRecoveryRequest} from '../runtime/js/cm-ai/control-policy.mjs';
 
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
@@ -764,6 +764,9 @@ function load(){
   catch(error){stop(2,error.message);}
   const missing=asks.filter(kind=>['qa_logic','qa_browser','verification_precheck'].includes(kind)&&!live.has(kind));
   if(missing.length)stop(2,`缺少真实执行 runner: ${missing.join(', ')}；不能从静态答案文件应答`);
+  const shortWindow=qaAnswerWindowShortfall(workflow?.qa,live,asks);
+  if(shortWindow&&(plan.mode??'create')==='create')stop(2,shortWindow);
+  if(shortWindow)process.stderr.write(`[drive] 警告: ${shortWindow}\n`);
   const executionPolicy=readLaunchExecutionPolicy({definition,mode:plan.mode??'create',enabled:permissions.includes('--execution-optimizations')});
   if(asks.includes('check')){
     if(!Array.isArray(plan.checks)||plan.checks.length===0)stop(2,'步骤会反问 check，但 PLAN.checks 缺少真实命令列表');

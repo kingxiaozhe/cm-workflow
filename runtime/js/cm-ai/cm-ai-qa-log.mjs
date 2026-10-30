@@ -375,13 +375,17 @@ function recoverableCases(items,specsDir,environment,code='qa_rerun_not_blocked_
     return ['PASS','BLOCKED'].includes(logged.answered_verdict)
       &&(logged.answered_verdict!=='BLOCKED'||logged.host_declared_blocked===true);
   };
+  // A required cleanup the session answered without completing is the same host
+  // gap as a failed one; only the durable case row (blocked_reason, written with
+  // answered_verdict under recovery_rule 3) proves it, and the report must agree.
+  const skippedCleanup=row=>verdictRule&&row.cleanup!=='completed'&&blockedRows.get(row.id)?.blocked_reason==='cleanup';
   const eligible=row=>(
     row.kind==='logic'&&resolved(row)&&(row.staticVerdict==='INSUFFICIENT_EVIDENCE'
       // Blocked only by a mapped command without exit code, derived from the
       // recorded command rows; the executor's marker has to agree.
       ||row.staticVerdict==='SUPPORTED'&&mapped(row,unavailableCommand)&&row.commandUnavailable===true)
     ||row.kind==='browser'&&resolved(row)&&sessionVerdictOk(row)&&(typeof row.evidenceProblem==='string'&&row.evidenceProblem.length>0
-      ||row.cleanup==='failed'||row.hostRequestTimeout===true||declaredInLog.has(row.id)&&row.hostDeclaredBlocked===true
+      ||row.cleanup==='failed'||skippedCleanup(row)||row.hostRequestTimeout===true||declaredInLog.has(row.id)&&row.hostDeclaredBlocked===true
       ||environment!=null&&row.environment!=null&&digest(row.environment)!==digest(environment))
     ||unavailableCommand(row));
   // A row BLOCKED only because the source changed during execution is recovered

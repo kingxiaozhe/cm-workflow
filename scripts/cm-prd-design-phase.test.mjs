@@ -12,12 +12,12 @@ import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {inspectPrdDesignDraft} from '../runtime/js/cm-prd/draft.mjs';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
 import {savePrdDesign,savePrdDraft,savePrdPromotedDraft} from '../runtime/js/cm-prd/draft-save.mjs';
-import {inspectPrdDraft} from '../runtime/js/cm-prd/draft.mjs';
+import {inspectPrdDraft,inspectPrdDraftReply} from '../runtime/js/cm-prd/draft.mjs';
 import {runPrdHostReview} from '../runtime/js/cm-prd/review-host.mjs';
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
 import {inspectPrdSplitDesign} from '../runtime/js/cm-prd/split-design.mjs';
 import {preparePrdReview} from '../runtime/js/cm-prd/review-preparation.mjs';
-import {inspectAcceptedPrdDesign} from '../runtime/js/cm-prd/accepted-design.mjs';
+import {inspectAcceptedPrdDesign,acceptedPrdDesignForPlanning} from '../runtime/js/cm-prd/accepted-design.mjs';
 import {createPrdSummaryOwner,inspectPrdSummaryEvidence,publishPrdAwaitingReview} from '../runtime/js/cm-prd/summary.mjs';
 import {assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
 import {recordPrdHostDisposition,createPrdDispositionOwner} from '../runtime/js/cm-prd/review-disposition.mjs';
@@ -338,6 +338,76 @@ test('mixed-risk features keep one batch and dispatch design only for high risk'
   assert.deepEqual(host.status().draft.features.map(feature=>feature.directory),['1.guide','2.copy']);
   assert.equal(fs.existsSync(path.join(dir,'.reviews/prd-copy-design-dispatch.json')),false);
   assert.equal(fs.existsSync(path.join(dir,'.reviews/prd-copy-design-r1.md')),false);
+});
+
+// Accepted requirements/design near 64 KiB used to leave no room for tasks: the
+// tasks_after_design reply had to repeat them inside the same 64 KiB submission.
+async function largeAcceptedDesign(t,documents){
+  const dir=fixture(t);let generation=0;const seen={};
+  const host=createCmPrdAnalysis({input:{skillDir:path.join(root,'skills/cm-prd'),project:dir,specs:dir},runtime:'codex',
+    record:async()=>{},analyze:async()=>({status:'analyzed',summary:'Large design',sourcePaths:['docs/input.md'],openQuestions:[]}),
+    generate:async payload=>{
+      generation++;
+      if(generation===1){
+        const raw=design();raw.features.push({...design().features[0],name:'copy'});
+        const pad=Math.floor((65400-Buffer.byteLength(JSON.stringify(raw)))/2);
+        for(const feature of raw.features)feature.documents[1].content+='\n'+'x'.repeat(pad);
+        return raw;
+      }
+      seen.payload=payload;
+      return {status:'draft',summary:'Tasks only',features:payload.acceptedDesign.features.map(feature=>({name:feature.name,
+        testCasesReason:'no_observable_behavior',documents:documents(feature)}))};
+    }});
+  await host.advance('Analyze');await host.plan('Design',{designOnly:true});
+  host.selectDesignReviews({draftDigest:host.status().designDraft.draftDigest,risks:[
+    {feature:'1.guide',signals:riskSignals(true),evidence:['New architecture']},
+    {feature:'2.copy',signals:riskSignals(false),evidence:['Existing text-only module']}]});
+  savePrdDesign({specs:dir,writeEnabled:true,getDraft:()=>host.currentDesignForSave()});
+  const prepare=()=>host.prepareReview('design','1.guide');
+  await runPrdHostReview({specs:dir,prepared:prepare(),authorContextId:'author',writeEnabled:true,mode:'independent',
+    revalidate:prepare,signal:new AbortController().signal,review:async payload=>({reviewer:'codex-subagent',contextId:'reviewer',
+      independent:true,at:'2026-09-08T00:00:00.000Z',result:{verdict:'approved',packageDigest:payload.package.packageDigest,
+        examinedPaths:payload.examinedPaths,findings:[],summary:'Synthetic'}})});
+  const review=inspectPrdFindings({specs:dir,stage:'design',feature:'1.guide'});
+  recordPrdHostDisposition({specs:dir,stage:'design',feature:'1.guide',packageDigest:review.packageDigest,
+    decisions:[],artifacts:review.reviewedArtifacts,writeEnabled:true});
+  return {dir,host,seen};
+}
+const tasksOnly={path:'tasks.md',content:'- [ ] T-001: Update guide\n  - 范围: `README.md`'};
+test('tasks after design may leave out accepted requirements and design; only the new documents count toward 64 KiB',async t=>{
+  const {dir,host,seen}=await largeAcceptedDesign(t,()=>[tasksOnly]);
+  const accepted=acceptedPrdDesignForPlanning(dir,host.checkpoint());
+  const result=await host.plan('Tasks now');
+  assert.ok(['draft_ready','draft_self_check_failed'].includes(result.stage),result.stage);
+  // A driver preflights with the same accepted design the host sends, and in the
+  // host's order: a reply that still repeats the accepted documents and exceeds
+  // 64 KiB is refused before the host is started, not after it records the answer.
+  assert.deepEqual(accepted,seen.payload.acceptedDesign);
+  const options={nextIndex:1,generateCases:true,userCasesProvided:false};
+  const reply=documents=>({status:'draft',summary:'Tasks only',features:accepted.features.map(feature=>({name:feature.name,
+    testCasesReason:'no_observable_behavior',documents:documents(feature)}))});
+  assert.equal(inspectPrdDraftReply(reply(()=>[tasksOnly]),accepted,options).features.length,2);
+  assert.throws(()=>inspectPrdDraftReply(reply(feature=>[...feature.documents,tasksOnly]),accepted,options),
+    error=>(error.code??error.message)==='limit_exceeded');
+  assert.match(seen.payload.instructions,/leaving out requirements\.md\/design\.md/);
+  const draft=host.status().draft;
+  assert.ok(Buffer.byteLength(JSON.stringify(draft.features))>65536);
+  for(const [index,feature] of draft.features.entries()){
+    const original=accepted.features[index].documents;
+    assert.deepEqual(feature.documents.map(doc=>doc.path),['requirements.md','design.md','tasks.md']);
+    for(const doc of original)assert.equal(feature.documents.find(item=>item.path===doc.path).content,doc.content);
+  }
+  // The planning history keeps the reply as sent, without the restored documents.
+  assert.deepEqual(result.planningReply.features.map(feature=>feature.documents.map(doc=>doc.path)),[['tasks.md'],['tasks.md']]);
+});
+test('tasks after design keeps the 64 KiB reply limit and refuses rewritten or repeated documents',async t=>{
+  const refused=async(documents,pattern)=>{const {host}=await largeAcceptedDesign(t,documents);
+    await assert.rejects(host.plan('Tasks now'),error=>pattern.test(error.code??error.message));assert.equal(host.status().draft,null);};
+  await refused(feature=>[...feature.documents,tasksOnly],/limit_exceeded/);
+  await refused(feature=>[{path:'requirements.md',content:feature.documents[0].content+'\nChanged'},tasksOnly],/prd_accepted_design_rewritten/);
+  await refused(()=>[tasksOnly,tasksOnly],/prd_draft_document_invalid/);
+  // A repeated accepted document is refused, never merged into one by the restore.
+  await refused(feature=>[feature.documents[0],feature.documents[0],tasksOnly],/prd_draft_document_invalid/);
 });
 
 // Real design receipt -> full draft -> split finding, unlike split-only fixtures.

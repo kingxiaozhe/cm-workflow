@@ -147,9 +147,12 @@ test('install manifest: a missing sha256 tool stops before any write instead of 
     const {home, target, env} = sandbox(t, 'cm-install-guard-nohash-');
     const bin = path.join(home, 'bin');
     fs.mkdirSync(bin);
+    // lstat, not existsSync: a name already linked to a dangling tool (as on some
+    // CI images, where /bin and /usr/bin list the same broken link) still counts.
+    const linked = name => { try { fs.lstatSync(path.join(bin, name)); return true; } catch { return false; } };
     for (const dir of ['/usr/bin', '/bin', path.dirname(process.execPath)]) {
       for (const name of fs.readdirSync(dir)) {
-        if (name === 'shasum' || name === 'sha256sum' || fs.existsSync(path.join(bin, name))) continue;
+        if (name === 'shasum' || name === 'sha256sum' || linked(name)) continue;
         fs.symlinkSync(path.join(dir, name), path.join(bin, name));
       }
     }

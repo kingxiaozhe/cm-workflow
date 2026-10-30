@@ -56,3 +56,11 @@ test('split contract: validator CLI accepts suffixed references and rejects inva
   assert.equal(rejected.status,1);assert.match(rejected.stderr,/taskIds has invalid id: 'T-004\/a'/);
   assert.match(rejected.stderr,/test-cases validation: FAILED/);assert.equal(rejected.stdout,'');
 });
+
+test('task grammar versions are separate branches: 3 and 2 share declarations, 1 keeps the old parse',()=>{
+  const text='- [ ] T-001: a\n- [ ] T-002：b\n```\n- [ ] T-003: example\n```\n';
+  const ids=grammar=>taskDeclarations(text,{grammar}).map(item=>item.id);
+  assert.deepEqual(ids(3),['T-001','T-002']);assert.deepEqual(ids(2),['T-001','T-002']);
+  assert.deepEqual(ids(LEGACY_TASK_GRAMMAR),['T-001','T-003']);
+  assert.throws(()=>taskDeclarations(text,{grammar:4}),{code:'task_grammar_invalid'});
+});

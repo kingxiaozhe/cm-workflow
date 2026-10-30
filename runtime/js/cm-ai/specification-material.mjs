@@ -4,7 +4,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {verifyApprovedManifest,normalizeRuntimeMarks,normalizeRuntimeMarkBytes} from '../../../scripts/cm-spec-manifest.mjs';
 import {parseFeatureTaskText,declaredAcceptanceIds,DEPENDENCY} from './cm-ai-admission.mjs';
-import {taskLines,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR} from '../spec-task-line.mjs';
+import {taskLines,TASK_GRAMMAR,recordedTaskGrammar} from '../spec-task-line.mjs';
 import {readReviewSourceFiles,readReviewSourceExcerpt} from './review-package.mjs';
 import {json,need,shape,hex,id,freeze,digest} from './effect-contract.mjs';
 import {readExecutionSnapshot} from './execution-snapshot.mjs';
@@ -119,7 +119,7 @@ export function captureSpecificationMaterial({specsRoot,feature,taskId}){
     need(readReviewSourceFiles(specsRoot,['.cm-specs-status'])[0].sha256===statusRecord.sha256);
     verifyApprovedManifest(specsRoot,statusPath);
     // The approval binds the grammar its bytes were approved with (spec-task-line.mjs).
-    const grammar=status.taskGrammar===TASK_GRAMMAR?TASK_GRAMMAR:LEGACY_TASK_GRAMMAR;
+    const grammar=recordedTaskGrammar(status.taskGrammar);
     const parsed=parseFeatureTaskText(texts['tasks.md'],{allowDependencyPunctuation:true,grammar});
     need(!parsed.error);
     const selected=parsed.tasks.find(task=>task.id===taskId&&!task.dropped);need(selected);

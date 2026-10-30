@@ -379,7 +379,9 @@ scope 和 requirements 是相对代码根的已有 runner 输入，不是额外�
 
 **当前会话跨工具审查**：普通单任务宿主可用 `--runtime codex --review-runtime claude`（或反过来）让当前会话开发、另一工具审查。两端须与有效 `.cm-workflow.yml` 的 roles/runtimes 一致，否则 `runtime_selection_mismatch`；该选择以 `reviewRuntime` 写入运行配置与指纹，恢复必须带同一选项。审查配置的 preflight 须由审查端生成（`preflight --runtime claude`）。不能与 `--protected-config`、`--external-models` 同用（它们按 roles 自行选审查端）。此选项选择审查端；模型、任务和材料仍绑定原配置，常规审查直接推进。
 
-`tasks.md` 的任务行只有一套语法（`runtime/js/spec-task-line.mjs`），准入、cm-prd 自检与变更守卫、N5 勾选、审批 manifest 的完成标记归一化和 failover 都用它：列表项 + 复选框，任意缩进，可选 `~~`，任务号后接英文冒号、全角冒号或空白，例如 `- [ ] T-003: 描述`、`- [ ] T-003 描述`、`- [ ] T-003：描述`、嵌套的 `    - [ ] T-003: 描述`。``` / ~~~ 围栏内的行是示例，不是任务。全角冒号选择接受而非拒绝：中文输入法常打出它，failover 早已接受，拒绝它只会逼用户为标点改规格再批准。语法随批准绑定：本版本写入的批准在 `.cm-specs-status` 记 `taskGrammar: 2`；更早记录的批准继续用原解析器（准入、规格材料、N5 勾选、supersede 与 failover 都按旧规则读），例如同文件里未加围栏的 `- [ ] T-001：示例` 在旧批准下仍是说明而不是重复任务，已批准的字节含义不变；重新批准后才切换到新语法。重新批准会让全部 feature（包括本次没改的）改用新语法，因此 `--approve` 先按新语法检查每个 feature 的 tasks.md，任一无效（如上例变成重复任务），或从旧语法切换时任何 feature 的任务集合（哪些行是任务、编号、勾选状态）在新旧语法下不一致（如唯一的 `- [ ] T-099：示例` 会变成待办任务），即以 `task_grammar_conflict` 拒绝，`approveReason` 写明文件、行号和原文，提示把这类示例放进围栏或删去后再批准；不会写入 `taskGrammar: 2`，也不退回旧语法——退回会让新写的全角冒号任务行悄悄不算任务。cm-prd 变更守卫读取已批准原文时同样按其批准的语法。状态文件把上次批准的 `taskGrammar` 经 cm-prd 变更与发布一路带到下次批准（重新批准前连续多次 `cm-prd --change` 时，变更守卫按这一携带值读取原文；不带该值的待审状态不会切到新语法）；项目一旦用上新语法就不再做新旧对照，从未批准过的项目首次批准直接用新语法。cm-prd 草稿与自检始终用新语法。旧版本批准的 manifest 按旧归一化规则计算，核验时每行同时接受新旧规则的摘要，因此已批准的规格原样继续匹配（有意的小幅放宽：旧批准下全角冒号或缩进任务行的勾选变化也按运行时标记处理）；只有旧规则下批准时就已勾选的无冒号／缩进任务行，在之后再勾选别的此类任务时仍会漂移，需要重新批准一次（新批准按新规则记录）。
+`tasks.md` 的任务行只有一套语法（`runtime/js/spec-task-line.mjs`），准入、cm-prd 自检与变更守卫、N5 勾选、审批 manifest 的完成标记归一化和 failover 都用它：列表项 + 复选框，任意缩进，可选 `~~`，任务号后接英文冒号、全角冒号或空白，例如 `- [ ] T-003: 描述`、`- [ ] T-003 描述`、`- [ ] T-003：描述`、嵌套的 `    - [ ] T-003: 描述`。``` / ~~~ 围栏内的行是示例，不是任务。全角冒号选择接受而非拒绝：中文输入法常打出它，failover 早已接受，拒绝它只会逼用户为标点改规格再批准。语法随批准绑定：批准在 `.cm-specs-status` 记 `taskGrammar`（2 或 3，沿用待审状态携带的值，见下文「任务语法 3」）；更早记录的批准继续用原解析器（准入、规格材料、N5 勾选、supersede 与 failover 都按旧规则读），例如同文件里未加围栏的 `- [ ] T-001：示例` 在旧批准下仍是说明而不是重复任务，已批准的字节含义不变；重新批准后才切换到新语法。重新批准会让全部 feature（包括本次没改的）改用新语法，因此 `--approve` 先按新语法检查每个 feature 的 tasks.md，任一无效（如上例变成重复任务），或从旧语法切换时任何 feature 的任务集合（哪些行是任务、编号、勾选状态）在新旧语法下不一致（如唯一的 `- [ ] T-099：示例` 会变成待办任务），即以 `task_grammar_conflict` 拒绝，`approveReason` 写明文件、行号和原文，提示把这类示例放进围栏或删去后再批准；不会写入新语法，也不退回旧语法——退回会让新写的全角冒号任务行悄悄不算任务。cm-prd 变更守卫读取已批准原文时同样按其批准的语法。状态文件把上次批准的 `taskGrammar` 经 cm-prd 变更与发布一路带到下次批准（重新批准前连续多次 `cm-prd --change` 时，变更守卫按这一携带值读取原文；不带该值的待审状态不会切到新语法）；项目一旦用上新语法就不再做新旧对照，从未批准过的项目首次批准直接用新语法。cm-prd 草稿与自检按会话绑定的语法读取（见下文「任务语法 3」）。
+
+**任务语法 3（`- 开发: 会话`）**：语法 3 与 2 的任务行完全相同，只多认一种任务子项 `- 开发: 会话`（别名 `developer: session`；写开发进程/`provider` 视为默认），表示该任务由当前会话完成（例如浏览器人工走查），只能是功能的最后一个任务、最多一个、不进并行组。语法 1、2 下同一行仍是说明文字，不重新赋义。版本按规格目录绑定：`/cm:prd` 新会话在规格目录还没有 `.cm-specs-status` 或其 `taskGrammar` 已是 3 时绑定语法 3 与自检规则 4，否则沿用语法 2 与规则 3（旧会话无绑定字段时同样取 2/3 的固定值）；首次发布写会话绑定的语法，此后发布与批准沿用状态里携带的语法，2 不会被批准成 3。批次规划从语法 3 的 tasks.md 生成 `batch.memberDevelopment`（只列会话成员），v2 `development:"provider"` 批次里这些成员不交开发进程，由驾驶员的实时 `develop` 请求交给会话（见 `docs/live-evidence-drivers.md`）。旧版本批准的 manifest 按旧归一化规则计算，核验时每行同时接受新旧规则的摘要，因此已批准的规格原样继续匹配（有意的小幅放宽：旧批准下全角冒号或缩进任务行的勾选变化也按运行时标记处理）；只有旧规则下批准时就已勾选的无冒号／缩进任务行，在之后再勾选别的此类任务时仍会漂移，需要重新批准一次（新批准按新规则记录）。
 
 规格待审批时先展示摘要卡并请用户回复“开始”。只识别“开始”“开始吧”“可以开始”“确认开始”“开始执行”“现在开始”“可以，请开始开发”及其尾部标点/空白（整句匹配，“开始开发”“请开始开发”等仍不算）；泛化授权仍是 `not_approval`，提示明确回复“开始”。`--approve` 写入仍须原完整准入门禁。
 
@@ -686,6 +688,9 @@ attachedAt 是 UTC 秒级 ISO 时间。仅允许一条，回放验证完成状�
 后续须同时匹配原指纹和已记录的 qaFingerprint，不允许移除或替换 QA；每次启动仍须重新授权。
 日志复用原 writer 写 `event:decision`、`phase:qa_attach`，业务 data 只有 feature/task/qaFingerprint；
 重复恢复去重，journal 成功后日志失败可在同配置恢复时补写。
+
+v2 运行（`--control-config`）用 `qa:"disabled"` 创建、已完成时，同一附加经由把策略 `qa` 改为 `run` 的恢复启动完成，
+不需要 `--allow-qa`；见 [cm-control-policy-v2.md](cm-control-policy-v2.md) 的「已完成运行补开 QA」。
 
 附加只连接原 N6 能力，`qa` 仍请求 `qa_assess`，QA 执行、qa_result、context_refresh、finish
 沿用原门禁，不自动决定，不重跑 develop/review/complete，不清除 correction 阻断。
@@ -1040,7 +1045,9 @@ specs `.reviews/` 内。宿主只能写获准报告，不能修产品代码或�
 工作流配置的 `qa.timeoutMs` 是单条 QA 用例给宿主的应答窗口，整数 1–3600000 毫秒，
 不填仍为 60000。一轮真实浏览器走查（造数据、逐步点击、每步读 DOM 与存储）按分钟计，
 60 秒内做不完；超时的用例会被标记 `hostRequestTimeout` 并判 `BLOCKED`，拖垮整轮 QA。
-需要真实走查时按实际耗时调大它。
+需要真实走查时按实际耗时调大它。单任务与批次驾驶员用 `liveEvidence` 应答 `qa_logic`/`qa_browser` 时，
+若这个窗口（含默认 60000）短于 `liveEvidence.timeoutMs`（默认 900000），新建运行启动前停止并说明两边的值；
+`mode:"resume"` 只在 stderr 打 `[drive] 警告:`，已记录的运行照原配置继续。
 
 被阻断的 QA 可以单独重跑，不必重做任务：批次宿主接受 `--rerun-unknown-qa` 与
 `--rerun-blocked-qa`，语义、限制与 qaRound 上限沿用单任务宿主，两者互斥且都要求
@@ -1078,6 +1085,14 @@ cleanup只能为completed/not_needed/failed。有cleanup要求却未完成、载
 environment由可信宿主预先绑定`{kind, carrier, target, scope}`，scope仅local/test；
 Web仅browser，App仅模拟器/真机，小程序仅微信开发者工具/真机，不接受Web替代形态证据。
 真实权限、目标环境、用例解释和具体证据真实性仍由宿主负责，声明路由不是授权。
+
+QA 命令可另带 `reuseCheck: "<任务检查 id>"`（只限单代码根）：本任务审查包里同 id 的检查命令逐项相同、
+结果为 passed 且退出码 0，且运行器 `qaCompletionChecks` 核对代码根仍与该审查包一致时，这条 QA 命令直接取该检查结果，
+不再重跑；报告行记 `reusedCheck` 与证据 `reused task check <id> of reviewed package <摘要前 12 位>: …`，不占命令资源。
+任何一项不满足就照常运行，行上记 `reuseUnavailable`（`no_verified_task_checks`、`check_not_in_package`、
+`command_differs`、`check_not_passed`）。没有该字段的配置及其指纹不变；只有计划里声明了 `reuseCheck` 的执行器才会收到任务检查。
+浏览器用例请求另带 `evidenceDirectory`：建议的证据位置 `{specs}/.reviews/qa-evidence/{testRunId}/{caseId}`。
+宿主只给路径、不创建也不写入，应答方按需创建；每个证据文件仍按原规则校验（须为 `.reviews` 内、非链接的非空文件）。
 
 报告逐项保留静态结论、实际命令退出、覆盖关联及浏览器证据；数量是“声明命令检查+选定用例”，
 不是猜测测试框架内部通过数。配置/合同漂移拒绝继续，源码漂移保留文件并阻断，不回滚用户内容。
@@ -1129,7 +1144,7 @@ workflow 配置的 `qa` 在 `commands/environment` 之外可选 `timeoutMs`（1�
 取消、断连与超时保留各自原因，迟到答复不会被采纳。
 
 已 complete 的 BLOCKED 结果用 `--rerun-blocked-qa` 在同一代码上重跑，除原有宿主证据问题外，还接受会话自己回答的
-browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报告无此标记仍不适用）、没有退出码的命令结果
+browser BLOCKED（执行器在报告行写 `hostDeclaredBlocked: true`；旧报告无此标记仍不适用）、用例要求清理而会话回答未完成清理（报告行 `cleanup` 不是 `completed`，且应答时追加的 `case_blocked` 日志行记 `blocked_reason: "cleanup"`；会话原回答 FAIL 的不适用）、没有退出码的命令结果
 （host-check 的 timeout、signal_exit、spawn_failed、output_*、cleanup_failed）以及只因这类映射命令阻断的 logic 用例
 （执行器写 `commandUnavailable: true`；`[需确认]` 的 logic 用例写 `needsConfirmation: true`，任何路径都不适用）。
 没有声明命令、延后用例、`[需确认]`、缺少浏览器能力仍不适用。源码漂移（执行期间范围内文件被改，执行器把全部行改为 BLOCKED 并标 `sourceChanged`）只在该行漂移前的判定是 PASS、或本身符合上述可重跑条件的 BLOCKED 时适用；执行器在报告行另记 `verdictBeforeSourceChange`，并与命令退出码、browser 的 `case_complete`/`case_blocked` 日志行、logic 映射命令的退出码交叉核对，不符按未知拒绝；没有该字段的旧报告由命令退出码和 browser 日志行推出，logic 行无法推出即拒绝。漂移前为 FAIL 的行一律不适用。重跑前运行须回到 `fixture_completed` 且无 code（代码已还原到审查包）。判定以权威输入为准：`[需确认]` 读该 feature 的
@@ -1705,7 +1720,9 @@ design_ready 可用 `{requestId,operation:"save_design"}` 配合原 --allow-spec
 advance 从每个原 feature 的 design-r1 和已完成原 receipt 读取当前设计，要求需求正文仍等于原稿，
 design 精确匹配处置哈希；冻结当前清单和证据，在生成、自检、保存边界重查。未处置或漂移不派生任务。
 prd_generate phase=tasks_after_design 携 acceptedDesign，只允许增加 tasks/适用测试合同，feature顺序、编号、
-需求和设计正文默认保留。仅整稿自检明确失败后，原重生成可附非空 selfCheckRevisionReason 修订
+需求和设计正文默认保留。回包可省略各 feature 的 requirements.md/design.md，宿主与驾驶员预检都按 acceptedDesign
+原字节补回后再做原有校验，所以每次回包的 64 KiB 上限只计新增的 tasks/测试合同；补回后的整稿上限为 64 KiB 加
+已接受文档的字节。照旧带全文时仍须逐字一致、仍受 64 KiB 回包上限；重复文档、feature 名或数量不符照旧拒绝。仅整稿自检明确失败后，原重生成可附非空 selfCheckRevisionReason 修订
 同清单内的需求/设计正文；不增删 feature 或文件。checkpoint 记录 selfCheckRevision，将原因、
 前后 SHA、轮次与原失败记录绑定，保留历史和两轮上限。自检通过后 save_draft 先归档修订证据，
 再保存新版；部分写入显式恢复，额外漂移仍拒绝。后续优先接受已完成 split 回执，其次已保存自检修订，

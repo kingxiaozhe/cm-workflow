@@ -12,6 +12,7 @@ import {buildManifest} from './cm-spec-manifest.mjs';
 import {openControlRun} from './cm-ai-run.mjs';
 import {approveCmAiSpecs,inspectCmAiAdmission} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {writeSpecsStatus,readSpecsStatus} from '../runtime/js/specs-status.mjs';
+import {approvedTaskGrammar} from '../runtime/js/spec-task-line.mjs';
 import {createCodexDeveloperRun} from '../runtime/js/cm-ai/codex-developer-adapter.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
@@ -445,6 +446,18 @@ test('a first approval with no earlier status binds the shared grammar directly'
   assert.equal(approveCmAiSpecs({specsDir:f.specsDir,codeProject:f.codeProject,approvalResponse:'开始'}).approveRefused,undefined);
   assert.equal(readSpecsStatus(f.specsDir).value.taskGrammar,2);
   assert.equal(inspectCmAiAdmission({specsDir:f.specsDir,codeProject:f.codeProject}).nextTask.id,'T-001');
+});
+
+test('an approval binds the grammar its publication carried: 2 stays 2, 3 stays 3',t=>{
+  const f=fixture(t);
+  for(const grammar of [2,3,2]){
+    const prior=readSpecsStatus(f.specsDir).value;
+    writeSpecsStatus(f.specsDir,{status:'awaiting_review',summaryDigest:'a'.repeat(64),at:new Date().toISOString(),
+      features:prior.features,specFiles:buildManifest(f.specsDir),testCases:[],approval:null,taskGrammar:grammar});
+    assert.equal(approveCmAiSpecs({specsDir:f.specsDir,codeProject:f.codeProject,approvalResponse:'开始'}).approveRefused,undefined);
+    assert.equal(readSpecsStatus(f.specsDir).value.taskGrammar,grammar);
+    assert.equal(approvedTaskGrammar(f.specsDir),grammar);
+  }
 });
 
 test('a parallel batch member is offered only the spec revert exit',async()=>{

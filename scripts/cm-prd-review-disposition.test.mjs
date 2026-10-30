@@ -14,11 +14,11 @@ import {claimPrdReview} from './cm-prd-review-gate.mjs';
 import {recordPrdTaskScopes} from '../runtime/js/cm-prd/task-scope-record.mjs';
 const sha=content=>createHash('sha256').update(content).digest('hex');
 const SCOPED_TASKS='- [ ] T-001: Guide\n  - 范围: `README.md`';
-function fixture(t,{stage='design',finding=false,blocked=false,twoFindings=false,testCases=false,scoped=false}={}){
+function fixture(t,{stage='design',finding=false,blocked=false,twoFindings=false,testCases=false,scoped=false,tasks=null,rules=null}={}){
   const specs=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-disposition-')));
   t.after(()=>fs.rmSync(specs,{recursive:true,force:true}));fs.mkdirSync(path.join(specs,'.reviews'));
   const feature='1.guide',documents=[{path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Document setup.'},
-    {path:'design.md',content:'## 方案摘要\nDocumentation'}, {path:'tasks.md',content:scoped?SCOPED_TASKS:'- [ ] T-001: Guide'}];
+    {path:'design.md',content:'## 方案摘要\nDocumentation'}, {path:'tasks.md',content:tasks??(scoped?SCOPED_TASKS:'- [ ] T-001: Guide')}];
   if(testCases)documents.push({path:'test-cases.json',content:JSON.stringify({schemaVersion:'1.0',feature:'guide',cases:[{id:'TC-001',origin:'user',kind:'logic',blocking:true,acIds:['AC-001'],taskIds:['T-001'],title:'Check guide',preconditions:[],steps:['Read'],expected:['Explained'],cleanup:[]}]})});
   const prepared=preparePrdReview({specs,stage,feature,draft:{draftDigest:'a'.repeat(64),features:[{name:'guide',directory:feature,documents}]}});
   claimPrdReview({...prepared.paths,package_sha256:prepared.packageDigest});
@@ -31,8 +31,8 @@ function fixture(t,{stage='design',finding=false,blocked=false,twoFindings=false
   const args={specs,stage,feature,packageDigest:prepared.packageDigest,decisions:[],
     artifacts:documents.map(item=>({path:`${feature}/${item.path}`,sha256:sha(item.content)})),writeEnabled:true};
   const save=()=>{fs.mkdirSync(path.join(specs,feature));for(const item of documents)fs.writeFileSync(path.join(specs,feature,item.path),item.content,{mode:0o600});
-    // The draft save records that these tasks carry scopes.
-    if(scoped)recordPrdTaskScopes(specs,[{directory:feature,name:'guide',documents}]);};
+    // The draft save records that these tasks carry scopes (and the saving operation's rule).
+    if(scoped||rules!==null)recordPrdTaskScopes(specs,[{directory:feature,name:'guide',documents}],{},rules===null?{}:{selfCheckRules:rules});};
   return {args,save,receipt:prepared.paths.receipt};
 }
 test('no-findings requires saved original artifacts and records only original receipt',t=>{
@@ -259,6 +259,62 @@ for(const recorded of [true,false])test(`summary holds a recorded feature to its
   const summary=await humanSummary()(clean.args.specs);
   assert.deepEqual(summary.blockers,recorded?['mechanical_self_check_failed']:[]);
   if(recorded)assert.deepEqual(summary.mechanicalSelfCheck.findings.map(item=>item.code),['task_scope_missing']);
+});
+
+// R1-03: a draft saved under rule 4 keeps its session-task checks through the
+// split correction, the disposition's check and the summary; a draft saved under
+// rule 3 (or before any record) keeps reading `开发: 会话` as prose.
+const SESSION_TASKS=['- [ ] T-001: Guide','  - 范围: `README.md`','- [ ] T-002: Walk','  - 范围: `docs/qa.md`','  - 开发: 会话'].join('\n');
+const SESSION_MARKS={kept:SESSION_TASKS,
+  'not-final':SESSION_TASKS.replace('\n  - 开发: 会话','').replace('`README.md`','`README.md`\n  - 开发: 会话'),
+  multiple:SESSION_TASKS.replace('`README.md`','`README.md`\n  - 开发: 会话')};
+for(const rules of [4,3,null])for(const [mode,tasks] of Object.entries(SESSION_MARKS))
+  test(`correction keeps the session-task rule its save recorded (rules ${rules}, ${mode})`,async t=>{
+    const {args,save}=fixture(t,{stage:'split',finding:true,tasks:SESSION_TASKS,rules});save();
+    const owner=createPrdCorrectionOwner({correct:async({documents})=>({
+      documents:documents.map(doc=>({path:doc.path,content:doc.path.endsWith('/tasks.md')?tasks:doc.content+(doc.path.endsWith('/design.md')?'\nClarified':'')})),
+      decisions:[{id:'R1',status:'applied',evidence:['Clarified'],changedPaths:['1.guide/design.md',...(mode==='kept'?[]:['1.guide/tasks.md'])]}]})});
+    const run=owner({specs:args.specs,stage:'split',feature:'1.guide',writeEnabled:true},new AbortController().signal);
+    if(rules===4&&mode!=='kept'){await assert.rejects(run,/prd_correction_mechanics_failed/);
+      assert.equal(fs.readFileSync(path.join(args.specs,'1.guide/tasks.md'),'utf8'),SESSION_TASKS);}
+    else{assert.equal((await run).status,'correction_saved');
+      assert.equal(fs.readFileSync(path.join(args.specs,'1.guide/tasks.md'),'utf8'),tasks);}
+  });
+for(const rules of [4,3])test(`disposition and summary re-check under the rule the save recorded (rules ${rules})`,async t=>{
+  const f=fixture(t,{stage:'split',finding:true,tasks:SESSION_TASKS,rules});f.save();
+  const correction=await createPrdCorrectionOwner({correct:async({documents})=>({
+    documents:documents.map(doc=>({path:doc.path,content:doc.content+(doc.path.endsWith('/design.md')?'\nCorrection':'')})),
+    decisions:[{id:'R1',status:'applied',evidence:['Saved original correction'],changedPaths:['1.guide/design.md']}]
+  })})({...f.args},new AbortController().signal);
+  Object.assign(f.args,structuredClone({decisions:correction.decisions,artifacts:correction.artifacts}));
+  // A saved manual correction that moves the session mark off the final task.
+  const file='1.guide/tasks.md';fs.writeFileSync(path.join(f.args.specs,file),SESSION_MARKS['not-final']);
+  f.args.artifacts.find(a=>a.path===file).sha256=sha(fs.readFileSync(path.join(f.args.specs,file)));
+  f.args.decisions[0].changedPaths.push(file);
+  let calls=0;
+  const owner=createPrdDispositionOwner({checkContext:async({draft})=>{calls++;return {draftDigest:draft.draftDigest,
+    features:[{directory:'1.guide',checks:draft.mechanicalSelfCheck.pending.map(id=>({id,status:'passed',evidence:['Fixture']}))}]};}});
+  const result=await owner(f.args,new AbortController().signal);
+  // The check input keeps the policy it ran under, as it keeps taskScopes.
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.receipt)).correction_check?.input.draft.sessionTasks,rules===4?['1.guide']:undefined);
+  const summary=await humanSummary()(f.args.specs);
+  if(rules===4){
+    assert.equal(result.gate.disposition,'self_check_failed');assert.equal(calls,0);
+    assert.deepEqual(result.mechanicalSelfCheck.findings.map(item=>item.code),['session_task_not_final']);
+    // The failed check reaches the human as such, verified under the rule it ran under.
+    assert.equal(summary.riskCard[0].status,'awaiting_human_ruling');
+    assert.match(summary.details.risks,/session_task_not_final/);
+  }else{
+    assert.equal(result.gate.disposition,'applied');assert.equal(calls,1);
+    assert.deepEqual(summary.blockers,[]);assert.doesNotMatch(JSON.stringify(summary),/session_task/);
+  }
+});
+for(const rules of [4,3])test(`summary holds a rule-4 save to its session-task checks (rules ${rules})`,async t=>{
+  const clean=fixture(t,{stage:'split',tasks:SESSION_MARKS.multiple,rules});clean.save();
+  assert.equal(recordPrdHostDisposition(clean.args).gate.disposition,'no_findings');
+  const summary=await humanSummary()(clean.args.specs);
+  assert.deepEqual(summary.blockers,rules===4?['mechanical_self_check_failed']:[]);
+  assert.deepEqual(summary.mechanicalSelfCheck.findings.map(item=>item.code),rules===4?['session_task_multiple']:[]);
 });
 
 // Evidence recorded before the scope policy joined the check input (no taskScopes)

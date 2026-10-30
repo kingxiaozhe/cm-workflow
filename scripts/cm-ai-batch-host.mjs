@@ -180,6 +180,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const {batch,workflows,bootstraps=null}=bundle;need(Array.isArray(batch.tasks),'invalid_batch_config');
     need(workflows!==null&&typeof workflows==='object'&&!Array.isArray(workflows),'invalid_batch_config');
     const keys=batch.tasks.map(task=>`${task.feature}/${task.taskId}`);
+    // Grammar 3 execution table (batch-plan.mjs; validated again by createCmAiBatch): the
+    // members the current session develops even when a provider develops the rest.
+    const sessionMembers=new Set(batch.memberDevelopment!==null&&typeof batch.memberDevelopment==='object'?Object.keys(batch.memberDevelopment):[]);
     if(bootstraps!==null){
       need(typeof bootstraps==='object'&&!Array.isArray(bootstraps),'invalid_bootstrap_config');
       for(const [key,config] of Object.entries(bootstraps)){
@@ -246,12 +249,14 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       }
       else need(false,'invalid_arguments');
     }
+    if([...developments.keys()].some(key=>sessionMembers.has(key)))throw Object.assign(new Error('invalid_arguments'),
+      {code:'invalid_arguments',reason:'--allow-provider-development 不能授权批次执行表里由会话开发的成员'});
     if(controlPolicy){
       allowQa=controlPolicy.qa==='run';allowBootstrap=controlPolicy.bootstrap==='write';
       need((controlPolicy.development==='provider')===Boolean(providerConfig),'invalid_arguments');
       need(controlPolicy.bootstrap!=='write'||bootstraps!==null,'invalid_arguments');
       need(bootstraps===null||controlPolicy.bootstrap==='write','invalid_arguments');
-      if(providerConfig)for(const key of keys)developments.set(key,1);
+      if(providerConfig)for(const key of keys)if(!sessionMembers.has(key))developments.set(key,1);
       need(!rerunUnknownQa&&!rerunBlockedQa,'supersede_unavailable');
     }
     const started=keys.some(key=>fs.existsSync(path.join(batch.specsDir,'.reviews','.execution',batchTaskRunId(batch.batchId,key),'state.json')));
@@ -269,6 +274,15 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       need(!Object.hasOwn(providerConfig,'effort')||providerConfig.effort===pair.effort,'external_model_configuration_conflict');
       providerConfig={...providerConfig,...pair};
     }
+    need(!sessionMembers.size||!externalModels&&!executionPolicy,'session_member_unsupported_config');
+    // A v2 provider batch: a session member's coder is this host, so it must be the
+    // declared coder; it is reviewed by the declared reviewer like the provider members
+    // (reviewRuntime), never by the host itself.
+    const sessionReviewRuntime=controlPolicy?.development==='provider'&&sessionMembers.size?routes.reviewerRuntime:null;
+    if(sessionReviewRuntime!==null&&routes.coderRuntime!==(runtime??'codex'))
+      throw Object.assign(new Error('session_coder_runtime_mismatch'),{code:'session_coder_runtime_mismatch',
+        reason:`成员 ${[...sessionMembers].join(', ')} 由当前会话开发，宿主运行时必须是项目声明的写代码方 ${routes.coderRuntime}；`
+          +`现在是 ${runtime??'codex（未传 --runtime 时的缺省值）'}。在 PLAN.permissions 加 --runtime ${routes.coderRuntime}`});
     review=review===null?null:readConversationReviewConfiguration(review,externalModels?.providers[routes.reviewerRuntime]??null);
     need(!developments.size||providerConfig!==null,'protected_configuration_required');
     // Same launch-time assertion as the single-task host, evaluated across every
@@ -308,9 +322,18 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         await freezeBatchExecutionPolicy(batch,executionPolicy);
         freezeBatchExternalModels(batch,externalModels);
         const key=`${definition.feature}/${definition.identity.taskId}`;
-        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,externalModels?routes.reviewerRuntime:runtime??'codex',externalModels?.providers[routes.reviewerRuntime]??null,!reconciling,Boolean(executionPolicy)):review;
+        // A parallel member's review loopback runs on the reviewer the factory will bind: the
+        // declared one for a provider-developed member (the host runtime may be the coder
+        // there), else the one this member always had (host runtime, or the external route).
+        const memberReviewer=developments.has(key)?resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),runtime??'codex').reviewerRuntime
+          :externalModels?routes.reviewerRuntime:runtime??'codex';
+        const memberReview=parallelMember?await memberReviewConfiguration(batch,definition,review,memberReviewer,externalModels?.providers[routes.reviewerRuntime]??null,!reconciling,Boolean(executionPolicy)):review;
         const execution=createConversationExecution(definition,hostContextId,parallelMember?memberBridge:bridge,memberReview,null,workflows[key],allowQa,runtime??'codex',
-          {parallelMember,...(soloMember?{soloMember}:{}),...(controlPolicy?{controlPolicy}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),batchWorkflowsDigest:digest(executionPolicy?{workflows,bootstraps,externalModels,executionPolicy}:externalModels?{workflows,bootstraps,externalModels}:bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
+          {parallelMember,...(soloMember?{soloMember}:{}),...(controlPolicy?{controlPolicy}:{}),...(executionPolicy?{executionPolicy}:{}),...(externalModels?{externalModels,...(providerConfig?{reviewerRuntime:routes.reviewerRuntime}:{})}:{}),...(verificationPrecheck?{verificationPrecheck:true}:{}),
+            // A batch without an execution table keeps its exact projection.
+            batchWorkflowsDigest:digest(executionPolicy?{workflows,bootstraps,externalModels,executionPolicy}:externalModels?{workflows,bootstraps,externalModels}
+              :Object.hasOwn(batch,'memberDevelopment')?{workflows,bootstraps,memberDevelopment:batch.memberDevelopment}:bootstraps?{workflows,bootstraps}:workflows),qaLogHome:path.join(batch.specsDir,'.reviews','host-log-mirror'),
+            ...(sessionMembers.has(key)?{memberDevelopment:'session',...(sessionReviewRuntime!==null?{reviewRuntime:sessionReviewRuntime}:{})}:{}),
             // A protected CLI config also protects unauthorized tasks: they stay on the
             // current-session transport but with the same sandbox checks (protected-text edits).
             ...(protection?{protection}:providerConfig?{protection:{checkCommands:providerConfig.checkCommands,timeoutMs:providerConfig.timeoutMs}}:{}),
@@ -340,7 +363,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     try{await serveHostTransport({host,input,output,toolBridge:bridge},inputLimitRaw);}
     finally{if(rawMode)input.setRawMode(false);}
     return 0;
-  }catch(cause){const code=safeCode(cause);error.write(JSON.stringify({error:{code,...(['browser_capability_required','browser_capability_unavailable','invalid_arguments','review_configuration_required','protected_scope',...Object.keys(UNSUPPORTED_REASON)].includes(code)
+  }catch(cause){const code=safeCode(cause);error.write(JSON.stringify({error:{code,...(['browser_capability_required','browser_capability_unavailable','invalid_arguments','review_configuration_required','protected_scope','session_coder_runtime_mismatch',...Object.keys(UNSUPPORTED_REASON)].includes(code)
     &&typeof cause.reason==='string'?{reason:cause.reason}:{}),...(code==='request_too_large'?{reason:inputLimitReason(cause.limit)}:{})}})+'\n');return 1;}
   finally{bridge?.close();}
 }

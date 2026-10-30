@@ -3,7 +3,8 @@
 // operation -> possible host_request kinds (conservative over all batch tasks):
 // advance -> develop, check: cm-ai-batch-run.mjs handle/driveMember -> start,
 //   host-conversation-execution.mjs worker/check. Protected config makes check
-//   host-owned in createProjectExecution; provider development makes develop host-owned.
+//   host-owned in createProjectExecution; provider development makes develop host-owned,
+//   except batch.memberDevelopment session members, answered only through live develop.
 // advance -> qa_assess, qa_logic, qa_browser, documentation_sync,
 //   documentation_inspect: host-workflow-capabilities.mjs createHostWorkflowCapabilities;
 //   batch-run.mjs driveMember/handle can reach qa, context_refresh and finalization.
@@ -38,7 +39,8 @@ import {developmentRetryable} from '../runtime/js/cm-ai/cm-ai-conversation-entry
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost,planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {rateLimitRetryEligible} from '../runtime/js/cm-ai/drive-rate-limit.mjs';
 
-import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
+import {driverLiveEvidence,qaAnswerWindowShortfall} from '../runtime/js/cm-ai/live-evidence.mjs';
+import {HOST_ANSWER_TIMEOUT_DEFAULT_MS,hostAnswerTimeoutMs} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
 const HOST=fileURLToPath(new URL('./cm-ai-batch-host.mjs',import.meta.url));
@@ -54,6 +56,32 @@ const FLAGS=new Set(['--execution-optimizations','--external-models','--allow-qa
 const isObject=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const nonempty=x=>typeof x==='string'&&x.trim().length>0;
 function taskKey(task){return `${task.feature}/${task.taskId}`;}
+// v2 provider batch members the current session develops (batch.memberDevelopment,
+// validated by createCmAiBatch). No field or another policy: none, the old behavior.
+export function batchSessionMembers(batch,policy){
+  if(policy?.development!=='provider'||!isObject(batch.memberDevelopment))return new Set();
+  const keys=batch.tasks.map(taskKey);
+  return new Set(Object.entries(batch.memberDevelopment).filter(([key,value])=>value==='session'&&keys.includes(key)).map(([key])=>key));
+}
+export function batchLiveDevelopError(sessionMembers,declared,operation){
+  if(declared&&!sessionMembers.size)return 'PLAN.liveEvidence.kinds 声明了 develop，但批次没有开发方为会话的成员（v2 development:"provider" 且 batch.memberDevelopment 列出）；develop 只用于这些成员';
+  if(operation==='advance'&&sessionMembers.size&&!declared)
+    return `批次成员 ${[...sessionMembers].join(', ')} 由当前会话开发：PLAN.liveEvidence.kinds 需要声明 develop；会话成员不能用静态 develop 答案应答`;
+  return null;
+}
+// The session member's develop call is cut by the runner at the host answer limit
+// (host-conversation-execution.mjs outerTimeoutMs, 30 minutes) and recorded as
+// call_timeout; the driver's wait ends a margin later, never first.
+export const LIVE_DEVELOP_MARGIN_MS=60000;
+export function liveDevelopWaitMs(env=process.env){
+  let limit=HOST_ANSWER_TIMEOUT_DEFAULT_MS;
+  try{limit=Math.max(limit,hostAnswerTimeoutMs(env));}catch{/* the batch host does not read it either */}
+  return limit+LIVE_DEVELOP_MARGIN_MS;
+}
+export function liveAnswerRoute(row,{live,runs,sessionMembers}){
+  if(!live.has(row.kind))return false;
+  return row.kind!=='develop'||sessionMembers.has(runs.get(row.payload?.request?.identity?.runId)?.key);
+}
 export function batchMemberActionPlanError(operation,plan,permissions,keys){
   const flag=MEMBER_ACTION_FLAGS[operation];if(!flag)return null;
   if(plan.mode!=='resume')return `${operation} 只用于 mode resume`;
@@ -107,7 +135,7 @@ function checkCommandShape(commands,key,plan,executionPolicy){
 }
 function preflight(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
-    process.stdout.write('新版 PLAN.controlConfig 为相对 PLAN 的 v2 控制配置路径；permissions 禁止所有 --allow-*，批次 qaFix 只能为 disabled。普通 advance 自动独立审查；缺少 develop-a2.json 时保持 revision_answer_required。显式成员恢复需要 resume、taskKey 与此前 status 返回的 PLAN.expectedControl，驾驶员不会读取新目标覆盖它。\n');
+    process.stdout.write('新版 PLAN.controlConfig 为相对 PLAN 的 v2 控制配置路径；permissions 禁止所有 --allow-*，批次 qaFix 只能为 disabled。普通 advance 自动独立审查；缺少 develop-a2.json 时保持 revision_answer_required。显式成员恢复需要 resume、taskKey 与此前 status 返回的 PLAN.expectedControl，驾驶员不会读取新目标覆盖它。v2 development:"provider" 批次里 batch.memberDevelopment 列为 session 的成员由当前会话开发：PLAN.liveEvidence.kinds 必须声明 develop，回复原样交宿主校验，不预写 develop 答案。\n');
     process.stdout.write('用法: cm-ai-batch-drive.mjs --plan PLAN.json <operation>\n'
       +'operation: advance, status, cancel, reconcile_review（taskKey、invocationId）, develop_redo / abandon_effect / abandon_review / bootstrap_review_recover（resume、PLAN.taskKey、单行 PLAN.reason，permissions 带对应 --allow-… 任务）。PLAN: config, mode, hostContext, permissions, answers, checks, checkTimeoutMs。\n'
       +'checks 每项为 {id,command,timeoutMs?}；超时为 1..3600000 整数，默认 900000 ms（15 分钟）。\n'
@@ -146,6 +174,9 @@ function preflight(){
   const batch=bundle.batch,keys=batch.tasks.map(taskKey);
   if(new Set(keys).size!==keys.length||keys.length!==Object.keys(bundle.workflows).length
     ||keys.some(key=>!Object.hasOwn(bundle.workflows,key)))stop(2,'批次定义 workflows 与 tasks 不匹配');
+  const sessionMembers=batchSessionMembers(batch,control?.policy);
+  const liveDevelopError=batchLiveDevelopError(sessionMembers,Array.isArray(plan.liveEvidence?.kinds)&&plan.liveEvidence.kinds.includes('develop'),operation);
+  if(liveDevelopError)stop(2,liveDevelopError);
   const definitions=new Map(),runs=new Map();
   try{
     for(const task of batch.tasks){
@@ -190,6 +221,11 @@ function preflight(){
   if(plan.mode==='create'&&operation==='advance'&&(hasLog||hasStore))
     stop(2,`批次已有存档，请用 resume: ${log}`);
   if(operation==='status'&&!hasStore)stop(2,`只读 status 需要已有任务存档: ${stores.join(', ')}`);
+  // Only a new batch: an existing one resumes on its original boundary.
+  if(operation==='advance'&&control?.policy.qa==='run'&&!hasLog&&!hasStore){
+    const missing=keys.filter(key=>bundle.workflows[key]?.qa==null);
+    if(missing.length)stop(2,`batch_workflow_missing: 策略 qa:"run" 的成员缺少 QA workflow: ${missing.join(', ')}；用 cm-ai-batch-plan --workflow-config 生成或补齐`);
+  }
   const argumentValue=name=>permissions.includes(name)?permissions[permissions.indexOf(name)+1]:undefined;
   if(argumentValue('--external-models-config'))permissions[permissions.indexOf('--external-models-config')+1]=path.resolve(base,argumentValue('--external-models-config'));
   const chosenRuntime=argumentValue('--runtime')??'codex';
@@ -243,7 +279,8 @@ function preflight(){
     permissions.includes(`${key}:1`)&&permissions[permissions.indexOf(`${key}:1`)-1]==='--allow-provider-development');
   let live;
   try{live=driverLiveEvidence(plan,{base,protectedRoots:[batch.codeProject,batch.specsDir,path.resolve(batch.codeProject,'..','.cm-worktrees'),...(batch.codeProjects??[])],
-    allowedKinds:['qa_logic','qa_browser','verification_precheck'],maxBytes:inputLimitFrom(permissions)});}
+    allowedKinds:['qa_logic','qa_browser','verification_precheck','develop'],maxBytes:inputLimitFrom(permissions),
+    minimumTimeouts:{develop:liveDevelopWaitMs()}});}
   catch(error){stop(2,error.message);}
   if(operation==='advance'&&(permissions.includes('--verification-precheck')||control?.policy.verification==='precheck')
     &&!live.has('verification_precheck'))
@@ -257,7 +294,7 @@ function preflight(){
   const firstGroup=batch.parallel?.find(group=>group.includes(keys[0]))??[keys[0]];
   if(operation==='advance')for(const task of batch.tasks){
     const key=taskKey(task),workflow=bundle.workflows[key],kinds=[];
-    if(!providerAll)kinds.push('develop');
+    if(!providerAll||sessionMembers.has(key))kinds.push('develop');
     if(!protectedMode){
       kinds.push('check');
       if(workflow?.documentationPaths?.length)kinds.push('documentation_sync');
@@ -276,10 +313,14 @@ function preflight(){
     if(workflow)kinds.push('documentation_inspect');
     const evidence=kinds.filter(kind=>['qa_logic','qa_browser'].includes(kind)&&!live.has(kind));
     if(evidence.length)stop(2,`缺少真实执行 runner: ${evidence.join(', ')}；不能从静态答案文件应答`);
+    const shortWindow=qaAnswerWindowShortfall(workflow?.qa,live,kinds);
+    if(shortWindow&&plan.mode==='create')stop(2,`${key}: ${shortWindow}`);
+    if(shortWindow)process.stderr.write(`[drive] 警告: ${key}: ${shortWindow}\n`);
     if(kinds.includes('check'))checkCommandShape(plan.checks?.[key],key,plan,executionPolicy);
     const taskRoot=root&&path.join(root,task.feature,task.taskId);
     const perAttempt=new Map();
-    if(kinds.includes('develop')){
+    // A session member answers develop only live: no authored answer, no revision hold.
+    if(kinds.includes('develop')&&!sessionMembers.has(key)){
       let attempts=[1],current=1,journal=null;
       if(plan.mode==='resume'&&handedOff.has(key)){attempts=[];journal={handedOff:true};}
       else if(plan.mode==='resume'){
@@ -343,7 +384,7 @@ function preflight(){
     if(answers[key].documentation_sync)for(const target of Object.keys(answers[key].documentation_sync.edits))
       if(!workflow.documentationPaths.includes(target))stop(2,`任务 ${key} documentation-sync.json.edits 越过文档 scope: ${target}`);
   }
-  return {...loaded,control,executionPolicy,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root,holds,live};
+  return {...loaded,control,executionPolicy,bundle,definitions,runs,config,permissions,answers,developAnswers,answerRoot:root,holds,live,sessionMembers};
 }
 
 let loaded;
@@ -360,7 +401,8 @@ function safeWrite(map,root,cwd,allowed){
   }
 }
 async function answerFor(row,answers,paths,control){
-  if(loaded.live.has(row.kind))return loaded.live.answer(row,control);
+  // Live replies (including a session member's protected develop proposal) go back as written; the host validates them.
+  if(liveAnswerRoute(row,loaded))return loaded.live.answer(row,control);
   const identity=row.payload.identity??row.payload.request?.identity;
   const binding=loaded.runs.get(identity?.runId),key=binding?.key;
   if(!Object.hasOwn(loaded.answers,key))return null;

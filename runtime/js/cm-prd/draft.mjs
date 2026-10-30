@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import {need,shape,json,digest} from '../cm-ai/effect-contract.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
-import {needPrd,prdDraftJson} from './validation-reason.mjs';
+import {needPrd,prdDraftJson,PRD_DRAFT_LIMIT} from './validation-reason.mjs';
 export function prdFeatureInventory(specs){
   return fs.readdirSync(specs).filter(name=>/^\d+\./.test(name)).sort();
 }
@@ -37,8 +37,36 @@ export function inspectPrdDesignDraft(raw,{nextIndex}){
     checks:'design_structure_only',remaining:['design_review','design_disposition','task_generation','spec_self_check','split_review','human_approval'],
     writeAuthorized:false,completionAuthorized:false});
 }
-export function inspectPrdDraft(raw,{nextIndex,generateCases,userCasesProvided}){
-  const reply=prdDraftJson(raw);shape(reply,['status','summary','features']);
+// tasks_after_design: a reply may leave out a feature's requirements.md/design.md,
+// which then means byte-identical to the accepted design and is restored here in
+// the accepted order, so the 64 KiB reply limit counts only tasks and test cases.
+// Anything else (another feature list or name, a repeated document path, a status
+// other than draft) is returned unchanged for the original checks to refuse.
+export function withAcceptedPrdDocuments(reply,acceptedDesign){
+  if(acceptedDesign==null||reply?.status!=='draft'||!Array.isArray(reply.features)
+    ||reply.features.length!==acceptedDesign.features.length)return {reply,limit:PRD_DRAFT_LIMIT};
+  const features=reply.features.map((feature,index)=>{
+    const accepted=acceptedDesign.features[index];
+    if(feature?.name!==accepted.name||!Array.isArray(feature.documents)
+      ||new Set(feature.documents.map(doc=>doc?.path)).size!==feature.documents.length)return feature;
+    const given=path=>feature.documents.find(doc=>doc?.path===path);
+    return {...feature,documents:[...accepted.documents.map(doc=>given(doc.path)??{path:doc.path,content:doc.content}),
+      ...feature.documents.filter(doc=>!accepted.documents.some(item=>item.path===doc?.path))]};
+  });
+  return {reply:{...reply,features},
+    limit:PRD_DRAFT_LIMIT+Buffer.byteLength(JSON.stringify(acceptedDesign.features.map(feature=>feature.documents)))};
+}
+// A driver's preflight of a draft reply, in the host's order: the 64 KiB limit on
+// the reply as sent first, then the draft checks on the draft with accepted
+// documents restored. The revision reason is an envelope field, not draft schema.
+export function inspectPrdDraftReply(value,acceptedDesign,options){
+  prdDraftJson(value);
+  const assembled=withAcceptedPrdDocuments(value,acceptedDesign);
+  const {selfCheckRevisionReason,...draftReply}=assembled.reply;
+  return inspectPrdDraft(draftReply,{...options,limit:assembled.limit});
+}
+export function inspectPrdDraft(raw,{nextIndex,generateCases,userCasesProvided,limit=PRD_DRAFT_LIMIT}){
+  const reply=prdDraftJson(raw,limit);shape(reply,['status','summary','features']);
   need(reply.status==='draft'&&typeof reply.summary==='string'&&reply.summary.trim()
     &&Array.isArray(reply.features)&&reply.features.length>0,'prd_draft_invalid');
   const seen=new Set(),features=[];let userCases=0;

@@ -112,7 +112,7 @@ function logStep(configuration,binding,event,phase,data,detail) {
 // empty). A FAIL, a BLOCKED, another environment or a failed cleanup is never
 // asked again: those stay as judged, and only an explicit recovery reruns them.
 const CORRECTION_INSTRUCTION='Only the evidence list of the previous PASS answer can be corrected. Evidence must be non-empty '
-  +'files inside the .reviews directory of the specs root (for example .reviews/qa-evidence/); copy the files you observed '
+  +'files inside the .reviews directory of the specs root (for example the evidenceDirectory of this request, created if missing); copy the files you observed '
   +'there and answer again. Keep the verdict, environment and cleanup you actually observed; if you no longer stand by the '
   +'PASS, answer FAIL or BLOCKED.';
 // Every other condition of the verdict must already hold, so the correction can
@@ -127,6 +127,22 @@ function answerProblems(configuration,observed,environment,item){
     catch{problems.push({code:'evidence_outside_reviews_or_missing',path:file});}
   }
   return problems;
+}
+
+// A QA command that declares reuseCheck takes the result of that task check
+// instead of running again, only when the check ran the identical command on
+// this reviewed package and passed. The entry hands over the package's checks
+// after proving the code root still matches that package (runner
+// qaCompletionChecks); anything else runs the command as before and says why.
+function reusedTaskCheck(command,checks,packageDigest){
+  if(!Object.hasOwn(command,'reuseCheck'))return {};
+  if(checks===null)return {unavailable:'no_verified_task_checks'};
+  const check=checks.find(item=>item?.id===command.reuseCheck);
+  if(!check)return {unavailable:'check_not_in_package'};
+  if(JSON.stringify(check.command)!==JSON.stringify(command.command))return {unavailable:'command_differs'};
+  if(check.outcome!=='passed'||check.exitCode!==0)return {unavailable:'check_not_passed'};
+  const evidence=`reused task check ${check.id} of reviewed package ${packageDigest.slice(0,12)}: ${String(check.evidence??'')}`.slice(0,500);
+  return {observed:{outcome:'passed',exitCode:0,evidence}};
 }
 
 function evidence(raw) {
@@ -178,8 +194,11 @@ export function createHostQaExecutor(options) {
   need(['codex','claude'].includes(configuration.runtime));validCallTimeout(configuration.timeoutMs);
   const ids=new Set();need(Array.isArray(configuration.commands)&&configuration.commands.length<=32);
   for(const item of configuration.commands){
-    shape(item,['id','command','caseIds',...(roots?['codeProject']:[])]);id(item.id);need(!ids.has(item.id));ids.add(item.id);
+    shape(item,['id','command','caseIds',...(roots?['codeProject']:[]),...(Object.hasOwn(item,'reuseCheck')?['reuseCheck']:[])]);
+    id(item.id);need(!ids.has(item.id));ids.add(item.id);
     if(roots)need(roots.includes(item.codeProject),'execution_root_mismatch');
+    // Opt-in: name the task check with the same command; see reusedTaskCheck below.
+    if(Object.hasOwn(item,'reuseCheck')){id(item.reuseCheck);need(!roots,'qa_check_reuse_invalid');}
     need(Array.isArray(item.caseIds)&&new Set(item.caseIds).size===item.caseIds.length);
     for(const caseId of item.caseIds)id(caseId);
     // Reuse the actual host checker validator, without running a command.
@@ -205,9 +224,10 @@ export function createHostQaExecutor(options) {
   return Object.freeze({...initial,timeoutMs:configuration.timeoutMs,prepare,
     async run(rawBinding,signal){
       const {mode,caseCount,configuration:{plan}}=prepared??prepare();
-      let binding=json(rawBinding);
+      let {completionChecks=null,...binding}=json(rawBinding);
       shape(binding,['specsDir','codeProject','feature','identity','packageDigest','testRunId','mode','caseCount',
         ...(Object.hasOwn(binding,'qaRound')?['qaRound']:[])]);
+      need(completionChecks===null||Array.isArray(completionChecks)&&completionChecks.length<=32,'qa_check_reuse_invalid');
       validIdentity(binding.identity);hex(binding.packageDigest);id(binding.testRunId);
       const qaRound=readCmAiQaRunRound({specsDir:binding.specsDir,feature:binding.feature,
         identity:binding.identity,packageDigest:binding.packageDigest,testRunId:binding.testRunId});
@@ -243,6 +263,13 @@ export function createHostQaExecutor(options) {
           else if(!plan.commands.length)rows.push({id:'commands-unavailable',kind:'commands',verdict:'BLOCKED',evidence:['No declared project test command',...dropped]});
           for(const command of plan.commands){
             notCancelled();
+            const reuse=reusedTaskCheck(command,completionChecks,binding.packageDigest);
+            if(reuse.observed){
+              commandResults.set(command.id,reuse.observed);
+              rows.push({id:command.id,kind:'commands',verdict:'PASS',exitCode:reuse.observed.exitCode,
+                evidence:[reuse.observed.evidence],reusedCheck:command.reuseCheck});
+              continue;
+            }
             // Q13: the command's process group identity, so a cleanup_failed row can
             // later be released once the host proves that group gone.
             let spawned=null;
@@ -265,11 +292,17 @@ export function createHostQaExecutor(options) {
             notCancelled();
             commandResults.set(command.id,observed);
             rows.push({id:command.id,kind:'commands',verdict:observed.outcome==='passed'?'PASS':observed.outcome==='failed'?'FAIL':'BLOCKED',
-              exitCode:observed.exitCode,evidence:[...(roots?[`cwd=${command.codeProject}`]:[]),observed.evidence]});
+              exitCode:observed.exitCode,evidence:[...(roots?[`cwd=${command.codeProject}`]:[]),observed.evidence],
+              ...(reuse.unavailable?{reuseUnavailable:reuse.unavailable}:{})});
           }
         }else for(const item of plan.cases.filter(candidate=>candidate.kind===stage)){
           notCancelled();
-          const request=freeze({...binding,case:item,route:routed,environment,...(roots?{codeProjects:roots}:{})});
+          // A browser case is told where inside {specs}/.reviews to put its evidence
+          // files, the only place an answer's evidence is accepted from. Only a path:
+          // the host creates nothing there, and reportFile still judges every file.
+          const evidenceDirectory=stage==='browser'?path.join(configuration.specsDir,'.reviews','qa-evidence',binding.testRunId,item.id):null;
+          const request=freeze({...binding,case:item,route:routed,environment,...(roots?{codeProjects:roots}:{}),
+            ...(evidenceDirectory?{evidenceDirectory}:{})});
           if(stage==='logic'){
             let observed,hostRequestTimeout=false;
             try{observed=logic===null?{verdict:'INSUFFICIENT_EVIDENCE',evidence:['Logic host unavailable']}:json(await logic(request,signal));}

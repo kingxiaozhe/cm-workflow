@@ -14,12 +14,16 @@
 //   none is the feature's last task (its QA collects the members' deferred QA);
 // - a member's prerequisites all come before the group's first member, because
 //   the whole group starts there.
+// Grammar 3 marks the one task the session develops (`- 开发: 会话`): it must be the
+// feature's last task, so it stays serial; batch.memberDevelopment lists those members
+// ({"feature/T-xxx":"session"}) and is absent when there are none, so such a batch
+// configuration has exactly the bytes it had before.
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {inspectCmAiAdmission,parseFeatureTaskText} from './cm-ai-admission.mjs';
 import {approvedTaskGrammar} from '../spec-task-line.mjs';
-import {parseTaskScopes,scopesOverlap,BOOTSTRAP_FEATURE} from '../task-scope.mjs';
+import {parseTaskScopes,scopesOverlap,sessionTaskProblem,sessionTaskReason,BOOTSTRAP_FEATURE} from '../task-scope.mjs';
 import {need} from './effect-contract.mjs';
 import {featureHasBrowserCases} from './host-workflow-capabilities.mjs';
 import {decideHostQaPolicy,qaUnassessedTaskCounts} from './host-qa-policy.mjs';
@@ -122,7 +126,8 @@ export function parallelSettings(config){
 // host admits each task through that same selection.
 // workflow: optional single-task workflow configuration (the one the session passes the
 // batch host for these tasks); its qa.criticalPaths and applicableAgentFiles keep tasks
-// that would hit a registered path out of one-member groups.
+// that would hit a registered path out of one-member groups, and every member's
+// workflows entry is that configuration (null without one).
 export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,settings:given=PARALLEL_DEFAULTS,workflow=null}){
   const settings=parallelSettings({parallel:given});
   const admission=inspectCmAiAdmission({specsDir,codeProject});
@@ -136,6 +141,8 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   const parsed=parseFeatureTaskText(text,{allowDependencyPunctuation:true,grammar});
   need(!parsed.error,'batch_plan_tasks_invalid');
   const scopes=parseTaskScopes(text,{grammar});
+  const sessionProblem=sessionTaskProblem(parsed.tasks,scopes.sessions,parsed.dependencies);
+  if(sessionProblem)throw Object.assign(new Error(sessionProblem.code),{code:sessionProblem.code,reason:`${selected}/tasks.md：${sessionTaskReason(sessionProblem)}`});
   const remaining=parsed.tasks.filter(task=>!task.completed&&!task.dropped);
   need(remaining.length>0,'batch_plan_not_ready');
   if(scopes.errors.some(item=>remaining.some(task=>task.id===item.taskId)))return {mode:'serial',feature:selected,reason:'scope_invalid'};
@@ -144,6 +151,14 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   // reached, so every task must come after its prerequisites still to run.
   const schedule=executionOrder(remaining,parsed.dependencies);
   if(schedule===null)return {mode:'serial',feature:selected,reason:'dependency_order'};
+  // The narrow rule once more on the order the batch really runs: a session task is the
+  // feature's last task to run, so nothing may be scheduled after it.
+  const lateSession=schedule.findIndex(task=>scopes.sessions.has(task.id));
+  if(lateSession!==-1&&lateSession!==schedule.length-1){
+    const after=new Set(schedule.slice(lateSession+1).map(task=>task.id));
+    const problem={code:'session_task_depended_on',tasks:[schedule[lateSession].id],dependents:parsed.tasks.map(task=>task.id).filter(id=>after.has(id))};
+    throw Object.assign(new Error(problem.code),{code:problem.code,reason:`${selected}/tasks.md：${sessionTaskReason(problem)}`});
+  }
   need(schedule[0].id===admission.nextTask.id,'batch_plan_order_mismatch');
   // The host requires the feature's last task in every batch with a group (its QA
   // collects the members' deferred QA); a completed last task leaves no such task.
@@ -165,9 +180,13 @@ export function planCmAiBatch({specsDir,codeProject,repositoryId,batchId,setting
   const groups=settings.enabled&&(settings.max>=2||solo)&&!lastDone
     ?group(parsed,schedule,scopes,settings.max,solo):[];
   const key=taskId=>`${selected}/${taskId}`;
+  const sessions=tasks.filter(task=>scopes.sessions.has(task.taskId));
+  if(groups.some(members=>members.some(id=>scopes.sessions.has(id))))
+    throw Object.assign(new Error('session_task_parallel'),{code:'session_task_parallel',reason:`${selected}：会话任务不能进并行组`});
   const config={batch:{version:1,repositoryId,batchId,specsDir,codeProject,tasks,
-    ...(groups.length?{parallel:groups.map(members=>members.map(key))}:{})},
-    workflows:Object.fromEntries(tasks.map(task=>[key(task.taskId),null]))};
+    ...(groups.length?{parallel:groups.map(members=>members.map(key))}:{}),
+    ...(sessions.length?{memberDevelopment:Object.fromEntries(sessions.map(task=>[key(task.taskId),'session']))}:{})},
+    workflows:Object.fromEntries(tasks.map(task=>[key(task.taskId),workflow]))};
   return {mode:'batch',feature:selected,config,groups};
 }
 
@@ -196,7 +215,7 @@ function group(parsed,schedule,scopes,max,solo){
   // task that runs last collects the members' deferred QA serially.
   const last=parsed.tasks.filter(task=>!task.dropped).at(-1)?.id,lastRun=schedule.at(-1)?.id;
   const order=new Map(schedule.map((task,index)=>[task.id,index]));
-  const candidate=task=>task.id!==last&&task.id!==lastRun&&!scopes.tasks.get(task.id).device;
+  const candidate=task=>task.id!==last&&task.id!==lastRun&&!scopes.tasks.get(task.id).device&&!scopes.sessions.has(task.id);
   // The whole group starts at its first member, so every member's prerequisites
   // still to run must come before that point.
   const readyBefore=(task,start)=>(deps.get(task.id)??[]).every(dep=>!order.has(dep)||order.get(dep)<start);

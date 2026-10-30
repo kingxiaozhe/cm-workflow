@@ -7,6 +7,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {TextDecoder} from 'node:util';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
+import {TASK_GRAMMAR} from '../spec-task-line.mjs';
 import {buildManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
@@ -122,9 +123,12 @@ export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
     ...(currentFeatures===undefined?{}:{currentFeatures})},1024*1024);
 }
 
-export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=false}){
+// taskGrammar is the one the publishing session bound (session.mjs); a first
+// publication writes it, an earlier status keeps its own grammar (or none, grammar 1).
+export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=false,taskGrammar=2}){
   assertPrdBatchActive(specs);
   need(writeEnabled===true,'prd_summary_write_not_enabled');
+  need(Number.isSafeInteger(taskGrammar)&&taskGrammar>=2&&taskGrammar<=TASK_GRAMMAR,'prd_task_grammar_invalid');
   need(summary.status==='human_summary_prepared'&&summary.readyForAwaitingReview===true
     &&summary.blockers.length===0,'prd_summary_not_ready');
   const scope={currentFeatures:summary.currentFeatures};
@@ -146,8 +150,8 @@ export function publishPrdAwaitingReview({specs,summary,writeEnabled,recover=fal
   const status={status:'awaiting_review',summaryDigest:summary.summaryDigest,at:new Date().toISOString(),features:before.features.map(item=>item.directory),
     specFiles:before.specFiles,testCases:before.specFiles.filter(item=>item.path.endsWith('/test-cases.json')),approval:null,
     ...(prior.kind==='valid'&&Object.hasOwn(prior.value,'revisionDigest')?{revisionDigest:prior.value.revisionDigest}:{}),
-    // A first publication has no earlier approval to reinterpret: bind grammar 2.
-    ...(prior.kind==='missing'||prior.kind==='valid'&&prior.value.taskGrammar===2?{taskGrammar:2}:{})};
+    // A first publication has no earlier approval to reinterpret: bind the session's grammar.
+    ...(prior.kind==='missing'?{taskGrammar}:prior.kind==='valid'&&Object.hasOwn(prior.value,'taskGrammar')?{taskGrammar:prior.value.taskGrammar}:{})};
   const bytes=Buffer.from(JSON.stringify(status)+'\n'),target=path.join(specs,'.cm-specs-status');
   try{
     writeSpecsStatus(specs,status,{beforeRename:()=>{

@@ -32,9 +32,11 @@ import {createHash} from 'node:crypto';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {inspectCmPrdAdmission,inspectCmPrdSources} from './cm-prd-entry.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
-import {inspectPrdDraft,inspectPrdDesignDraft,nextPrdFeatureIndex,prdFeatureInventory} from '../runtime/js/cm-prd/draft.mjs';
+import {inspectPrdDraftReply,inspectPrdDesignDraft,nextPrdFeatureIndex,prdFeatureInventory} from '../runtime/js/cm-prd/draft.mjs';
+import {acceptedPrdDesignForPlanning} from '../runtime/js/cm-prd/accepted-design.mjs';
 import {inspectPrdChangeSnapshot,inspectPrdChangeProposal} from '../runtime/js/cm-prd/change.mjs';
-import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
+import {checkPrdDraftMechanics} from '../runtime/js/cm-prd/self-check.mjs';
+import {prdSessionVersions} from '../runtime/js/cm-prd/session.mjs';
 import {prdTaskScopeOptions} from '../runtime/js/cm-prd/task-scope-record.mjs';
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
 import {inspectPrdDispositionPlan} from '../runtime/js/cm-prd/disposition-plan.mjs';
@@ -248,8 +250,8 @@ function validate(kind,value,ctx){
       exact(value,['status','summary','features','removed'],'generate.json');
       if(ctx.stage==='change_tasks'||ctx.stage==='change_check_failed'){
         // Same rule the host applies: a resumed operation keeps the rule it began
-        // under (none recorded = rule 1); a new operation uses the current one.
-        const rules=ctx.operation==='resume'?ctx.state.active?.selfCheckRules??1:PRD_SELF_CHECK_RULES;
+        // under (none recorded = rule 1); a new operation uses the one its session bound.
+        const rules=ctx.operation==='resume'?ctx.state.active?.selfCheckRules??1:prdSessionVersions(ctx.state,ctx.specs).selfCheckRules;
         try{inspectPrdChangeProposal(inspectPrdChangeSnapshot(ctx.specs),value,ctx.state.checkpoint.change.selected,ctx.config,{rules});}
         catch(e){fail('generate.json 不符合变更草稿或 scope',e.code??e.message);}
       }else{
@@ -264,11 +266,9 @@ function validate(kind,value,ctx){
         ??ctx.state?.checkpoint?.analysis?.draft?.features?.[0]?.directory?.split('.')[0]
         ??nextPrdFeatureIndex(prdFeatureInventory(ctx.specs)));
       try{if(value.status==='design')inspectPrdDesignDraft(value,{nextIndex});
-        else{
-          // Same as the host: the revision reason is a top-level envelope field, not draft schema.
-          const {selfCheckRevisionReason,...draftReply}=value;
-          inspectPrdDraft(draftReply,{nextIndex,generateCases:ctx.config.policies.generate_cases,
-            userCasesProvided:ctx.sources.sourceInspection.userCases!==null});}}
+        // Same order as the host; requirements/design left out are restored from the accepted design.
+        else inspectPrdDraftReply(value,acceptedPrdDesignForPlanning(ctx.specs,ctx.state?.checkpoint?.analysis),
+          {nextIndex,generateCases:ctx.config.policies.generate_cases,userCasesProvided:ctx.sources.sourceInspection.userCases!==null});}
       catch(e){fail('generate.json 不符合草稿 schema',e.code??e.message);}
     }
   }else if(kind==='prd_review'){

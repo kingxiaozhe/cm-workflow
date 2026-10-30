@@ -38,10 +38,20 @@ export function readControlPolicyFile(file){
 export function controlPolicyFromSnapshot(snapshot){
   return snapshot.records.find(row=>row.payload.type==='init')?.payload.config?.controlPolicy??null;
 }
-export function assertControlEntry(snapshot,policy){
+// A run created with qa:"disabled" may turn QA on once after it completed: the
+// launch policy equals the saved one except qa:"run". Everything else about the
+// run stays bound to the saved policy (qa-attachment.mjs, cm-ai-run.mjs).
+export function isControlQaUpgrade(saved,policy){
+  if(saved===null||policy===null)return false;
+  const before=readControlPolicy(saved),after=readControlPolicy(policy);
+  return before.qa==='disabled'&&after.qa==='run'&&digest({...before,qa:'run'})===digest(after);
+}
+export function assertControlEntry(snapshot,policy,{allowQaUpgrade=false}={}){
   const saved=controlPolicyFromSnapshot(snapshot);
   need((saved===null)===(policy===null),'fingerprint_mismatch');
-  if(saved!==null)need(digest(readControlPolicy(saved))===digest(readControlPolicy(policy)),'fingerprint_mismatch');
+  if(saved===null||digest(readControlPolicy(saved))===digest(readControlPolicy(policy)))return null;
+  need(allowQaUpgrade&&isControlQaUpgrade(saved,policy),'fingerprint_mismatch');
+  return readControlPolicy(saved);
 }
 export function readControlTarget(raw){
   const v=json(raw);shape(v,['version','identity','state','code','packageDigest','effectId','invocationId','revision',

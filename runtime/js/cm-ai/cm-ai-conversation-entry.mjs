@@ -269,6 +269,7 @@ export function createCmAiConversationEntry(options) {
   const runner=options.runner;
   const runnerKeys=['executeEffect','status','cancel','run'];
   if(runner&&Object.hasOwn(runner,'qaChangedFiles'))runnerKeys.push('qaChangedFiles');
+  if(runner&&Object.hasOwn(runner,'qaCompletionChecks'))runnerKeys.push('qaCompletionChecks');
   if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
   if(runner&&Object.hasOwn(runner,'completionBlocks'))runnerKeys.push('completionBlocks');
   if(runner&&Object.hasOwn(runner,'reviewEffectIds'))runnerKeys.push('reviewEffectIds');
@@ -294,6 +295,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
   if(Object.hasOwn(runner,'qaChangedFiles'))need(typeof runner.qaChangedFiles==='function');
+  if(Object.hasOwn(runner,'qaCompletionChecks'))need(typeof runner.qaCompletionChecks==='function');
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
   if(Object.hasOwn(runner,'completionBlocks'))need(typeof runner.completionBlocks==='function');
   if(Object.hasOwn(runner,'reviewEffectIds'))need(typeof runner.reviewEffectIds==='function');
@@ -561,6 +563,13 @@ export function createCmAiConversationEntry(options) {
               ...(qaExecutor.configuration?.plan?.dropped_task_cases?{droppedTaskCases:qaExecutor.configuration.plan.dropped_task_cases}:{}),
               ...(qaExecutor.configuration?.plan?.dropped_task_commands?{droppedTaskCommands:qaExecutor.configuration.plan.dropped_task_commands}:{}),
               ...(recovery?{previousTestRunId:recovery.testRunId}:{})});
+            // Only an executor whose plan declares reuseCheck receives the task
+            // checks; a package that no longer matches the code root yields null
+            // and the commands run as before.
+            let completionChecks=null;
+            if(qaExecutor.configuration?.plan?.commands?.some(item=>Object.hasOwn(item,'reuseCheck'))){
+              try{completionChecks=runner.qaCompletionChecks?.(result.packageDigest)??null;}catch{completionChecks=null;}
+            }
             const controller=new AbortController();pendingExecution=controller;
             let timer,timedOut=false;
             try{
@@ -573,7 +582,7 @@ export function createCmAiConversationEntry(options) {
               const executed=await Promise.race([Promise.resolve().then(()=>{
                 notCancelled();
                 need(!controller.signal.aborted,'cancelled');
-                return qaExecutor.run(freeze(invocation),controller.signal);
+                return qaExecutor.run(freeze(completionChecks===null?invocation:{...invocation,completionChecks}),controller.signal);
               }),interrupted]);
               need(!controller.signal.aborted,'cancelled');
               // A run that moved on meanwhile (for example files in scope replaced):

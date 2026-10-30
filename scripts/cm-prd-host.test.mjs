@@ -105,6 +105,8 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
         else{assert.equal(message.result.stage,'self_check_reported_passed');send({requestId:'save',operation:'save_draft'});}
       }else if(message.requestId==='save'){
         assert.equal(message.result.status,'draft_saved');assert.equal(message.result.artifacts.length,3);
+        // The save keeps its operation's rule, so later re-checks of these files use it.
+        assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'.reviews/prd-guide-task-scope.json'),'utf8')).selfCheckRules,4);
         assert.equal(fs.existsSync(path.join(dir,'.cm-specs-status')),false);
         send({requestId:'package',operation:'final_review_package',stage:'split',feature:'1.guide'});
       }else if(message.requestId==='package'){

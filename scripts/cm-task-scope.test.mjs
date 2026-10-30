@@ -6,8 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {parseTaskScopes,declaredTaskScope,sameScope,validScopePath} from '../runtime/js/task-scope.mjs';
-import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES} from '../runtime/js/cm-prd/self-check.mjs';
+import {parseTaskScopes,declaredTaskScope,sameScope,validScopePath,sessionTaskProblem} from '../runtime/js/task-scope.mjs';
+import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULES,sessionTaskFindings} from '../runtime/js/cm-prd/self-check.mjs';
 import {recordPrdTaskScopes,prdTaskScopeOptions,approvedScopeExemptions} from '../runtime/js/cm-prd/task-scope-record.mjs';
 import {createHash} from 'node:crypto';
 import {normalizeRuntimeMarkBytes} from './cm-spec-manifest.mjs';
@@ -26,6 +26,90 @@ test('scope, tests and device sub-items attach to the task line above them',()=>
   assert.deepEqual(tasks.get('T-001'),{scope:['src/a.js','test/a.test.js'],tests:['test/a.test.js'],device:false,line:4});
   assert.deepEqual(tasks.get('T-002'),{scope:['index.html','src/app.js'],tests:[],device:true,line:7});
   assert.equal(tasks.has('T-003'),false);
+});
+
+// Task grammar 3 (spec-task-line.mjs): `- 开发: 会话` has meaning only under an
+// approval that bound grammar 3; 1 and 2 read the very same text exactly as before.
+test('开发 sub-item: grammar 3 reads it, grammar 1 and 2 keep it prose',t=>{
+  const text=tasksText(['- [ ] T-001: impl','  - 范围: `src/a.js`','  - 开发: 开发进程',
+    '- [ ] T-002：walk','  - 范围: `docs/qa.md`','  - developer: session']);
+  const three=parseTaskScopes(text,{grammar:3});
+  assert.deepEqual(three.errors,[]);assert.deepEqual([...three.sessions],['T-002']);
+  assert.deepEqual(three.tasks.get('T-002').scope,['docs/qa.md']);
+  assert.deepEqual(parseTaskScopes(text).sessions,three.sessions,'grammar 3 is the default for drafts');
+  // Grammar 2 keeps its own declaration grammar (the full-width colon is a task) and ignores 开发.
+  const two=parseTaskScopes(text,{grammar:2});
+  assert.deepEqual(two.errors,[]);assert.equal(two.sessions.size,0);assert.deepEqual([...two.tasks.keys()],['T-001','T-002']);
+  // Grammar 1 is the pre-grammar parse: `T-002：` is prose, so its scope is a stray item.
+  const one=parseTaskScopes(text,{grammar:1});
+  assert.equal(one.sessions.size,0);assert.deepEqual([...one.tasks.keys()],['T-001']);
+  assert.deepEqual(one.errors.map(item=>item.taskId),[null]);
+  // A value other than 会话/session (or the written-out default) is refused only under grammar 3.
+  for(const bad of ['  - 开发: 张三','  - 开发: 会话\n  - 开发: session']){
+    const bytes=tasksText(['- [ ] T-001: a','  - 范围: `a.js`',bad]);
+    assert.equal(parseTaskScopes(bytes,{grammar:3}).errors.length,1,bad);
+    assert.deepEqual(parseTaskScopes(bytes,{grammar:2}).errors,[],bad);
+  }
+  assert.match(parseTaskScopes(tasksText(['- [ ] T-001: a','  - 范围: `a.js`','  - 开发: 张三']),{grammar:3}).errors[0].message,/会话/);
+  // Not under any task: reported like a stray scope under 3, prose under 2; prose values stay prose.
+  const stray=tasksText(['- [ ] T-001: a','  - 范围: `a.js`','','## 说明','- 开发: 会话','- 开发: 由前端组负责']);
+  assert.deepEqual(parseTaskScopes(stray,{grammar:3}).errors.map(item=>item.taskId),[null]);
+  assert.deepEqual(parseTaskScopes(stray,{grammar:2}).errors,[]);
+  // 开发 does not count as a scope field: alone it leaves the task without scope, and 串行 may carry it.
+  const alone=parseTaskScopes(tasksText(['- [ ] T-001: a','  - 开发: 会话','- [ ] T-002: b','  - 范围: 串行','  - 开发: 会话']),{grammar:3});
+  assert.deepEqual(alone.errors,[]);assert.equal(alone.tasks.size,0);assert.deepEqual([...alone.serial],['T-002']);
+  assert.deepEqual([...alone.sessions],['T-001','T-002']);
+  // The runtime reads with the grammar the approval bound.
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-task-scope-grammar-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(root,'1.work'));
+  fs.writeFileSync(path.join(root,'1.work','tasks.md'),tasksText(['- [ ] T-001: a','  - 范围: `a.js`','  - 开发: 张三']));
+  for(const [status,refused] of [[{status:'approved',taskGrammar:3},true],[{status:'approved',taskGrammar:2},false],
+    [{status:'approved'},false],[{status:'awaiting_review',taskGrammar:3},false],[{status:'approved',taskGrammar:4},false]]){
+    fs.writeFileSync(path.join(root,'.cm-specs-status'),JSON.stringify(status));
+    if(refused)assert.throws(()=>declaredTaskScope(root,'1.work','T-001'),{code:'task_scope_invalid'});
+    else assert.deepEqual(declaredTaskScope(root,'1.work','T-001').scope,['a.js'],JSON.stringify(status));
+  }
+});
+
+test('a session task is at most one per feature and only its last task',()=>{
+  const lines=(...marks)=>tasksText(['- [ ] T-001: a','  - 范围: `a.js`',...(marks.includes(1)?['  - 开发: 会话']:[]),
+    '- [ ] T-002: b','  - 范围: `b.js`',...(marks.includes(2)?['  - 开发: 会话']:[]),
+    '- [ ] T-003: c ~~[DROPPED 不做]~~','  - 范围: `c.js`',...(marks.includes(3)?['  - 开发: 会话']:[])]);
+  const codes=(text,grammar=3)=>sessionTaskFindings('1.work',text,{grammar}).map(item=>item.code);
+  assert.deepEqual(codes(lines()),[]);
+  // A dropped task after it does not count: T-002 is the last task to run.
+  assert.deepEqual(codes(lines(2)),[]);
+  assert.deepEqual(codes(lines(1)),['session_task_not_final']);
+  assert.deepEqual(codes(lines(1,2)),['session_task_multiple']);
+  // A dropped task's mark is history, not a second session task.
+  assert.deepEqual(codes(lines(2,3)),[]);
+  // Grammar 2 never reads the mark.
+  assert.deepEqual(codes(lines(1),2),[]);assert.deepEqual(codes(lines(1,2),2),[]);
+  const finding=sessionTaskFindings('1.work',lines(1),{grammar:3})[0];
+  assert.deepEqual(finding.reason.tasks,['T-001']);assert.match(finding.reason.expected,/最后一个任务/);
+  assert.equal(sessionTaskProblem([{id:'T-001'},{id:'T-002'}],new Set(['T-002']),new Map()),null);
+});
+
+test('rule 4: no task may wait for the session task, directly or through another task',()=>{
+  const text=(...deps)=>tasksText(['- [ ] T-001: a','  - 范围: `a.js`','- [ ] T-002: b','  - 范围: `b.js`',
+    '- [ ] T-003: walk','  - 范围: `qa.md`','  - 开发: 会话','- [ ] T-004: gone ~~[DROPPED 不做]~~','  - 范围: `d.js`','','## 依赖关系',...deps]);
+  const findings=(...deps)=>sessionTaskFindings('1.work',text(...deps),{grammar:3});
+  // Direct: T-003 is declared last, but the batch would run T-001 after it.
+  const direct=findings('- T-001 依赖 T-003');
+  assert.deepEqual(direct.map(item=>item.code),['session_task_depended_on']);
+  assert.deepEqual([direct[0].reason.tasks,direct[0].reason.dependents],[['T-003'],['T-001']]);
+  assert.match(direct[0].reason.expected,/T-001 直接或间接依赖.*T-003/);
+  // Transitive: T-001 waits for T-002, which waits for T-003.
+  const transitive=findings('- T-001 依赖 T-002','- T-002 依赖 T-003');
+  assert.deepEqual(transitive.map(item=>[item.code,item.reason.dependents]),[['session_task_depended_on',['T-001','T-002']]]);
+  // Legal: the session task waits for the others; a dropped task waiting for it holds
+  // nothing back, nor does a dropped task in the middle of a chain.
+  assert.deepEqual(findings('- T-003 依赖 T-001, T-002','- T-002 依赖 T-001'),[]);
+  assert.deepEqual(findings('- T-004 依赖 T-003'),[]);
+  assert.deepEqual(findings('- T-001 依赖 T-004','- T-004 依赖 T-003'),[]);
+  // Grammar 2 never reads the mark.
+  assert.deepEqual(sessionTaskFindings('1.work',text('- T-001 依赖 T-003'),{grammar:2}),[]);
 });
 
 test('only exact relative file paths in backticks are accepted',()=>{
@@ -89,7 +173,7 @@ const draft=(tasks)=>({draftDigest:'d',features:[{directory:'1.sample',name:'sam
 const codes=report=>report.findings.map(item=>item.code);
 
 test('rule 3: every task of a new draft must declare its files; earlier rules do not ask',()=>{
-  assert.equal(PRD_SELF_CHECK_RULES,3);
+  assert.equal(PRD_SELF_CHECK_RULES,4,'rule 4 keeps the rule-3 scope check');
   const without=draft('- [ ] T-001: a\n- [ ] T-002: b\n  - 范围: `b.js`\n');
   const report=checkPrdDraftMechanics(without,{rules:3});
   assert.deepEqual(codes(report),['task_scope_missing']);

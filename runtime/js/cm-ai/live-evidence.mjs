@@ -5,7 +5,9 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 
-const KINDS=new Set(['qa_logic','qa_browser','verification_precheck','prd_materials']);
+// develop is opt-in: only the batch driver allows it (session members' protected proposals).
+const DEFAULT_KINDS=['qa_logic','qa_browser','verification_precheck','prd_materials'];
+const KINDS=new Set([...DEFAULT_KINDS,'develop']);
 const fail=code=>{throw Error(code);};
 const inside=(root,file)=>file===root||file.startsWith(root+path.sep);
 function resolvedFutureRoot(file){
@@ -25,8 +27,10 @@ function ordinaryAncestors(file){
     }catch(error){if(error.code!=='ENOENT')throw error;}
   }
 }
-export function createLiveEvidence(config,{base,protectedRoots=[],notify=()=>{},maxBytes=65536,allowedKinds=[...KINDS]}={}){
-  if(config===undefined)return {has:()=>false,answer:async()=>null};
+// minimumTimeouts: per-kind floor over timeoutMs, for a kind whose host deadline
+// must fire first (batch develop: the host records call_timeout, not the driver).
+export function createLiveEvidence(config,{base,protectedRoots=[],notify=()=>{},maxBytes=65536,allowedKinds=DEFAULT_KINDS,minimumTimeouts={}}={}){
+  if(config===undefined)return {has:()=>false,timeoutFor:()=>null,answer:async()=>null};
   if(!config||typeof config!=='object'||Array.isArray(config)
     ||Object.keys(config).some(key=>!['directory','kinds','timeoutMs'].includes(key))
     ||typeof config.directory!=='string'||!config.directory.trim()
@@ -35,7 +39,9 @@ export function createLiveEvidence(config,{base,protectedRoots=[],notify=()=>{},
     ||!config.kinds.every(kind=>KINDS.has(kind)&&allowedKinds.includes(kind)))fail('live_evidence_invalid_config');
   const timeout=config.timeoutMs??900000;
   if(!Number.isSafeInteger(timeout)||timeout<1||timeout>3600000
-    ||!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>4194304)fail('live_evidence_invalid_limit');
+    ||!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>4194304
+    ||Object.entries(minimumTimeouts).some(([kind,ms])=>!KINDS.has(kind)||!Number.isSafeInteger(ms)||ms<1))fail('live_evidence_invalid_limit');
+  const timeoutFor=kind=>Math.max(timeout,minimumTimeouts[kind]??0);
   const directory=path.resolve(base??process.cwd(),config.directory);
   const validateDirectory=()=>{
     ordinaryAncestors(directory);
@@ -51,7 +57,7 @@ export function createLiveEvidence(config,{base,protectedRoots=[],notify=()=>{},
   };
   validateDirectory();
   const kinds=new Set(config.kinds),seen=new Set();let exchange=null;
-  return {has:kind=>kinds.has(kind),async answer(row,{signal}={}){
+  return {has:kind=>kinds.has(kind),timeoutFor:kind=>kinds.has(kind)?timeoutFor(kind):null,async answer(row,{signal}={}){
     if(!kinds.has(row.kind))return null;
     if(signal?.aborted)fail('live_evidence_cancelled');
     if(row.type!=='host_request'||!row.sessionId||!row.callId
@@ -66,7 +72,7 @@ export function createLiveEvidence(config,{base,protectedRoots=[],notify=()=>{},
     // File names never contain caller-controlled identifiers.
     const stem=path.join(exchange,randomUUID()),requestFile=stem+'.request.json',resultFile=stem+'.result.json';
     fs.writeFileSync(requestFile,JSON.stringify(row)+'\n',{flag:'wx',mode:0o600});
-    notify(requestFile);const end=Date.now()+timeout;
+    notify(requestFile);const end=Date.now()+timeoutFor(row.kind);
     while(true){
       if(signal?.aborted)fail('live_evidence_cancelled');
       let fd;
@@ -88,6 +94,22 @@ export function createLiveEvidence(config,{base,protectedRoots=[],notify=()=>{},
       catch(error){if(error.name==='AbortError')fail('live_evidence_cancelled');throw error;}
     }
   }};
+}
+
+// The host gives a QA case qa.timeoutMs (60000 when omitted) to answer, while
+// the live responder waits its own timeout. A host window shorter than that wait
+// times the case out while the walkthrough is still running (an iOS UI pass
+// takes minutes) and records it BLOCKED. Drivers refuse that on create and warn
+// on resume, where the recorded configuration is kept.
+export const QA_DEFAULT_ANSWER_WINDOW_MS=60000;
+export function qaAnswerWindowShortfall(qa,live,kinds){
+  if(!qa||typeof qa!=='object')return null;
+  const window=qa.timeoutMs??QA_DEFAULT_ANSWER_WINDOW_MS;
+  const short=[...new Set(kinds)].filter(kind=>['qa_logic','qa_browser'].includes(kind)&&live.has(kind)&&live.timeoutFor(kind)>window);
+  if(!short.length)return null;
+  return `workflow 的 qa.timeoutMs ${Object.hasOwn(qa,'timeoutMs')?`为 ${window}`:`未填（默认 ${window}）`} 毫秒，`
+    +`短于 PLAN.liveEvidence 对 ${short.join('、')} 的等待 ${Math.max(...short.map(kind=>live.timeoutFor(kind)))} 毫秒：`
+    +'宿主会先超时，把还在走查的用例判 BLOCKED。把 qa.timeoutMs 调到实际走查耗时（最多 3600000），或把 liveEvidence.timeoutMs 调到不超过它';
 }
 
 export function driverLiveEvidence(plan,options){

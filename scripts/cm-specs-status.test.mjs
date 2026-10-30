@@ -82,12 +82,14 @@ test('revision digest is optional, validated, and retained by shared status stor
   assert.equal(Object.hasOwn(f.value(),'revisionDigest'),false);
 });
 
-test('task grammar is only version 2 and is carried through awaiting review',t=>{
+test('task grammar is version 2 or 3 and is carried through awaiting review',t=>{
   const f=fixture(t),expected=f.initial(),approved={...expected,status:'approved',approval:{response:'开始',at:expected.at}};
   assert.deepEqual(writeSpecsStatus(f.specs,{...approved,taskGrammar:2}),{...approved,taskGrammar:2});
   assert.equal(readSpecsStatus(f.specs).value.taskGrammar,2);
   assert.deepEqual(writeSpecsStatus(f.specs,{...expected,taskGrammar:2}),{...expected,taskGrammar:2});
-  for(const invalid of [{...approved,taskGrammar:1},{...approved,taskGrammar:'2'},{...expected,taskGrammar:3}])
+  assert.deepEqual(writeSpecsStatus(f.specs,{...approved,taskGrammar:3}),{...approved,taskGrammar:3});
+  assert.deepEqual(writeSpecsStatus(f.specs,{...expected,taskGrammar:3}),{...expected,taskGrammar:3});
+  for(const invalid of [{...approved,taskGrammar:1},{...approved,taskGrammar:'2'},{...approved,taskGrammar:'3'},{...expected,taskGrammar:4}])
     assert.throws(()=>writeSpecsStatus(f.specs,invalid),/spec_status_invalid/);
 });
 

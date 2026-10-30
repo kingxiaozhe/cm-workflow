@@ -8,7 +8,9 @@ import {fileURLToPath} from 'node:url';
 import {buildManifest} from './cm-spec-manifest.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {claudeReviewFingerprint} from '../runtime/js/cm-ai/worker-claude.mjs';
-import {batchDevelopAttempts} from './cm-ai-batch-drive.mjs';
+import {batchDevelopAttempts,batchSessionMembers,batchLiveDevelopError,liveDevelopWaitMs,liveAnswerRoute,LIVE_DEVELOP_MARGIN_MS} from './cm-ai-batch-drive.mjs';
+import {createLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
+import {HOST_ANSWER_TIMEOUT_DEFAULT_MS} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {runLiveDriver} from './fixtures/live-evidence-driver.mjs';
 
 const DRIVER=fileURLToPath(new URL('./cm-ai-batch-drive.mjs',import.meta.url));
@@ -564,4 +566,74 @@ test('batch rate-limit retry stops at the round\'s second failure and does not r
   const result=JSON.parse(run.stdout).result;
   assert.equal(result.state,'blocked',run.stdout);assert.equal(result.pendingAction,'abandon_review');
   assert.equal(reviews(),2);assert.equal((run.stderr.match(/自动重派审查（第 /g)??[]).length,1);
+});
+
+// Design 3.4: session members of a v2 provider batch (batch.memberDevelopment).
+const sessionBatch={tasks:[{feature:'1.work',taskId:'T-001'},{feature:'1.work',taskId:'T-002'}],memberDevelopment:{'1.work/T-002':'session'}};
+const providerPolicy={version:2,development:'provider',bootstrap:'disabled',qa:'disabled',qaFix:'disabled'};
+test('session members come only from memberDevelopment of a v2 provider batch',()=>{
+  assert.deepEqual([...batchSessionMembers(sessionBatch,providerPolicy)],['1.work/T-002']);
+  const {memberDevelopment,...legacy}=sessionBatch;
+  // No field (old batch), a conversation policy or the legacy entry: nobody changes.
+  assert.equal(batchSessionMembers(legacy,providerPolicy).size,0);
+  assert.equal(batchSessionMembers(sessionBatch,{...providerPolicy,development:'conversation'}).size,0);
+  assert.equal(batchSessionMembers(sessionBatch,undefined).size,0);
+});
+test('develop declaration must match the session members',()=>{
+  const members=new Set(['1.work/T-002']);
+  assert.equal(batchLiveDevelopError(members,true,'advance'),null);
+  assert.match(batchLiveDevelopError(members,false,'advance'),/1\.work\/T-002.*liveEvidence\.kinds 需要声明 develop/);
+  assert.equal(batchLiveDevelopError(members,false,'status'),null);
+  for(const operation of ['advance','status'])assert.match(batchLiveDevelopError(new Set(),true,operation),/没有开发方为会话的成员/);
+  assert.equal(batchLiveDevelopError(new Set(),false,'advance'),null);
+});
+test('develop live wait never ends before the host develop deadline',()=>{
+  assert.equal(LIVE_DEVELOP_MARGIN_MS>0,true);
+  assert.equal(liveDevelopWaitMs({}),HOST_ANSWER_TIMEOUT_DEFAULT_MS+LIVE_DEVELOP_MARGIN_MS);
+  assert.equal(liveDevelopWaitMs({CM_HOST_ANSWER_TIMEOUT_MINUTES:'45'}),45*60000+LIVE_DEVELOP_MARGIN_MS);
+  // The session develop call is still cut at 30 minutes by the runner: a smaller or invalid value cannot shorten the wait.
+  for(const value of ['10','0','abc'])assert.equal(liveDevelopWaitMs({CM_HOST_ANSWER_TIMEOUT_MINUTES:value}),HOST_ANSWER_TIMEOUT_DEFAULT_MS+LIVE_DEVELOP_MARGIN_MS);
+});
+test('live develop reaches only session members and returns the protected proposal unchanged',async t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-batch-live-develop-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const reply={status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
+    retrospective:{status:'no_new_lesson',candidates:[],reason:null},requirements:[]},edits:[{path:'docs/qa.md',beforeSha256:null,content:'# QA\n'}]};
+  let written;
+  const live=createLiveEvidence({directory:'exchange',kinds:['develop','qa_logic'],timeoutMs:1000},{base:root,
+    allowedKinds:['qa_logic','qa_browser','verification_precheck','develop'],minimumTimeouts:{develop:liveDevelopWaitMs({})},notify:file=>{
+      written=JSON.parse(fs.readFileSync(file,'utf8'));
+      fs.writeFileSync(file.replace('.request.json','.result.json'),JSON.stringify({type:'host_result',sessionId:written.sessionId,
+        callId:written.callId,requestDigest:written.requestDigest,result:reply}));}});
+  assert.equal(live.timeoutFor('develop'),HOST_ANSWER_TIMEOUT_DEFAULT_MS+LIVE_DEVELOP_MARGIN_MS);assert.equal(live.timeoutFor('qa_logic'),1000);
+  const runs=new Map([['run-1',{key:'1.work/T-001',generation:1}],['run-2',{key:'1.work/T-002',generation:1}]]);
+  const state={live,runs,sessionMembers:new Set(['1.work/T-002'])};
+  const developRow=runId=>({type:'host_request',sessionId:'s',callId:`c-${runId}`,requestDigest:'b'.repeat(64),kind:'develop',
+    payload:{request:{identity:{repositoryId:'r',runId,taskId:'T-002',attempt:1},payload:{scope:['docs/qa.md']}},prompt:'p',
+      codeProject:'/fixture/app',route:{role:'developer'},editMode:'protected-text-v1',expected:{'docs/qa.md':null}}});
+  assert.equal(liveAnswerRoute(developRow('run-1'),state),false,'a provider member never answers develop live');
+  assert.equal(liveAnswerRoute({...developRow('run-2'),kind:'qa_logic'},state),true);
+  assert.equal(liveAnswerRoute({...developRow('run-2'),kind:'qa_browser'},state),false);
+  const row=developRow('run-2');assert.equal(liveAnswerRoute(row,state),true);
+  assert.deepEqual(await live.answer(row),reply);assert.deepEqual(written,row);
+});
+test('legacy batch refuses a develop live declaration before launch',t=>{
+  const f=fixture(t);prepared(f);
+  const r=f.drive(f.plan({liveEvidence:{directory:'exchange',kinds:['develop']}}),'advance');
+  assert.equal(r.status,2,r.stderr);assert.match(r.stderr,/没有开发方为会话的成员/);noStore(f);
+});
+// AI潮: workflow qa without timeoutMs gives each case 60 s while the live responder waits
+// 15 minutes by default, so every minutes-long iOS walkthrough came back BLOCKED.
+test('a new batch whose QA answer window is shorter than the live wait stops before starting',async t=>{
+  const f=fixture(t);prepared(f);
+  const cases=['logic','browser'].map((kind,index)=>({id:`TC-00${index+1}`,origin:'user',kind,blocking:true,
+    acIds:[],taskIds:['T-001'],title:'Fixture observation',preconditions:[],steps:['Observe fixture'],expected:['value is 42'],cleanup:[]}));
+  fs.writeFileSync(path.join(f.specsDir,'1.work/test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',cases}));
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.work'],specFiles:buildManifest(f.specsDir)}));
+  const plan=f.plan({permissions:['--allow-qa','--browser-qa','available'],
+    liveEvidence:{directory:'exchange',kinds:['qa_logic','qa_browser'],timeoutMs:900000}});
+  const r=f.drive(plan,'advance');
+  assert.equal(r.status,2,r.stderr);
+  assert.match(r.stderr,/1\.work\/T-001: workflow 的 qa\.timeoutMs 未填（默认 60000） 毫秒，短于 PLAN\.liveEvidence 对 qa_logic、qa_browser 的等待 900000 毫秒/);
+  noStore(f);
 });

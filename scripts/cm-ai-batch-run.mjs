@@ -15,7 +15,7 @@ import {scanRows,findCmAiQaDecision,latestCmAiQaRun} from '../runtime/js/cm-ai/c
 import {checkParallelWrite,checkSoloWrite} from './cm-task-gate.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {parseFeatureTaskText} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
-import {approvedTaskGrammar} from '../runtime/js/spec-task-line.mjs';
+import {approvedTaskGrammar,TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 import {createHostCheck} from '../runtime/js/cm-ai/host-check.mjs';
 import {inspectRunClosure as inspectClosure} from './cm-log-event.mjs';
 import {releaseVerifiedQaResources} from '../runtime/js/cm-ai/qa-resource-release.mjs';
@@ -23,7 +23,7 @@ import {readRunnerHistory,projectedRunnerStatus} from '../runtime/js/cm-ai/durab
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {readControlPolicy,controlTarget,readControlTarget} from '../runtime/js/cm-ai/control-policy.mjs';
 import {BATCH_SEGMENT_FIELD,batchSegment,batchSegments,batchStarted,batchMemberWorktree,batchMemberBranch} from '../runtime/js/cm-ai/batch-location.mjs';
-import {declaredTaskScope,assertDeclaredScope} from '../runtime/js/task-scope.mjs';
+import {declaredTaskScope,assertDeclaredScope,parseTaskScopes,sessionTaskProblem,sessionTaskReason,taskDependents} from '../runtime/js/task-scope.mjs';
 import {soloWorktreeBlocker,soloQaCounter,soloQaBase,workflowDecidesQa} from '../runtime/js/cm-ai/batch-plan.mjs';
 import {strictPriorAttemptResolved,sameTaskPriorAttemptResolved} from '../runtime/js/cm-ai/external-run-guard.mjs';
 
@@ -96,7 +96,7 @@ export function memberSupersedeAdmitted(specsDir,runId,history){
 export function createCmAiBatch({configuration,executionFor,logHome,runtime='codex',checkCommands=null,checkTimeoutMs=60000,
   rerunUnknownQa=false,rerunBlockedQa=false,qaEnvironmentFailure=null,holdRevisions=[],bootstrapKeys=[],memberActions={},workflows=null}){
   const config=json(configuration);
-  shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['externalModels','executionPolicy','codeProjects','parallel','controlPolicy'].filter(name=>Object.hasOwn(config,name))]);
+  shape(config,['version','repositoryId','batchId','specsDir','codeProject','tasks',...['externalModels','executionPolicy','codeProjects','parallel','controlPolicy','memberDevelopment'].filter(name=>Object.hasOwn(config,name))]);
   const controlPolicy=config.controlPolicy?readControlPolicy(config.controlPolicy):null;
   need(config.version===1);id(config.repositoryId);id(config.batchId);need(config.batchId.length>=8);
   need(typeof executionFor==='function'&&typeof logHome==='string'&&path.isAbsolute(logHome));
@@ -145,7 +145,9 @@ export function createCmAiBatch({configuration,executionFor,logHome,runtime='cod
   // One-shot per launch and member, like the single-task flags.
   const actionGrants=new Map(Object.keys(BATCH_MEMBER_ACTIONS).map(name=>[name,new Set(memberActions[name]??[])]));
   need(workflows===null||typeof workflows==='object'&&!Array.isArray(workflows),'invalid_input');
-  const groups=validateGroups(config,plans,{declared:!batchStarted({specsDir:config.specsDir,batchId:config.batchId}),workflows}),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
+  const declared=!batchStarted({specsDir:config.specsDir,batchId:config.batchId});
+  const groups=validateGroups(config,plans,{declared,workflows}),membership=new Map(groups.flatMap(group=>group.map(key=>[key,group])));
+  validateMemberDevelopment(config,plans,groups,{declared});
   const originalMembership=new Map(membership),originalPlans=new Map(plans);
   // A one-member group (batch-plan.mjs worktree_all) is a task developed alone in its
   // own worktree. Unlike members developed alongside others it keeps the fixed N6
@@ -1066,6 +1068,50 @@ function validateGroups(config,plans,{declared=false,workflows=null}={}){
   }
   if(declared)checkSoloQaCheckpoints(config,plans,groups,workflows);
   return groups;
+}
+// Grammar 3 execution table (batch-plan.mjs): batch.memberDevelopment names the members
+// the session develops, {"feature/T-xxx":"session"}. It is part of the configuration (so
+// of planDigest) and absent from batches without such members, which keep their exact
+// plan digest. Present, it must match tasks.md (the 开发: 会话 marks of the approved
+// grammar 3) and the narrow rule: one session task per feature, its last task (last in
+// this configuration too, and no task waits for it), never a parallel member. A new batch on grammar 3 without the table is refused the same way;
+// a started one without it resumes as it began.
+function validateMemberDevelopment(config,plans,groups,{declared}){
+  const table=config.memberDevelopment,grammar=approvedTaskGrammar(config.specsDir);
+  if(table!==undefined)need(table!==null&&typeof table==='object'&&!Array.isArray(table)&&Object.keys(table).length>0
+    &&Object.entries(table).every(([taskKey,value])=>plans.has(taskKey)&&value==='session'),'invalid_member_development');
+  // External models and execution policy rewrite the reviewer identity and the abandon
+  // rules; a session member is not supported with either in this round.
+  if(table!==undefined)need(!config.externalModels&&!config.executionPolicy,'session_member_unsupported_config');
+  if(table===undefined&&(!declared||grammar!==TASK_GRAMMAR))return;
+  const grouped=new Set(groups.flat());
+  for(const feature of new Set([...plans.values()].map(plan=>plan.feature))){
+    const text=fs.readFileSync(path.join(config.specsDir,feature,'tasks.md'),'utf8');
+    const parsed=parseFeatureTaskText(text,{allowDependencyPunctuation:true,grammar});need(!parsed.error,'parallel_task_invalid');
+    const sessions=grammar===TASK_GRAMMAR?parseTaskScopes(text,{grammar}).sessions:new Set();
+    const problem=sessionTaskProblem(parsed.tasks,sessions,parsed.dependencies);
+    if(problem)throw Object.assign(new Error(problem.code),{code:problem.code,reason:`${feature}/tasks.md：${sessionTaskReason(problem)}`});
+    // The same rule on this configuration's own order (a hand-written one too, whatever
+    // planned it): the session member runs last among the feature's members, and no task
+    // of the feature waits for it.
+    const members=[...plans.keys()].filter(taskKey=>plans.get(taskKey).feature===feature);
+    for(const taskKey of members.filter(item=>sessions.has(plans.get(item).identity.taskId))){
+      const taskId=plans.get(taskKey).identity.taskId,dependents=taskDependents(parsed.tasks,parsed.dependencies,taskId);
+      if(dependents.length){
+        const late={code:'session_task_depended_on',tasks:[taskId],dependents};
+        throw Object.assign(new Error(late.code),{code:late.code,reason:`${feature}/tasks.md：${sessionTaskReason(late)}`});
+      }
+      if(taskKey!==members.at(-1))throw Object.assign(new Error('session_task_not_final'),{code:'session_task_not_final',
+        reason:`${taskKey}：会话任务在批次配置里排在 ${members.slice(members.indexOf(taskKey)+1).join(', ')} 前面；它只能是该功能最后执行的成员，用 cm-ai-batch-plan.mjs 重新生成批次配置`});
+    }
+    for(const [taskKey,plan] of plans){
+      if(plan.feature!==feature)continue;
+      const session=sessions.has(plan.identity.taskId);
+      if(session&&grouped.has(taskKey))throw Object.assign(new Error('session_task_parallel'),{code:'session_task_parallel',reason:`${taskKey}：会话任务不能进并行组`});
+      if(session!==Object.hasOwn(table??{},taskKey))throw Object.assign(new Error('member_development_mismatch'),{code:'member_development_mismatch',
+        reason:`${taskKey}：批次执行表与 tasks.md 的「开发: 会话」标记不一致；用 cm-ai-batch-plan.mjs 重新生成批次配置`});
+    }
+  }
 }
 // The planner's walk along the batch order (soloQaCounter), with the launched workflows
 // and control policy. The count spans features (and a feature that closes drops its tasks

@@ -7,7 +7,7 @@ import {inspectCmPrdAdmission,inspectCmPrdSources} from '../../../scripts/cm-prd
 import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
 import {need,shape,json,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdMaterialResults} from './materials.mjs';
-import {prdFeatureInventory,nextPrdFeatureIndex,inspectPrdDraft,inspectPrdDesignDraft} from './draft.mjs';
+import {prdFeatureInventory,nextPrdFeatureIndex,inspectPrdDraft,inspectPrdDesignDraft,withAcceptedPrdDocuments} from './draft.mjs';
 import {checkPrdDraftMechanics,inspectPrdContextCheck,PRD_SELF_CHECK_RULES} from './self-check.mjs';
 import {acceptedPrdDraftForSave} from './draft-save.mjs';
 import {preparePrdReview} from './review-preparation.mjs';
@@ -196,13 +196,16 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
             instructions:'Correct findings only within these existing feature names/directories. Do not add, remove or rename features; retain user intent and tests. No review invocation. Two self-check rounds maximum.'},
           reference:path.join(admission.skillDir,'SKILL.md'),testContract:path.join(admission.workflowRoot,'runtime/test-contract.md'),
           instructions:(canRevise?
-            'Correct the failed whole-draft self-check in the existing draft schema. Keep exactly the same ordered features and file inventory. Requirements/design changes require selfCheckRevisionReason. Return question or blocked if needed. No writes, review dispatch, invented approval or extra rounds.':acceptedDesign!==null?
-            'Follow original cm-prd Step 10 and 10.4 on acceptedDesign. Return the existing draft schema with the exact same ordered features and exact requirements.md/design.md bytes supplied there; generate tasks.md and applicable test-cases.json only. Do not regenerate or revise accepted requirements/design, change scope or call a reviewer. Preserve original user cases and unresolved design findings for human review. Ask material questions with {status:question,question}; no invented user decisions. No writes, provider calls, installation, development or approval. Subsequent original self-check and split review remain required.':designOnly?
+            'Correct the failed whole-draft self-check in the existing draft schema. Keep exactly the same ordered features and file inventory. A requirements.md/design.md left out of a feature keeps its accepted bytes. Requirements/design changes require selfCheckRevisionReason. Return question or blocked if needed. No writes, review dispatch, invented approval or extra rounds.':acceptedDesign!==null?
+            'Follow original cm-prd Step 10 and 10.4 on acceptedDesign. Return the existing draft schema with the exact same ordered features; each feature lists only tasks.md and applicable test-cases.json, leaving out requirements.md/design.md, which the host restores byte-identical from acceptedDesign (if included they must be exactly the supplied bytes). The 64 KiB reply limit then counts only the new documents. Do not regenerate or revise accepted requirements/design, change scope or call a reviewer. Preserve original user cases and unresolved design findings for human review. Ask material questions with {status:question,question}; no invented user decisions. No writes, provider calls, installation, development or approval. Subsequent original self-check and split review remain required.':designOnly?
             'Follow cm-prd Steps 6-9 only, before original Step 9.5 design review. Read required references and actual relevant project context. Preserve user cases and requirements. No tasks or test-contract generation yet, even embedded in another document. Resolve material or human UI baseline decisions with {status:question,question}; never infer consent. Return {status:design,summary,features:[{name:kebab_slug,documents:[{path:requirements.md|design.md,content:string}]}]} with exactly both documents per feature, or {status:blocked,reason}. No writes, provider calls, browser launch, installation, review claims or development. These are unreviewed memory drafts, not authority to generate tasks.':
             'Follow cm-prd Steps 6-10 for in-memory DRAFTS ONLY. Read required references and relevant project context. Resolve material questions and human UI baseline choices before design: return {status:question,question} and wait, never infer consent. No writes, provider calls, browser launch, installation, review claims or development. Return {status:draft,summary,features:[{name:kebab_slug,documents:[{path:requirements.md|design.md|tasks.md|test-cases.json,content:string}],testCasesReason:null|no_observable_behavior|generation_disabled}]} or {status:blocked,reason}. Each feature needs the triad. Apply functional task granularity <=15, AC/Task references, applicable test contract and original user-case intent; generateCases false forbids generated cases only. This draft is unreviewed; original conditional design review, split review, self-check and human approval remain pending.')
             +(draft===null&&!designOnly?initialTaskInstructions:'')},controller.signal),64*1024);
         need(!controller.signal.aborted,'cancelled');current();
         need(digest(inventory)===digest(prdFeatureInventory(admission.specs)),'prd_feature_inventory_changed');
+        // The planning history keeps the reply as sent; the draft is built from it
+        // with any accepted requirements/design it left out restored.
+        const assembled=withAcceptedPrdDocuments(reply,acceptedDesign);
         if(reply.status==='question'){
           shape(reply,['status','question']);need(nonempty(reply.question),'prd_reply_invalid');stage=designOnly?'awaiting_design_user':'awaiting_planning_user';
         }else if(reply.status==='blocked'){
@@ -211,13 +214,13 @@ export function createCmPrdAnalysis({input,runtime,analyze,record,processMateria
           need(draft===null&&acceptedDesign===null&&selfCheckRound===0,'prd_late_design_transition_not_ready');
           designDraft=inspectPrdDesignDraft(reply,{nextIndex});designPlanning=true;stage='design_ready';
         }else{
-          const {selfCheckRevisionReason,...draftReply}=reply;
+          const {selfCheckRevisionReason,...draftReply}=assembled.reply;
           if(acceptedDesign!==null&&draft!==null){
             const inventory=features=>features.map(f=>({name:f.name,files:f.documents.map(d=>d.path).sort()}));
-            need(digest(inventory(reply.features))===digest(inventory(draft.features)),'prd_accepted_design_scope_changed');
+            need(digest(inventory(assembled.reply.features))===digest(inventory(draft.features)),'prd_accepted_design_scope_changed');
           }
           const inspected=inspectPrdDraft(draftReply,{nextIndex,generateCases:config.policies.generate_cases,
-            userCasesProvided:snapshot.sourceInspection.userCases!==null});
+            userCasesProvided:snapshot.sourceInspection.userCases!==null,limit:assembled.limit});
           if(acceptedDesign!==null){
             need(digest(inspected.features.map(item=>item.directory))===digest(acceptedDesign.features.map(item=>item.directory)),
               'prd_accepted_design_scope_changed');

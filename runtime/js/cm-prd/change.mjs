@@ -7,7 +7,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
 import {buildManifest} from '../../../scripts/cm-spec-manifest.mjs';
-import {specLines,taskDeclarations,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR} from '../spec-task-line.mjs';
+import {specLines,taskDeclarations,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR,recordedTaskGrammar} from '../spec-task-line.mjs';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {prdTreeFileDigest} from './tree-digest.mjs';
@@ -81,7 +81,7 @@ function taskLines(source,grammar=TASK_GRAMMAR){return new Map(taskDeclarations(
 // under another grammar.
 function approvedGrammar(before){
   try{const status=JSON.parse(before.status??'null');
-    return ['approved','awaiting_review'].includes(status?.status)&&status.taskGrammar===TASK_GRAMMAR?TASK_GRAMMAR:LEGACY_TASK_GRAMMAR;}
+    return ['approved','awaiting_review'].includes(status?.status)?recordedTaskGrammar(status.taskGrammar):LEGACY_TASK_GRAMMAR;}
   catch{return LEGACY_TASK_GRAMMAR;}
 }
 function sourceLines(source){return specLines(source).map(line=>line.body);}
@@ -228,7 +228,8 @@ export function createPrdChange({admission,runtime,call,restored=null,selected=[
     },
     save(writeEnabled){
       need(writeEnabled===true&&state.stage==='confirmed','prd_change_write_not_enabled');
-      const result=applyPrdChange({specs:admission.specs,before:state.before,proposal:state.proposal,selected:state.selected});
+      const result=applyPrdChange({specs:admission.specs,before:state.before,proposal:state.proposal,selected:state.selected,
+        selfCheckRules:selfCheckRules()});
       state.stage='awaiting_review';state.saved=result;return result;
     },
   };
@@ -256,7 +257,7 @@ export function assertPrdReviewsSettled(specs,selected,{requireSplit=false}={}){
     if(requireSplit&&stage==='split')need(gate.outcome==='completed','prd_revision_original_split_required');
   }
 }
-export function applyPrdChange({specs,before,proposal,selected}){
+export function applyPrdChange({specs,before,proposal,selected,selfCheckRules}){
   const reviews=path.join(specs,'.reviews');try{fs.mkdirSync(reviews,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}
   need(fs.realpathSync(reviews)===reviews,'prd_change_archive_invalid');
   const name=`prd-change-${proposal.proposalDigest}.json`,archive={version:1,before,proposal,selected};
@@ -293,11 +294,11 @@ export function applyPrdChange({specs,before,proposal,selected}){
   const statusFile='.cm-specs-status',invalidated=JSON.stringify({status:'awaiting_review',revisionDigest:proposal.proposalDigest,
     at:new Date().toISOString(),features:newDirs,specFiles:[],testCases:[],
     // Carry the last approval's tasks.md grammar to the next approval.
-    ...(approvedGrammar(before)===TASK_GRAMMAR?{taskGrammar:TASK_GRAMMAR}:{})})+'\n';
+    ...(approvedGrammar(before)!==LEGACY_TASK_GRAMMAR?{taskGrammar:approvedGrammar(before)}:{})})+'\n';
   if(read(specs,statusFile)===before.status)replaceSessionFile(specs,statusFile,before.status,invalidated);
   // Before any spec byte: later re-checks keep the scopes this proposal carries.
   current();recordPrdTaskScopes(specs,proposal.features,
-    approvedScopeExemptions(before,proposal.features.map(feature=>feature.directory),approvedGrammar(before)));
+    approvedScopeExemptions(before,proposal.features.map(feature=>feature.directory),approvedGrammar(before)),{selfCheckRules});
   for(const [file,content] of Object.entries(expected)){
     if(!selected.includes(file.split('/')[0])&&oldDirs.includes(file.split('/')[0]))continue;
     current();const dir=path.dirname(path.join(specs,file));try{fs.mkdirSync(dir,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}
@@ -319,7 +320,7 @@ export function applyPrdChange({specs,before,proposal,selected}){
   need(digest(fs.readdirSync(specs).filter(dir=>/^\d+\./.test(dir)).sort())===digest(newDirs),'prd_change_inventory_conflict');
   const result={status:'awaiting_review',at:JSON.parse(read(specs,statusFile)).at,revisionDigest:proposal.proposalDigest,
     features:newDirs,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
-    ...(approvedGrammar(before)===TASK_GRAMMAR?{taskGrammar:TASK_GRAMMAR}:{})};
+    ...(approvedGrammar(before)!==LEGACY_TASK_GRAMMAR?{taskGrammar:approvedGrammar(before)}:{})};
   replaceSessionFile(specs,statusFile,read(specs,statusFile),JSON.stringify(result)+'\n');
   return json({...result,archive:`.reviews/${name}`,counts:proposal.counts,priorReviews:'retained_as_history_not_current_approval',
     next:'human_review_then_explicit_cm_ai',completionAuthorized:false});

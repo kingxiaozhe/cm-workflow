@@ -7,7 +7,9 @@
 //
 // 范围 / scope lists every file the task may change (existing files included);
 // 测试文件 / tests is a subset of it; 设备 / device marks a task whose checks need a
-// device or simulator. Only exact relative file paths in backticks are accepted:
+// device or simulator. Under task grammar 3 only, 开发 / developer: 会话 / session
+// marks a task the current session develops (a provider develops the rest); grammar
+// 1 and 2 leave that line prose, as they always read it. Only exact relative file paths in backticks are accepted:
 // no directories, no globs. The task line itself is untouched, so every existing
 // task-line reader keeps its meaning; the sub-items belong to the task they sit
 // under (specification-material already carries indented lines with their task).
@@ -20,6 +22,10 @@ import {protectedScopePaths} from './cm-ai/developer-adapter.mjs';
 const KEYS=new Map([['范围','scope'],['scope','scope'],['测试文件','tests'],['tests','tests'],['设备','device'],['device','device']]);
 const SUB_ITEM=/^(\s*)-\s+([^\s:：]+)\s*[:：]\s*(.*)$/u;
 const DEVICE_VALUES=new Set(['需要','required']);
+const DEVELOPER_KEYS=new Set(['开发','developer']);
+// 开发进程 / provider is the default, accepted when written out.
+const DEVELOPER_VALUES=new Map([['会话','session'],['session','session'],['开发进程','provider'],['provider','provider']]);
+const developerValue=value=>DEVELOPER_VALUES.get(value)??DEVELOPER_VALUES.get(value.toLowerCase())??null;
 // A task whose files cannot be listed up front (a scaffold generator) says so
 // explicitly; it counts as declared for the split check but never runs in parallel.
 const SERIAL_VALUES=new Set(['串行','serial']);
@@ -41,11 +47,15 @@ function pathList(raw){
   return rest===''&&paths.length>0?paths:null;
 }
 
-// {tasks: Map<taskId,{scope,tests,device,line}>, errors: [{taskId,line,message}]}.
-// A task without any scope sub-item is simply absent from `tasks`.
+// {tasks: Map<taskId,{scope,tests,device,line}>, serial, sessions: Set<taskId>,
+// errors: [{taskId,line,message,developer?}]}. A task without any scope sub-item is simply
+// absent from `tasks`; `sessions` holds the tasks marked 开发: 会话 (grammar 3), and
+// `developer: true` marks the errors of that 开发 line itself.
 export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
-  const tasks=new Map(),errors=[];let current=null;
-  const fail=(line,message)=>errors.push({taskId:current?.id??null,line:line.index+1,message});
+  const tasks=new Map(),errors=[],sessions=new Set(),developers=new Set();let current=null;
+  const developer=grammar===TASK_GRAMMAR;
+  const fail=(line,message,developer=false)=>errors.push({taskId:current?.id??null,line:line.index+1,message,
+    ...(developer?{developer:true}:{})});
   for(const line of taskLines(text,{grammar})){
     if(!line.body.trim())continue;
     if(line.declaration){current={id:line.declaration.id,indent:indentOf(line.body),fields:new Map()};continue;}
@@ -54,6 +64,18 @@ export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
     if(current!==null&&!(indentOf(line.body)>current.indent&&!/^\s*#/.test(line.body)))current=null;
     if(line.fenced)continue;
     const match=SUB_ITEM.exec(line.body);
+    if(developer&&match&&(DEVELOPER_KEYS.has(match[2])||DEVELOPER_KEYS.has(match[2].toLowerCase()))){
+      const value=developerValue(match[3].trim());
+      if(current===null){
+        if(value!==null)errors.push({taskId:null,line:line.index+1,message:`${match[2]} 不在任何任务行下面（要缩进写在任务行的下一行，用空格缩进）`,developer:true});
+        continue;
+      }
+      if(developers.has(current.id)){fail(line,`${match[2]} 重复`,true);continue;}
+      developers.add(current.id);
+      if(value===null){fail(line,'开发只能写「会话」或 session；由开发进程开发时不写这一项',true);continue;}
+      if(value==='session')sessions.add(current.id);
+      continue;
+    }
     const key=match?KEYS.get(match[2].toLowerCase())??KEYS.get(match[2]):undefined;
     if(current===null){
       // Not under any task: a scope-looking item here is almost always a missing indent. Prose
@@ -97,8 +119,38 @@ export function parseTaskScopes(text,{grammar=TASK_GRAMMAR}={}){
     result.set(id,Object.freeze({scope:Object.freeze([...scope]),tests:Object.freeze([...tests]),
       device:task.fields.get('device')?.value===true,line:task.fields.get('scope').line}));
   }
-  return {tasks:result,serial,errors};
+  return {tasks:result,serial,sessions,errors};
 }
+// Grammar 3's narrow rule for session-developed tasks: at most one per feature, and
+// only its last task (the last one not dropped, the task that runs last and is never
+// a parallel member). Last in tasks.md is not enough: the batch runs a task after its
+// prerequisites, so a task that waits for the session task, directly or through others,
+// would run after it. tasks: the feature's tasks in tasks.md order ({id,dropped});
+// dependencies: id -> the ids it waits for. null, or {code,tasks[,dependents]}.
+export function sessionTaskProblem(tasks,sessions,dependencies){
+  const live=tasks.filter(task=>!task.dropped).map(task=>task.id),marked=live.filter(id=>sessions.has(id));
+  if(marked.length>1)return {code:'session_task_multiple',tasks:marked};
+  if(marked.length===1&&marked[0]!==live.at(-1))return {code:'session_task_not_final',tasks:marked};
+  const dependents=marked.length===1?taskDependents(tasks,dependencies,marked[0]):[];
+  if(dependents.length)return {code:'session_task_depended_on',tasks:marked,dependents};
+  return null;
+}
+// The tasks not dropped that wait for taskId, directly or through other such tasks, in
+// tasks.md order. A dropped task holds nothing back (admission counts it as satisfied).
+export function taskDependents(tasks,dependencies,taskId){
+  const live=new Set(tasks.filter(task=>!task.dropped).map(task=>task.id));
+  const waits=(id,seen)=>{
+    if(seen.has(id))return false;seen.add(id);
+    return (dependencies.get(id)??[]).some(dep=>dep===taskId||live.has(dep)&&waits(dep,seen));
+  };
+  return [...live].filter(id=>id!==taskId&&waits(id,new Set()));
+}
+export const sessionTaskReason=problem=>problem.code==='session_task_multiple'
+  ?`标了「开发: 会话」的任务有 ${problem.tasks.length} 个（${problem.tasks.join(', ')}），一个功能最多一个`
+  :problem.code==='session_task_depended_on'
+    ?`任务 ${problem.dependents.join(', ')} 直接或间接依赖标了「开发: 会话」的任务 ${problem.tasks[0]}，会排到它后面执行；会话任务只能是功能实际执行的最后一个任务，别的任务不能依赖它`
+    :`标了「开发: 会话」的任务 ${problem.tasks[0]} 不是功能的最后一个任务；会话任务只能是功能的串行末项`;
+
 
 // Two tasks may run at the same time only when neither writes a path the other writes.
 export function scopesOverlap(a,b){const set=new Set(a);return b.some(item=>set.has(item));}
