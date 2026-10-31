@@ -83,19 +83,27 @@ function checkProtectedScope(scope) {
 }
 
 const isXcodebuild = tokens => tokens.some(token => path.basename(token) === 'xcodebuild');
-// xcodebuild options that take no value; every other -option consumes the next token, so a value
-// such as `-resultBundlePath test` is never read as the action. An unknown flag only hides an action.
-const XCODE_FLAGS = new Set(['-quiet', '-verbose', '-json', '-allowProvisioningUpdates', '-allowProvisioningDeviceRegistration',
-  '-skipUnavailableActions', '-hideShellScriptEnvironment', '-disableAutomaticPackageResolution', '-skipPackagePluginValidation',
-  '-skipMacroValidation']);
+// xcodebuild options that take no value (xcodebuild -help, Xcode 26). A bare word counts as an
+// action only right after xcodebuild, another bare word (an action or an option's value), an
+// -option:value, or one of these. After any other option it may be that option's value
+// (`-resultBundlePath test`), so it is not an action: an unknown flag then makes the coverage
+// check warn instead of passing, never the other way round.
+const XCODE_FLAGS = new Set(['-usage', '-help', '-verbose', '-license', '-checkFirstLaunchStatus', '-runFirstLaunch',
+  '-checkForNewerComponents', '-downloadAllPlatforms', '-prepareDeviceSupport', '-alltargets', '-parallelizeTargets', '-quiet',
+  '-hideShellScriptEnvironment', '-showsdks', '-showdestinations', '-showTestPlans', '-showBuildSettings', '-showBuildSettingsForIndex',
+  '-list', '-version', '-exportArchive', '-exportNotarizedApp', '-skipUnavailableActions', '-exportLocalizations', '-importLocalizations',
+  '-retry-tests-on-failure', '-run-tests-until-failure', '-disable-concurrent-destination-testing', '-enumerate-tests',
+  '-resolvePackageDependencies', '-disableAutomaticPackageResolution', '-onlyUsePackageVersionsFromResolvedFile', '-skipPackageUpdates',
+  '-disablePackageRepositoryCache', '-skipPackagePluginValidation', '-skipMacroValidation', '-skipPackageSignatureValidation', '-json',
+  '-allowProvisioningUpdates', '-allowProvisioningDeviceRegistration', '-showBuildTimingSummary']);
 function xcodeActions(tokens) {
-  const actions = [];
-  for (let i = tokens.findIndex(token => path.basename(token) === 'xcodebuild') + 1; i > 0 && i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (token.startsWith('-')) { if (!XCODE_FLAGS.has(token) && !token.includes(':')) i += 1; continue; }
-    actions.push(token);
-  }
-  return actions;
+  const start = tokens.findIndex(token => path.basename(token) === 'xcodebuild');
+  if (start === -1) return [];
+  return tokens.slice(start + 1).filter((token, index, rest) => {
+    if (token.startsWith('-')) return false;
+    const before = index === 0 ? null : rest[index - 1];
+    return before === null || !before.startsWith('-') || before.includes(':') || XCODE_FLAGS.has(before);
+  });
 }
 const isTestAction = tokens => xcodeActions(tokens).some(action => action === 'test' || action === 'test-without-building');
 const optionValue = (tokens, name) => {

@@ -102,6 +102,10 @@ test('two xcodebuild test checks on one scheme and destination warn unless one i
   assert.deepEqual(codes(check(project(t, {checks: [xcode('unit'), xcode('ui', '-only-testing:AppUITests')]})).report), ['affected_map_missing']);
   const other = cmd('ui', ['xcodebuild', 'test', '-scheme', 'Other', '-destination', 'id=U1']);
   assert.deepEqual(check(project(t, {checks: [xcode('unit'), other]})).report.findings, []);
+  const retried = cmd('ui', ['xcodebuild', '-retry-tests-on-failure', 'test', '-scheme', 'App', '-destination', 'id=U1']);
+  assert.deepEqual(codes(check(project(t, {checks: [xcode('unit'), retried]})).report), ['overlapping_full_test']);
+  const buildNamedTest = cmd('ui', ['xcodebuild', '-retry-tests-on-failure', '-resultBundlePath', 'test', 'build-for-testing', '-scheme', 'App', '-destination', 'id=U1']);
+  assert.deepEqual(check(project(t, {checks: [xcode('unit'), buildNamedTest]})).report.findings, []);
   const build = cmd('build', ['xcodebuild', 'build', '-scheme', 'App', '-destination', 'id=U1']);
   assert.deepEqual(check(project(t, {checks: [xcode('unit'), build]})).report.findings, []);
 });
@@ -145,6 +149,11 @@ test('a mapped test counts as run by -only-testing on it or an ancestor, a full 
   const valueNamedTest = cmd('ui', ['xcodebuild', 'build-for-testing', '-scheme', 'App', '-resultBundlePath', 'test', ...all]);
   assert.deepEqual(findings([valueNamedTest]).map(item => item[0]), ['affected_tests_not_run']);
   assert.deepEqual(findings([cmd('ui', ['/usr/bin/xcodebuild', 'COMPILER_INDEX_STORE_ENABLE=NO', '-quiet', 'test-without-building', ...all])]), []);
+  // No-value flags never swallow the next word; a word after an unknown option is not taken as the action.
+  assert.deepEqual(findings([cmd('ui', ['xcodebuild', '-retry-tests-on-failure', 'test', '-scheme', 'App', ...all])]), []);
+  const flagThenValue = cmd('ui', ['xcodebuild', '-retry-tests-on-failure', '-resultBundlePath', 'test', 'build-for-testing', '-scheme', 'App', ...all]);
+  assert.deepEqual(findings([flagThenValue]).map(item => item[0]), ['affected_tests_not_run']);
+  assert.deepEqual(findings([cmd('ui', ['xcodebuild', '-futureFlag', 'test', '-scheme', 'App', ...all])]).map(item => item[0]), ['affected_tests_not_run']);
   assert.deepEqual(findings([xcode('ui', '-only-testing:AppUITests/NewUITests', '-resultBundlePath', 'r/AppUITests/SearchUITests.xcresult',
     ...all.slice(1))]), [['affected_tests_not_run', ['AppUITests/SearchUITests']]]);
 });
