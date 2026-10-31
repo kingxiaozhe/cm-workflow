@@ -105,7 +105,16 @@ function xcodeActions(tokens) {
     return before === null || !before.startsWith('-') || before.includes(':') || XCODE_FLAGS.has(before);
   });
 }
-const isTestAction = tokens => xcodeActions(tokens).some(action => action === 'test' || action === 'test-without-building');
+// Modes that list, show, export or set up instead of running the scheme action: a `test` beside them
+// selects what to show (xcodebuild -showBuildSettings test) and runs nothing.
+const XCODE_NON_RUNNING = new Set(['-usage', '-help', '-license', '-checkFirstLaunchStatus', '-runFirstLaunch', '-downloadAllPlatforms',
+  '-prepareDeviceSupport', '-downloadPlatform', '-importPlatform', '-downloadComponent', '-importComponent', '-deleteComponent',
+  '-showComponent', '-showsdks', '-showdestinations', '-showTestPlans', '-showBuildSettings', '-showBuildSettingsForIndex', '-list',
+  '-find-executable', '-find-library', '-version', '-exportArchive', '-exportNotarizedApp', '-exportLocalizations', '-importLocalizations',
+  '-enumerate-tests', '-resolvePackageDependencies', '-create-xcframework']);
+// Whether a direct xcodebuild actually runs tests; shared by the overlap and the coverage checks.
+const isTestAction = tokens => !tokens.some(token => XCODE_NON_RUNNING.has(token))
+  && xcodeActions(tokens).some(action => action === 'test' || action === 'test-without-building');
 const optionValue = (tokens, name) => {
   const at = tokens.indexOf(name);
   return at === -1 ? '' : tokens[at + 1] ?? '';
