@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Read-only start check for a cm-ai single-task drive PLAN. It reports the blocks that
-// are already knowable before create: protected scope, check budget, dirty scope files.
+// are already knowable before create: protected scope, check budget, affected old UI tests
+// left out of the checks, dirty scope files.
 // It never writes a file, never starts a host and never runs a check command.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,6 +27,8 @@ const usage = '用法: cm-start-check.mjs --plan PLAN.json [--json] [--strict]\n
   + '  1. scope 是否含受保护路径（AGENTS.md、tasks.md、.reviews、.cm-* 等）——error；\n'
   + '     scope 为空、重复、绝对路径、含 ..／反斜杠／冒号等创建必拒的写法——输入不合法，退出 2\n'
   + '  2. PLAN.checks 是否重复、是否重复跑全量测试、各检查超时之和是否超过整步 30 分钟——warn\n'
+  + '     scope 改到代码根 TESTING.md「## 牵连测试」表里的路径，却没跑表里对应的旧界面测试——warn；\n'
+  + '     只跑了部分界面测试（-only-testing）而项目没有这张表——info（没能核对）\n'
   + '  3. scope 内文件在代码根是否已有未提交改动——warn（Git 不可用时是 warn，不是 Git 仓库时是 info）\n'
   + '退出码：0 无 error（warn 只提示）；1 有 error，或加 --strict 时有 warn；2 输入读不了或不支持。\n';
 
@@ -122,8 +125,82 @@ function checkChecks(plan) {
   const totalMs = own.reduce((sum, entry) => sum + entry.timeoutMs, 0);
   if (totalMs > CHECK_CALL_LIMIT_MS)
     findings.push({level: 'warn', code: 'check_budget_over_call_limit', totalMs, limitMs: CHECK_CALL_LIMIT_MS,
-      message: `各检查超时之和 ${Math.round(totalMs / 60000)} 分钟，超过检查整步的 ${CHECK_CALL_LIMIT_MS / 60000} 分钟期限；这是最坏情况，实际可能更短。拆成多次运行，或缩减检查`});
+      message: `各检查超时之和 ${Math.round(totalMs / 60000)} 分钟，超过检查整步的 ${CHECK_CALL_LIMIT_MS / 60000} 分钟期限；这是最坏情况，实际可能更短。`
+        + '按分层缩减（单元测试全跑，界面测试只跑本任务新写的和牵连的，其余留到功能末尾回归任务），或拆成多次运行'});
   return findings;
+}
+
+// The project's own record of which old UI tests a change reaches: a "## 牵连测试" table in
+// TESTING.md (code root first, then docs/). After the header row, each row is
+// | changed paths (a trailing / is a directory) | test identifiers as the check command names them |.
+const AFFECTED_HEADING = /^##\s+牵连测试\s*$/;
+const TESTING_FILES = ['TESTING.md', path.join('docs', 'TESTING.md')];
+const cellItems = cell => {
+  const quoted = [...cell.matchAll(/`([^`]+)`/g)].map(match => match[1].trim()).filter(Boolean);
+  return quoted.length > 0 ? quoted : cell.split(/[、,，\s]+/).filter(Boolean);
+};
+
+export function readAffectedMap(root) {
+  for (const name of TESTING_FILES) {
+    let text;
+    try { text = fs.readFileSync(path.join(root, name), 'utf8'); } catch { continue; }
+    const lines = text.split(/\r?\n/);
+    const start = lines.findIndex(line => AFFECTED_HEADING.test(line.trim()));
+    if (start === -1) continue;
+    const rows = [];
+    let header = true;
+    for (const line of lines.slice(start + 1)) {
+      if (/^#{1,2}\s/.test(line)) break;
+      const cells = line.trim().match(/^\|(.*)\|$/)?.[1].split('|').map(cell => cell.trim());
+      if (!cells || cells.length < 2) continue;
+      if (cells.every(cell => /^:?-+:?$/.test(cell))) { header = false; continue; }
+      if (header) continue;
+      const paths = cellItems(cells[0]).map(item => item.replace(/^\.\//, '')), tests = cellItems(cells[1]);
+      if (paths.length > 0 && tests.length > 0) rows.push({paths, tests});
+    }
+    return {file: name, rows};
+  }
+  return null;
+}
+
+const ONLY = '-only-testing:', SKIP = '-skip-testing:';
+const within = (id, target) => id === target || id.startsWith(`${target}/`);
+// Whether one check command runs test `id`: an -only-testing naming it or an ancestor, an
+// unnarrowed xcodebuild test, or (wrapper scripts, other runners) an argument containing it.
+// An -skip-testing naming it or an ancestor wins over all of them.
+function runsTest(tokens, id) {
+  if (tokens.some(token => token.startsWith(SKIP) && within(id, token.slice(SKIP.length)))) return false;
+  if (isXcodebuild(tokens) && isTestAction(tokens) && !tokens.some(token => token.startsWith('-only-testing'))) return true;
+  return tokens.some(token => token.startsWith(ONLY) ? within(id, token.slice(ONLY.length))
+    : !token.startsWith('-skip-testing') && token.includes(id));
+}
+
+function checkAffectedTests(plan, definition) {
+  const commands = (Array.isArray(plan.checks) ? plan.checks : [])
+    .map(item => item?.command).filter(tokens => Array.isArray(tokens) && tokens.every(token => typeof token === 'string'));
+  const map = fs.existsSync(definition.codeProject) ? readAffectedMap(definition.codeProject) : null;
+  if (map === null) {
+    if (!commands.some(tokens => tokens.some(token => token.startsWith('-only-testing')))) return [];
+    return [{level: 'info', code: 'affected_map_missing',
+      message: '只跑了部分界面测试（-only-testing），但代码根 TESTING.md／docs/TESTING.md 没有「## 牵连测试」表，'
+        + '没能核对本任务改动牵连的旧界面测试是否都跑了'}];
+  }
+  const touches = (scopePath, rowPath) => rowPath.endsWith('/') ? scopePath.startsWith(rowPath) : scopePath === rowPath;
+  const missing = new Map();
+  for (const row of map.rows) {
+    const hit = definition.scope.filter(scopePath => row.paths.some(rowPath => touches(scopePath, rowPath)));
+    if (hit.length === 0) continue;
+    for (const id of row.tests) {
+      if (commands.some(tokens => runsTest(tokens, id))) continue;
+      missing.set(id, [...new Set([...(missing.get(id) ?? []), ...hit])]);
+    }
+  }
+  if (missing.size === 0) return [];
+  const tests = [...missing.keys()], paths = [...new Set([...missing.values()].flat())];
+  return [{level: 'warn', code: 'affected_tests_not_run', file: map.file, tests: tests.slice(0, MAX_LISTED), paths: paths.slice(0, MAX_LISTED),
+    message: `scope 改到 ${paths.slice(0, MAX_LISTED).join('、')}${paths.length > MAX_LISTED ? '…' : ''}，按 ${map.file} 的牵连测试表，`
+      + `要在本任务当场跑 ${tests.slice(0, MAX_LISTED).join('、')}${tests.length > MAX_LISTED ? '…' : ''}，PLAN.checks 里没有跑它们的检查。`
+      + '改了共用模块不能只跑新测试、留到功能末尾回归；补上这些测试，确实不牵连就改 TESTING.md 的表'}];
 }
 
 function hasGitMarker(root) {
@@ -176,7 +253,7 @@ function checkDirtyScope(definition) {
 
 export function startCheck(planFile) {
   const {plan, definition} = loadStartInputs(planFile);
-  return [...checkProtectedScope(definition.scope), ...checkChecks(plan), ...checkDirtyScope(definition)];
+  return [...checkProtectedScope(definition.scope), ...checkChecks(plan), ...checkAffectedTests(plan, definition), ...checkDirtyScope(definition)];
 }
 
 export function main(argv = process.argv.slice(2), out = process.stdout, err = process.stderr) {

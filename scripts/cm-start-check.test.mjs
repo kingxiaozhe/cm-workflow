@@ -98,11 +98,54 @@ test('two xcodebuild test checks on one scheme and destination warn unless one i
   const overlap = check(project(t, {checks: [xcode('unit'), xcode('ui', '-resultBundlePath', 'x')]}));
   assert.deepEqual(overlap.report.findings.map(item => [item.code, item.ids]), [['overlapping_full_test', ['unit', 'ui']]]);
   assert.equal(overlap.status, 0);
-  assert.deepEqual(check(project(t, {checks: [xcode('unit'), xcode('ui', '-only-testing:AppUITests')]})).report.findings, []);
+  // Narrowed, so no overlap; with no affected-test table the narrowing itself cannot be checked.
+  assert.deepEqual(codes(check(project(t, {checks: [xcode('unit'), xcode('ui', '-only-testing:AppUITests')]})).report), ['affected_map_missing']);
   const other = cmd('ui', ['xcodebuild', 'test', '-scheme', 'Other', '-destination', 'id=U1']);
   assert.deepEqual(check(project(t, {checks: [xcode('unit'), other]})).report.findings, []);
   const build = cmd('build', ['xcodebuild', 'build', '-scheme', 'App', '-destination', 'id=U1']);
   assert.deepEqual(check(project(t, {checks: [xcode('unit'), build]})).report.findings, []);
+});
+
+const TABLE = ['# 测试', '', '## 牵连测试', '', '| 改动路径 | 牵连的旧界面测试 |', '|---|---|',
+  '| `src/queue.js` | `AppUITests/SearchUITests`、`AppUITests/SavedUITests` |',
+  '| `src/scroll/` | `AppUITests/AnchorUITests` |', '| `src/other.js` | `AppUITests/OtherUITests` |', '', '## 其他', '| `src/a.js` | `AppUITests/NotInTable` |', ''].join('\n');
+const mapped = (t, checks, {scope = ['src/queue.js', 'src/scroll/keep.js', 'src/a.js'], file = 'TESTING.md'} = {}) =>
+  project(t, {scope, checks, files: {'src/queue.js': 'q\n', 'src/scroll/keep.js': 'k\n', 'src/a.js': 'a\n', [file]: TABLE}});
+
+test('a scope that touches a shared module warns when its mapped old UI tests are not in the checks', t => {
+  const narrow = check(mapped(t, [cmd('unit', ['node', '--test']), xcode('ui', '-only-testing:AppUITests/NewUITests')]));
+  assert.equal(narrow.status, 0);
+  assert.deepEqual(narrow.report.findings.map(item => [item.code, item.level, item.file, item.tests, item.paths]),
+    [['affected_tests_not_run', 'warn', 'TESTING.md', ['AppUITests/SearchUITests', 'AppUITests/SavedUITests', 'AppUITests/AnchorUITests'],
+      ['src/queue.js', 'src/scroll/keep.js']]]);
+  assert.equal(run('--plan', mapped(t, [xcode('ui', '-only-testing:AppUITests/NewUITests')]).planFile, '--strict').status, 1);
+  // Rows after the next ## heading, and rows whose paths the scope does not touch, ask for nothing.
+  assert.deepEqual(check(mapped(t, [xcode('ui', '-only-testing:AppUITests/NewUITests')], {scope: ['src/a.js']})).report.findings, []);
+});
+
+test('a mapped test counts as run by -only-testing on it or an ancestor, a full run, or a wrapper argument; not by one method or a skip', t => {
+  const findings = checks => check(mapped(t, checks)).report.findings.map(item => [item.code, item.tests]);
+  const all = ['-only-testing:AppUITests/SearchUITests', '-only-testing:AppUITests/SavedUITests', '-only-testing:AppUITests/AnchorUITests'];
+  assert.deepEqual(findings([xcode('ui', ...all)]), []);
+  assert.deepEqual(findings([xcode('ui', '-only-testing:AppUITests')]), []);
+  assert.deepEqual(findings([xcode('ui')]), []);
+  assert.deepEqual(findings([cmd('ui', ['sh', 'ui.sh', 'AppUITests/SearchUITests,AppUITests/SavedUITests', 'AppUITests/AnchorUITests'])]), []);
+  assert.deepEqual(findings([xcode('ui', '-only-testing:AppUITests/SearchUITests/testOne', ...all.slice(1))]),
+    [['affected_tests_not_run', ['AppUITests/SearchUITests']]]);
+  assert.deepEqual(findings([xcode('ui', '-skip-testing:AppUITests/AnchorUITests')]), [['affected_tests_not_run', ['AppUITests/AnchorUITests']]]);
+  assert.deepEqual(findings([xcode('ui', '-only-testing:AppUITests', '-skip-testing:AppUITests')]),
+    [['affected_tests_not_run', ['AppUITests/SearchUITests', 'AppUITests/SavedUITests', 'AppUITests/AnchorUITests']]]);
+});
+
+test('the affected-test table is also read from docs/TESTING.md; without one only a narrowed UI run is reported, as info', t => {
+  assert.deepEqual(codes(check(mapped(t, [xcode('ui', '-only-testing:AppUITests/NewUITests')], {file: 'docs/TESTING.md'})).report),
+    ['affected_tests_not_run']);
+  const bare = project(t, {checks: [xcode('ui', '-only-testing:AppUITests/NewUITests')]});
+  const info = check(bare);
+  assert.equal(info.status, 0);
+  assert.deepEqual(info.report.findings.map(item => [item.level, item.code]), [['info', 'affected_map_missing']]);
+  assert.match(run('--plan', bare.planFile).out, /体检完成/);
+  assert.deepEqual(check(project(t, {checks: [xcode('ui'), cmd('unit', ['node', '--test'])]})).report.findings, []);
 });
 
 test('the summed check timeouts warn only above the 30 minute call limit', t => {
