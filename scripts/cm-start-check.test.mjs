@@ -151,6 +151,7 @@ test('a mapped test counts as run by -only-testing on it or an ancestor, a full 
   assert.deepEqual(findings([cmd('ui', ['/usr/bin/xcodebuild', 'COMPILER_INDEX_STORE_ENABLE=NO', '-quiet', 'test-without-building', ...all])]), []);
   // No-value flags never swallow the next word; a word after an unknown option is not taken as the action.
   assert.deepEqual(findings([cmd('ui', ['xcodebuild', '-retry-tests-on-failure', 'test', '-scheme', 'App', ...all])]), []);
+  assert.deepEqual(findings([cmd('ui', ['xcodebuild', ...all, 'test', '-scheme', 'App'])]), []);
   const flagThenValue = cmd('ui', ['xcodebuild', '-retry-tests-on-failure', '-resultBundlePath', 'test', 'build-for-testing', '-scheme', 'App', ...all]);
   assert.deepEqual(findings([flagThenValue]).map(item => item[0]), ['affected_tests_not_run']);
   assert.deepEqual(findings([cmd('ui', ['xcodebuild', '-futureFlag', 'test', '-scheme', 'App', ...all])]).map(item => item[0]), ['affected_tests_not_run']);
