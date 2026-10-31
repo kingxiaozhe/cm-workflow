@@ -142,6 +142,9 @@ test('a mapped test counts as run by -only-testing on it or an ancestor, a full 
   // A direct xcodebuild runs only through a test action and its test selection, never other arguments.
   const buildOnly = cmd('ui', ['xcodebuild', 'build-for-testing', '-scheme', 'App', ...all]);
   assert.deepEqual(findings([buildOnly]).map(item => item[0]), ['affected_tests_not_run']);
+  const valueNamedTest = cmd('ui', ['xcodebuild', 'build-for-testing', '-scheme', 'App', '-resultBundlePath', 'test', ...all]);
+  assert.deepEqual(findings([valueNamedTest]).map(item => item[0]), ['affected_tests_not_run']);
+  assert.deepEqual(findings([cmd('ui', ['/usr/bin/xcodebuild', '-quiet', 'COMPILER_INDEX_STORE_ENABLE=NO', 'test-without-building', ...all])]), []);
   assert.deepEqual(findings([xcode('ui', '-only-testing:AppUITests/NewUITests', '-resultBundlePath', 'r/AppUITests/SearchUITests.xcresult',
     ...all.slice(1))]), [['affected_tests_not_run', ['AppUITests/SearchUITests']]]);
 });
@@ -151,6 +154,9 @@ test('mixed backtick and plain items in one cell are all read; a heading without
   const p = project(t, {scope: ['src/scroll.js'], checks: [xcode('ui', '-only-testing:AppUITests/SearchUITests')],
     files: {'src/scroll.js': 's\n', 'TESTING.md': mixed}});
   assert.deepEqual(check(p).report.findings.map(item => [item.code, item.tests]), [['affected_tests_not_run', ['AppUITests/SavedUITests']]]);
+  const spaced = project(t, {scope: ['src/Shared Module.js'], checks: [xcode('ui', '-only-testing:AppUITests/NewUITests')],
+    files: {'src/Shared Module.js': 's\n', 'TESTING.md': '## 牵连测试\n| 路径 | 测试 |\n|---|---|\n| `src/Shared Module.js` | `AppUITests/SearchUITests` |\n'}});
+  assert.deepEqual(check(spaced).report.findings.map(item => [item.code, item.paths]), [['affected_tests_not_run', ['src/Shared Module.js']]]);
   const empty = project(t, {checks: [xcode('ui', '-only-testing:AppUITests/NewUITests')],
     files: {'src/a.js': 'a\n', 'TESTING.md': '## 牵连测试\n\nTODO\n\n## 牵连测试\n'}});
   assert.deepEqual(codes(check(empty).report), ['affected_map_missing']);

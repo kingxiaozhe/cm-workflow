@@ -83,7 +83,21 @@ function checkProtectedScope(scope) {
 }
 
 const isXcodebuild = tokens => tokens.some(token => path.basename(token) === 'xcodebuild');
-const isTestAction = tokens => tokens.some(token => token === 'test' || token === 'test-without-building');
+// xcodebuild options that take no value; every other -option consumes the next token, so a value
+// such as `-resultBundlePath test` is never read as the action. An unknown flag only hides an action.
+const XCODE_FLAGS = new Set(['-quiet', '-verbose', '-json', '-allowProvisioningUpdates', '-allowProvisioningDeviceRegistration',
+  '-skipUnavailableActions', '-hideShellScriptEnvironment', '-disableAutomaticPackageResolution', '-skipPackagePluginValidation',
+  '-skipMacroValidation']);
+function xcodeActions(tokens) {
+  const actions = [];
+  for (let i = tokens.findIndex(token => path.basename(token) === 'xcodebuild') + 1; i > 0 && i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token.startsWith('-')) { if (!XCODE_FLAGS.has(token) && !token.includes(':')) i += 1; continue; }
+    if (!token.includes('=')) actions.push(token);
+  }
+  return actions;
+}
+const isTestAction = tokens => xcodeActions(tokens).some(action => action === 'test' || action === 'test-without-building');
 const optionValue = (tokens, name) => {
   const at = tokens.indexOf(name);
   return at === -1 ? '' : tokens[at + 1] ?? '';
@@ -135,8 +149,10 @@ function checkChecks(plan) {
 // | changed paths (a trailing / is a directory) | test identifiers as the check command names them |.
 const AFFECTED_HEADING = /^##\s+牵连测试\s*$/;
 const TESTING_FILES = ['TESTING.md', path.join('docs', 'TESTING.md')];
-// Backticks are optional and may be mixed with plain items in one cell.
-const cellItems = cell => cell.replace(/`/g, ' ').split(/[、,，;；\s]+/).filter(Boolean);
+// Backticks are optional and may be mixed with plain items in one cell; a backticked item is
+// kept whole (it may hold spaces), the plain rest is split on 、 , ; and spaces.
+const cellItems = cell => [...[...cell.matchAll(/`([^`]+)`/g)].map(match => match[1].trim()),
+  ...cell.replace(/`[^`]*`/g, ' ').split(/[、,，;；\s]+/)].filter(Boolean);
 
 export function readAffectedMap(root) {
   for (const name of TESTING_FILES) {
