@@ -144,7 +144,7 @@ test('a mapped test counts as run by -only-testing on it or an ancestor, a full 
   assert.deepEqual(findings([buildOnly]).map(item => item[0]), ['affected_tests_not_run']);
   const valueNamedTest = cmd('ui', ['xcodebuild', 'build-for-testing', '-scheme', 'App', '-resultBundlePath', 'test', ...all]);
   assert.deepEqual(findings([valueNamedTest]).map(item => item[0]), ['affected_tests_not_run']);
-  assert.deepEqual(findings([cmd('ui', ['/usr/bin/xcodebuild', '-quiet', 'COMPILER_INDEX_STORE_ENABLE=NO', 'test-without-building', ...all])]), []);
+  assert.deepEqual(findings([cmd('ui', ['/usr/bin/xcodebuild', 'COMPILER_INDEX_STORE_ENABLE=NO', '-quiet', 'test-without-building', ...all])]), []);
   assert.deepEqual(findings([xcode('ui', '-only-testing:AppUITests/NewUITests', '-resultBundlePath', 'r/AppUITests/SearchUITests.xcresult',
     ...all.slice(1))]), [['affected_tests_not_run', ['AppUITests/SearchUITests']]]);
 });

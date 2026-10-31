@@ -93,7 +93,7 @@ function xcodeActions(tokens) {
   for (let i = tokens.findIndex(token => path.basename(token) === 'xcodebuild') + 1; i > 0 && i < tokens.length; i += 1) {
     const token = tokens[i];
     if (token.startsWith('-')) { if (!XCODE_FLAGS.has(token) && !token.includes(':')) i += 1; continue; }
-    if (!token.includes('=')) actions.push(token);
+    actions.push(token);
   }
   return actions;
 }
