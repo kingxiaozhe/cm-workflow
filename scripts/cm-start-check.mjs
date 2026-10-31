@@ -135,10 +135,8 @@ function checkChecks(plan) {
 // | changed paths (a trailing / is a directory) | test identifiers as the check command names them |.
 const AFFECTED_HEADING = /^##\s+牵连测试\s*$/;
 const TESTING_FILES = ['TESTING.md', path.join('docs', 'TESTING.md')];
-const cellItems = cell => {
-  const quoted = [...cell.matchAll(/`([^`]+)`/g)].map(match => match[1].trim()).filter(Boolean);
-  return quoted.length > 0 ? quoted : cell.split(/[、,，\s]+/).filter(Boolean);
-};
+// Backticks are optional and may be mixed with plain items in one cell.
+const cellItems = cell => cell.replace(/`/g, ' ').split(/[、,，;；\s]+/).filter(Boolean);
 
 export function readAffectedMap(root) {
   for (const name of TESTING_FILES) {
@@ -158,21 +156,28 @@ export function readAffectedMap(root) {
       const paths = cellItems(cells[0]).map(item => item.replace(/^\.\//, '')), tests = cellItems(cells[1]);
       if (paths.length > 0 && tests.length > 0) rows.push({paths, tests});
     }
-    return {file: name, rows};
+    // A heading with no usable row is not a table: report it like a missing one, not as "nothing affected".
+    if (rows.length > 0) return {file: name, rows};
   }
   return null;
 }
 
 const ONLY = '-only-testing:', SKIP = '-skip-testing:';
 const within = (id, target) => id === target || id.startsWith(`${target}/`);
-// Whether one check command runs test `id`: an -only-testing naming it or an ancestor, an
-// unnarrowed xcodebuild test, or (wrapper scripts, other runners) an argument containing it.
-// An -skip-testing naming it or an ancestor wins over all of them.
+// Whether one check command runs all of test `id`. A direct xcodebuild counts only with a test
+// action and only through its selection: unnarrowed, or an -only-testing naming `id` or an
+// ancestor. Any other command (wrapper script, other runner) counts when an argument contains
+// `id`; the start check cannot see inside it. An -skip-testing on `id`, an ancestor or a part
+// of it (one method of the class) means it does not run all of it.
 function runsTest(tokens, id) {
-  if (tokens.some(token => token.startsWith(SKIP) && within(id, token.slice(SKIP.length)))) return false;
-  if (isXcodebuild(tokens) && isTestAction(tokens) && !tokens.some(token => token.startsWith('-only-testing'))) return true;
-  return tokens.some(token => token.startsWith(ONLY) ? within(id, token.slice(ONLY.length))
-    : !token.startsWith('-skip-testing') && token.includes(id));
+  if (tokens.some(token => token.startsWith(SKIP)
+    && (within(id, token.slice(SKIP.length)) || within(token.slice(SKIP.length), id)))) return false;
+  if (isXcodebuild(tokens)) {
+    if (!isTestAction(tokens)) return false;
+    const only = tokens.filter(token => token.startsWith(ONLY)).map(token => token.slice(ONLY.length));
+    return !tokens.some(token => token.startsWith('-only-testing')) || only.some(target => within(id, target));
+  }
+  return tokens.some(token => !token.startsWith('-skip-testing') && token.includes(id));
 }
 
 function checkAffectedTests(plan, definition) {

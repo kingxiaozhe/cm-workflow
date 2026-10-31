@@ -107,7 +107,7 @@ test('two xcodebuild test checks on one scheme and destination warn unless one i
 });
 
 const TABLE = ['# 测试', '', '## 牵连测试', '', '| 改动路径 | 牵连的旧界面测试 |', '|---|---|',
-  '| `src/queue.js` | `AppUITests/SearchUITests`、`AppUITests/SavedUITests` |',
+  '| `src/queue.js` | `AppUITests/SearchUITests`、AppUITests/SavedUITests |',
   '| `src/scroll/` | `AppUITests/AnchorUITests` |', '| `src/other.js` | `AppUITests/OtherUITests` |', '', '## 其他', '| `src/a.js` | `AppUITests/NotInTable` |', ''].join('\n');
 const mapped = (t, checks, {scope = ['src/queue.js', 'src/scroll/keep.js', 'src/a.js'], file = 'TESTING.md'} = {}) =>
   project(t, {scope, checks, files: {'src/queue.js': 'q\n', 'src/scroll/keep.js': 'k\n', 'src/a.js': 'a\n', [file]: TABLE}});
@@ -135,6 +135,25 @@ test('a mapped test counts as run by -only-testing on it or an ancestor, a full 
   assert.deepEqual(findings([xcode('ui', '-skip-testing:AppUITests/AnchorUITests')]), [['affected_tests_not_run', ['AppUITests/AnchorUITests']]]);
   assert.deepEqual(findings([xcode('ui', '-only-testing:AppUITests', '-skip-testing:AppUITests')]),
     [['affected_tests_not_run', ['AppUITests/SearchUITests', 'AppUITests/SavedUITests', 'AppUITests/AnchorUITests']]]);
+  // Skipping one method of a mapped class leaves the class only partly run, narrowed or not.
+  assert.deepEqual(findings([xcode('ui', ...all, '-skip-testing:AppUITests/SearchUITests/testOld')]),
+    [['affected_tests_not_run', ['AppUITests/SearchUITests']]]);
+  assert.deepEqual(findings([xcode('ui', '-skip-testing:AppUITests/SearchUITests/testOld')]), [['affected_tests_not_run', ['AppUITests/SearchUITests']]]);
+  // A direct xcodebuild runs only through a test action and its test selection, never other arguments.
+  const buildOnly = cmd('ui', ['xcodebuild', 'build-for-testing', '-scheme', 'App', ...all]);
+  assert.deepEqual(findings([buildOnly]).map(item => item[0]), ['affected_tests_not_run']);
+  assert.deepEqual(findings([xcode('ui', '-only-testing:AppUITests/NewUITests', '-resultBundlePath', 'r/AppUITests/SearchUITests.xcresult',
+    ...all.slice(1))]), [['affected_tests_not_run', ['AppUITests/SearchUITests']]]);
+});
+
+test('mixed backtick and plain items in one cell are all read; a heading without rows counts as no table', t => {
+  const mixed = ['## 牵连测试', '| 路径 | 测试 |', '|:--|--:|', '| `src/queue.js`、src/scroll.js | `AppUITests/SearchUITests`, AppUITests/SavedUITests |', ''].join('\n');
+  const p = project(t, {scope: ['src/scroll.js'], checks: [xcode('ui', '-only-testing:AppUITests/SearchUITests')],
+    files: {'src/scroll.js': 's\n', 'TESTING.md': mixed}});
+  assert.deepEqual(check(p).report.findings.map(item => [item.code, item.tests]), [['affected_tests_not_run', ['AppUITests/SavedUITests']]]);
+  const empty = project(t, {checks: [xcode('ui', '-only-testing:AppUITests/NewUITests')],
+    files: {'src/a.js': 'a\n', 'TESTING.md': '## 牵连测试\n\nTODO\n\n## 牵连测试\n'}});
+  assert.deepEqual(codes(check(empty).report), ['affected_map_missing']);
 });
 
 test('the affected-test table is also read from docs/TESTING.md; without one only a narrowed UI run is reported, as info', t => {
@@ -276,13 +295,15 @@ test('unreadable or unsupported input exits 2 with a Chinese reason and no repor
 });
 
 test('the check never writes: every file, mtime and the git index are unchanged, dirty tree included', t => {
-  const p = project(t, {scope: ['src/a.js', 'AGENTS.md'], checks: [xcode('unit'), xcode('ui'), cmd('d', ['x']), cmd('e', ['x'])]});
+  const p = project(t, {scope: ['src/a.js', 'AGENTS.md'], checks: [cmd('unit', ['swift', 'test']), xcode('ui', '-only-testing:AppUITests/NewUITests'), cmd('d', ['x']), cmd('e', ['x'])],
+    files: {'src/a.js': 'a\n', 'TESTING.md': '## 牵连测试\n|路径|测试|\n|-|-|\n|`src/a.js`|`AppUITests/OldUITests`|\n'}});
   fs.writeFileSync(path.join(p.root, 'src/a.js'), 'dirty\n');
   fs.writeFileSync(path.join(p.root, 'src/untracked.js'), 'u\n');
   const before = snapshot(p.dir);
   const r = check(p);
   assert.equal(r.status, 1);
   assert.ok(r.report.findings.length >= 3);
+  assert.ok(codes(r.report).includes('affected_tests_not_run'));
   assert.equal(snapshot(p.dir), before);
 });
 
