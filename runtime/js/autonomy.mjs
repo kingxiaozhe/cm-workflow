@@ -1,39 +1,46 @@
-// Standing "run to the end" authorization (scripts/cm-autonomy.mjs). It is written
-// only from the person's own words and changes two things: a driver stop waits
-// waitMinutes instead of paging at once (the session usually carries on), and
-// cm-ai admission may approve a change proposal that touches no requirement and
-// no user case. Fatal stops page at once through cm-autonomy.mjs notify.
+// Standing "run to the end" authorization (scripts/cm-autonomy.mjs). Like
+// --approval-response, the session relays the person's own words; the record
+// changes three things: a driver stop waits waitMinutes instead of paging at once
+// (the session usually carries on), cm-ai admission may approve a change proposal
+// that leaves the requirement contract alone, and the session may reopen a task
+// up to AUTO_REOPEN_LIMIT times. Fatal stops page at once (cm-autonomy.mjs notify).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 
-export const AUTONOMY_FILE='autonomy.json',AUTONOMY_OFF_FILE='autonomy.off.json',AUTO_REOPEN_LIMIT=2;
+export const AUTONOMY_FILE='autonomy.json',AUTONOMY_OFF_FILE='autonomy.off.json',REOPEN_FILE='autonomy-reopens.json',AUTO_REOPEN_LIMIT=2;
 // Same directory as notify.json (notify.mjs notifyHome); kept here so notify.mjs can import this module.
 export const autonomyHome=(env=process.env)=>path.resolve(env.CM_WORKFLOW_HOME||path.join(os.homedir(),'.cm-workflow'));
 const iso=value=>typeof value==='string'&&/^\d{4}-\d\d-\d\dT/.test(value)&&Number.isFinite(Date.parse(value));
+const words=value=>typeof value==='string'&&value.trim()!==''&&Array.from(value).length<=500;
+const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 
-// {on:true,value} only for a regular, well-formed file; anything else is off.
+function readJson(file){
+  try{if(!fs.lstatSync(file).isFile())return {invalid:true};return {value:JSON.parse(fs.readFileSync(file,'utf8'))};}
+  catch(error){return error.code==='ENOENT'?{missing:true}:{invalid:true};}
+}
+function writeJson(home,name,value){
+  fs.mkdirSync(home,{recursive:true,mode:0o700});
+  const target=path.join(home,name),temporary=path.join(home,`.${name}-${randomUUID()}`);
+  try{fs.writeFileSync(temporary,JSON.stringify(value,null,1)+'\n',{mode:0o600,flag:'wx'});fs.renameSync(temporary,target);}
+  finally{try{fs.unlinkSync(temporary);}catch(error){if(error.code!=='ENOENT')throw error;}}
+}
+
+// {on:true,value} only for a regular file the writer below would produce; anything else is off.
 export function readAutonomy(env=process.env){
-  const file=path.join(autonomyHome(env),AUTONOMY_FILE);
-  let raw;
-  try{if(!fs.lstatSync(file).isFile())return {on:false,reason:'invalid'};raw=fs.readFileSync(file,'utf8');}
-  catch(error){return {on:false,reason:error.code==='ENOENT'?'missing':'invalid'};}
-  try{
-    const value=JSON.parse(raw);
-    if(value?.version!==1||value.mode!=='until_fatal'||typeof value.response!=='string'||!value.response.trim()||!iso(value.at))
-      return {on:false,reason:'invalid'};
-    return {on:true,value:{version:1,mode:'until_fatal',response:value.response,at:value.at}};
-  }catch{return {on:false,reason:'invalid'};}
+  const read=readJson(path.join(autonomyHome(env),AUTONOMY_FILE));
+  if(read.missing)return {on:false,reason:'missing'};
+  const value=read.value;
+  if(read.invalid||!record(value)||Object.keys(value).sort().join()!=='at,mode,response,version'
+    ||value.version!==1||value.mode!=='until_fatal'||!words(value.response)||!iso(value.at))return {on:false,reason:'invalid'};
+  return {on:true,value:{version:1,mode:'until_fatal',response:value.response,at:value.at}};
 }
 
 export function writeAutonomy(response,{env=process.env,now=Date.now()}={}){
-  if(typeof response!=='string'||!response.trim()||Array.from(response).length>500)throw new Error('autonomy_response_invalid');
-  const home=autonomyHome(env),value={version:1,mode:'until_fatal',response,at:new Date(now).toISOString()};
-  fs.mkdirSync(home,{recursive:true,mode:0o700});
-  const target=path.join(home,AUTONOMY_FILE),temporary=path.join(home,`.${AUTONOMY_FILE}-${randomUUID()}`);
-  try{fs.writeFileSync(temporary,JSON.stringify(value,null,1)+'\n',{mode:0o600,flag:'wx'});fs.renameSync(temporary,target);}
-  finally{try{fs.unlinkSync(temporary);}catch(error){if(error.code!=='ENOENT')throw error;}}
+  if(!words(response))throw new Error('autonomy_response_invalid');
+  const value={version:1,mode:'until_fatal',response,at:new Date(now).toISOString()};
+  writeJson(autonomyHome(env),AUTONOMY_FILE,value);
   return value;
 }
 
@@ -44,18 +51,78 @@ export function clearAutonomy({env=process.env}={}){
   catch(error){if(error.code==='ENOENT')return false;throw error;}
 }
 
-// Whether a saved change proposal may be approved under the standing authorization:
-// it may change design, tasks and generated cases, never a requirement, a feature
-// list or a user case. Returns null when it may, else the reason in plain words.
-export function standingChangeProblem(archive,digest){
-  const before=archive?.before,proposal=archive?.proposal;
-  if(!before||!proposal||proposal.proposalDigest!==digest||typeof proposal.files!=='object'||typeof before.files!=='object')
-    return '找不到这份提案的归档';
-  if(!Array.isArray(proposal.changedUserCases)||proposal.changedUserCases.length)return '提案删除或减弱了用户用例';
-  if(!Array.isArray(proposal.removed)||proposal.removed.length)return '提案删除了功能';
-  for(const file of Object.keys(proposal.files)){
-    if(!Array.isArray(before.directories)||!before.directories.includes(file.split('/')[0]))return '提案新增了功能';
-    if(file.endsWith('/requirements.md')&&proposal.files[file]!==before.files[file])return '提案改了需求';
+// Automatic reopens per task, counted before each reopen: {count} when allowed,
+// {refused:true,count} at the limit (a fatal stop).
+const reopenKey=(project,task)=>`${path.resolve(project)}|${task}`;
+export function readReopens(env=process.env){
+  const read=readJson(path.join(autonomyHome(env),REOPEN_FILE));
+  if(read.missing)return {};
+  if(read.invalid||!record(read.value)||!Object.values(read.value).every(count=>Number.isSafeInteger(count)&&count>=0))
+    throw new Error('autonomy_reopens_invalid');
+  return read.value;
+}
+export function takeReopen(project,task,{env=process.env}={}){
+  if(typeof task!=='string'||!/^\d+\.[^/\\\s]+\/T-\d+$/.test(task))throw new Error('autonomy_task_invalid');
+  const counts=readReopens(env),key=reopenKey(project,task),count=counts[key]??0;
+  if(count>=AUTO_REOPEN_LIMIT)return {refused:true,count};
+  writeJson(autonomyHome(env),REOPEN_FILE,{...counts,[key]:count+1});
+  return {count:count+1};
+}
+
+const DOCUMENTS=['requirements.md','design.md','tasks.md'],CHANGEABLE=new Set(['design.md','tasks.md','test-cases.json']);
+const userCases=source=>{
+  if(source===undefined)return new Map();
+  const cases=JSON.parse(source)?.cases;
+  if(!Array.isArray(cases))throw new Error('cases');
+  return new Map(cases.filter(item=>item?.origin==='user').map(item=>[item.id,JSON.stringify(item)]));
+};
+
+// Whether a change proposal may be approved under the standing authorization,
+// judged from the complete before/after contents: it may change design, tasks and
+// generated cases of existing features, never a requirement, the feature list or a
+// user case. Returns null when it may, else the reason in plain words.
+export function standingProposalProblem(before,proposal){
+  if(!record(before)||!Array.isArray(before.directories)||!before.directories.every(dir=>typeof dir==='string')
+    ||!record(before.files)||!Object.values(before.files).every(value=>typeof value==='string')
+    ||!record(proposal)||!record(proposal.files)||!Object.keys(proposal.files).length
+    ||!Object.values(proposal.files).every(value=>typeof value==='string')
+    ||!Array.isArray(proposal.changedUserCases)||!Array.isArray(proposal.removed))return '提案内容不完整，无法判断';
+  if(proposal.changedUserCases.length)return '提案删除或减弱了用户用例';
+  if(proposal.removed.length)return '提案删除了功能';
+  const features=new Set(Object.keys(proposal.files).map(file=>file.split('/')[0]));
+  for(const feature of features){
+    if(!before.directories.includes(feature))return '提案新增了功能';
+    if(DOCUMENTS.some(name=>typeof proposal.files[`${feature}/${name}`]!=='string'))return '提案内容不完整，无法判断';
   }
+  for(const [file,content] of Object.entries(proposal.files)){
+    const [feature,name,...rest]=file.split('/');
+    if(rest.length||!DOCUMENTS.includes(name)&&name!=='test-cases.json')return `提案改了规格以外的文件（${file}）`;
+    if(content!==before.files[file]&&!CHANGEABLE.has(name))return '提案改了需求';
+  }
+  for(const feature of features){
+    const file=`${feature}/test-cases.json`;
+    let was,now;
+    // A test-cases.json the proposal leaves out is deleted on save: its user cases count as removed.
+    try{was=userCases(before.files[file]);now=userCases(proposal.files[file]);}
+    catch{return '提案的测试用例无法解析';}
+    for(const [id,item] of was)if(now.get(id)!==item)return '提案删除或减弱了用户用例';
+  }
+  return null;
+}
+
+// The saved archive (.reviews/prd-change-<digest>.json) must be this proposal and
+// must be exactly what the specs now hold: features listed, proposal files written,
+// every other feature untouched.
+export function standingArchiveProblem(specsDir,archive,digest){
+  if(!record(archive)||archive.proposal?.proposalDigest!==digest)return '找不到这份提案的归档';
+  const problem=standingProposalProblem(archive.before,archive.proposal);
+  if(problem)return problem;
+  const {before,proposal}=archive,read=file=>{try{return fs.readFileSync(path.join(specsDir,file),'utf8');}catch{return null;}};
+  const listed=fs.readdirSync(specsDir).filter(dir=>/^\d+\./.test(dir)).sort();
+  if(listed.join('\n')!==[...before.directories].sort().join('\n'))return '规格目录的功能与提案不一致';
+  for(const [file,content] of Object.entries(proposal.files))if(read(file)!==content)return '规格文件与提案不一致';
+  const changed=new Set(Object.keys(proposal.files).map(file=>file.split('/')[0]));
+  for(const [file,content] of Object.entries(before.files))if(!changed.has(file.split('/')[0])&&read(file)!==content)
+    return '规格文件与提案不一致';
   return null;
 }

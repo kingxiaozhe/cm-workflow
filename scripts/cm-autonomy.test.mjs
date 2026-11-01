@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {main} from './cm-autonomy.mjs';
-import {readAutonomy,standingChangeProblem} from '../runtime/js/autonomy.mjs';
-import {driveNotice} from '../runtime/js/notify.mjs';
+import {readAutonomy,standingProposalProblem} from '../runtime/js/autonomy.mjs';
+import {driveNotice,notifyLater,sendPendingNotice} from '../runtime/js/notify.mjs';
 
 function home(t){
   const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-autonomy-')));
@@ -47,6 +47,14 @@ test('a fatal stop pages at once with the reason as the action',async t=>{
   const payload=JSON.parse(fs.readFileSync(sent,'utf8'));
   assert.equal(payload.event,'stuck');assert.equal(payload.code,'autonomy_fatal_stop');
   assert.match(payload.action,/致命问题，已停下：T-004 自动重开 2 次仍未通过/);
+  // The window limit never swallows a fatal stop.
+  const state=path.join(h.dir,'notify-state.json'),now=Date.now();
+  fs.writeFileSync(state,JSON.stringify({version:2,keys:{},attention:{},sends:[now-3000,now-2000,now-1000],suppressed:0}));
+  assert.equal(h.run('notify','--kind','fatal','--project','/w/app','--reason','额度用完').code,0);
+  assert.equal(h.run('notify','--kind','fatal','--project','/w/app','--reason','额度用完').code,0,'same reason within 6 h is not resent');
+  fs.rmSync(path.join(h.dir,'notify.json'));
+  const off=h.run('notify','--kind','fatal','--project','/w/app','--reason','设备要本人解锁');
+  assert.equal(off.code,1);assert.match(off.out,/没有发出提醒/);
 });
 
 test('under autonomy a driver stop waits and a finished unit is not paged',t=>{
@@ -62,14 +70,62 @@ test('under autonomy a driver stop waits and a finished unit is not paged',t=>{
 });
 
 test('standing approval covers design, tasks and generated cases, never requirements, features or user cases',()=>{
-  const digest='c'.repeat(64);
-  const archive=(proposal={},before={})=>({before:{directories:['1.login'],files:{'1.login/requirements.md':'R','1.login/tasks.md':'T'},...before},
-    proposal:{proposalDigest:digest,changedUserCases:[],removed:[],files:{'1.login/requirements.md':'R','1.login/tasks.md':'T2'},...proposal}});
-  assert.equal(standingChangeProblem(archive(),digest),null);
-  assert.equal(standingChangeProblem(archive(),'d'.repeat(64)),'找不到这份提案的归档');
-  assert.equal(standingChangeProblem(null,digest),'找不到这份提案的归档');
-  assert.equal(standingChangeProblem(archive({files:{'1.login/requirements.md':'R2'}}),digest),'提案改了需求');
-  assert.equal(standingChangeProblem(archive({changedUserCases:[{id:'TC-1'}]}),digest),'提案删除或减弱了用户用例');
-  assert.equal(standingChangeProblem(archive({removed:['1.login']}),digest),'提案删除了功能');
-  assert.equal(standingChangeProblem(archive({files:{'2.new/tasks.md':'T'}}),digest),'提案新增了功能');
+  const cases=list=>JSON.stringify({schemaVersion:1,feature:'login',cases:list});
+  const user={id:'TC-001',origin:'user',title:'login works'},generated={id:'TC-002',origin:'generated',title:'g'};
+  const before={directories:['1.login'],files:{'1.login/requirements.md':'R','1.login/design.md':'D','1.login/tasks.md':'T',
+    '1.login/test-cases.json':cases([user,generated])}};
+  const proposal=(files={},over={})=>({changedUserCases:[],removed:[],...over,files:{...before.files,'1.login/tasks.md':'T2',...files}});
+  assert.equal(standingProposalProblem(before,proposal()),null);
+  assert.equal(standingProposalProblem(before,proposal({'1.login/design.md':'D2','1.login/test-cases.json':cases([user])})),null);
+  const refused=[
+    [proposal({'1.login/requirements.md':'R2'}),'提案改了需求'],
+    [proposal({},{changedUserCases:[{id:'TC-001'}]}),'提案删除或减弱了用户用例'],
+    [proposal({'1.login/test-cases.json':cases([generated])}),'提案删除或减弱了用户用例'],
+    [proposal({'1.login/test-cases.json':cases([{...user,title:'weaker'}])}),'提案删除或减弱了用户用例'],
+    [(()=>{const value=proposal();delete value.files['1.login/test-cases.json'];return value;})(),'提案删除或减弱了用户用例'],
+    [proposal({'1.login/test-cases.json':'not json'}),'提案的测试用例无法解析'],
+    [proposal({},{removed:['1.login']}),'提案删除了功能'],
+    [proposal({'2.new/requirements.md':'R','2.new/design.md':'D','2.new/tasks.md':'T'}),'提案新增了功能'],
+    [proposal({'1.login/assets/x.png':'b'}),'提案改了规格以外的文件（1.login/assets/x.png）'],
+    [(()=>{const value=proposal();delete value.files['1.login/design.md'];return value;})(),'提案内容不完整，无法判断'],
+    [{changedUserCases:[],removed:[],files:[]},'提案内容不完整，无法判断'],
+    [{changedUserCases:[],removed:[],files:{}},'提案内容不完整，无法判断'],
+    [{changedUserCases:[],removed:[],files:null},'提案内容不完整，无法判断'],
+    [proposal({'1.login/tasks.md':5}),'提案内容不完整，无法判断']];
+  for(const [value,reason] of refused)assert.equal(standingProposalProblem(before,value),reason,JSON.stringify(value).slice(0,120));
+});
+
+test('check-proposal judges against the specs on disk and reopen counts to the limit',t=>{
+  const h=home(t),specs=path.join(h.dir,'specs'),feature=path.join(specs,'1.login');
+  fs.mkdirSync(feature,{recursive:true});
+  for(const [name,content] of [['requirements.md','R'],['design.md','D'],['tasks.md','T']])fs.writeFileSync(path.join(feature,name),content);
+  const file=path.join(h.dir,'proposal.json'),check=files=>{
+    fs.writeFileSync(file,JSON.stringify({result:{proposal:{changedUserCases:[],removed:[],files}}}));
+    return h.run('check-proposal','--specs-dir',specs,'--proposal',file);
+  };
+  const ok=check({'1.login/requirements.md':'R','1.login/design.md':'D','1.login/tasks.md':'T2'});
+  assert.equal(ok.code,0);assert.match(ok.out,/可以按常设授权自行批准/);
+  const no=check({'1.login/requirements.md':'R2','1.login/design.md':'D','1.login/tasks.md':'T2'});
+  assert.equal(no.code,1);assert.match(no.out,/提案改了需求.*不要发送 decision/);
+  assert.equal(h.run('check-proposal','--specs-dir',specs,'--proposal',path.join(h.dir,'missing.json')).code,1);
+  const reopen=()=>h.run('reopen','--project',h.dir,'--task','1.login/T-004');
+  assert.equal(reopen().code,1,'off: the person decides');
+  h.run('on','--response','就按这份');
+  assert.equal(h.run('reopen','--project',h.dir,'--task','T-004').code,2);
+  assert.match(reopen().out,/第 1 次/);assert.match(reopen().out,/第 2 次/);
+  const third=reopen();assert.equal(third.code,1);assert.match(third.out,/上限 2.*致命停车/);
+  assert.match(h.run('reopen','--project',h.dir,'--task','1.login/T-005').out,/第 1 次/);
+  assert.match(h.run('show').out,/1\.login\/T-004 2 次/);
+});
+
+test('a deferred stop that comes due is not lost to the window limit',async t=>{
+  const h=home(t),sent=path.join(h.dir,'sent.jsonl'),script=path.join(h.dir,'fake.mjs');
+  fs.writeFileSync(script,`import fs from 'node:fs';let i='';process.stdin.on('data',c=>i+=c);process.stdin.on('end',()=>{fs.appendFileSync(${JSON.stringify(sent)},i);});`);
+  fs.writeFileSync(path.join(h.dir,'notify.json'),JSON.stringify({version:1,command:[process.execPath,script]}));
+  const fields={key:'cm-ai|r1|T-001|1|blocked|review_limit',attentionKey:'attn|w/app|cm-ai|r1',event:'stuck',workflow:'cm-ai',project:'/w/app',code:'review_limit'};
+  assert.equal((await notifyLater(fields,{env:h.env,delayMs:5*60000})).scheduled,true);
+  const pending=path.join(h.dir,'notify-pending'),[name]=fs.readdirSync(pending);
+  const token=JSON.parse(fs.readFileSync(path.join(pending,name),'utf8')).token,now=Date.now();
+  fs.writeFileSync(path.join(h.dir,'notify-state.json'),JSON.stringify({version:2,keys:{},attention:{},sends:[now-3000,now-2000,now-1000],suppressed:0}));
+  assert.deepEqual(await sendPendingNotice(fields,token,{env:h.env}),{sent:true,reason:'launched'});
 });

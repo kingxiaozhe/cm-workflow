@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
-import {readAutonomy,standingChangeProblem} from '../autonomy.mjs';
+import {readAutonomy,standingArchiveProblem} from '../autonomy.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {buildManifest,verifyApprovedManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
@@ -415,7 +415,7 @@ export function approveCmAiSpecs(options){
       try{const file=path.join(specsDir,'.reviews',`prd-change-${options.expectRevisionDigest}.json`);
         if(path.dirname(fs.realpathSync(file))===fs.realpathSync(path.join(specsDir,'.reviews')))archive=JSON.parse(fs.readFileSync(file,'utf8'));}
       catch{}
-      const problem=standingChangeProblem(archive,options.expectRevisionDigest);
+      const problem=standingArchiveProblem(specsDir,archive,options.expectRevisionDigest);
       if(problem)return refuse('standing_authorization_not_applicable',`${problem}，要用户本人确认`);
     }
     // The baseline is the very bytes just validated, never a later re-read.

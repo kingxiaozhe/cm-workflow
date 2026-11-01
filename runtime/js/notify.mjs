@@ -564,7 +564,7 @@ function dropPending(home,hash,before){
   if(pending?.missing||pending&&pending.at>before)return false;
   return removePending(home,hash);
 }
-function reserve(home,{hash,attention=null,event,code=null,pendingToken},now,limits){
+function reserve(home,{hash,attention=null,event,code=null,pendingToken,urgent=false},now,limits){
   return withState(home,state=>{
     // A deferred waiter fires only for its own still-pending stop; any other
     // notice about the same session supersedes a pending one.
@@ -588,7 +588,9 @@ function reserve(home,{hash,attention=null,event,code=null,pendingToken},now,lim
       else return {status:'duplicate'};
     }
     const persist=extra=>writeState(home,{version:2,keys,attention:records,sends,suppressed:state.suppressed,...extra});
-    if(sends.filter(at=>now-at<limits.windowMs).length>=limits.perWindow||sends.length>=NOTIFY_LIMITS.perDay){
+    // A fatal stop (urgent) is never rate limited; a deferred stop already waited and
+    // its pending record is gone, so the window limit would lose it for good.
+    if(!urgent&&(pendingToken===undefined&&sends.filter(at=>now-at<limits.windowMs).length>=limits.perWindow||sends.length>=NOTIFY_LIMITS.perDay)){
       const status=sends.length>=NOTIFY_LIMITS.perDay?'rate_day':'rate_window';
       return persist({suppressed:state.suppressed+1})?{status}:{status:'state_write_failed'};
     }
@@ -697,7 +699,7 @@ export async function sendPendingNotice(fields,token,{env=process.env,attempts=2
 const LEVEL_OF=Object.freeze({done:'passive',idle:'active'});
 // Never throws and never waits. Returns {sent, reason}; sent means the command
 // was handed to the detached launcher, whose own failures go to notify.log.
-export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_LIMITS.commandTimeoutMs,pendingToken}={}){
+export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_LIMITS.commandTimeoutMs,pendingToken,urgent=false}={}){
   try{
     const config=readNotifyConfig(env);if(!config)return {sent:false,reason:'off'};
     if(typeof fields?.key!=='string'||!fields.key)return {sent:false,reason:'invalid_key'};
@@ -705,7 +707,7 @@ export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_L
     const attention=typeof fields.attentionKey==='string'&&fields.attentionKey&&Object.hasOwn(ATTENTION_LEVEL,event)
       ?keyHash(fields.attentionKey):null;
     if(pendingToken!==undefined&&attention===null)return {sent:false,reason:'cancelled'};
-    const reserved=reserve(home,{hash,attention,event,code:clean(fields.code,64)||null,pendingToken},now,config);
+    const reserved=reserve(home,{hash,attention,event,code:clean(fields.code,64)||null,pendingToken,urgent:urgent===true},now,config);
     if(reserved.status!=='ok'){
       if(!['duplicate','cancelled'].includes(reserved.status))appendNotifyLog(home,now,{event,workflow,hash,result:`skipped ${reserved.status}`});
       return {sent:false,reason:reserved.status};
@@ -994,7 +996,8 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null,en
     code:done?(text(result.code)??text(result.overall)??text(nested.overall)??'done'):code,
     // A finished unit is the natural point to start a fresh session (runtime/model-efficiency.md).
     nextAction:done?'会话边界：换新会话，下一项在新会话里运行':text(result.guidance?.nextStep)??text(progress.nextAction)??text(result.nextAction),
-    ...(reviewFailure?{reviewFailure}:{}),...(developFailure?{developFailure}:{}),...(pendingAction&&!done?{pendingAction}:{}),...(ask?{ask:true}:{}),delivery};
+    ...(reviewFailure?{reviewFailure}:{}),...(developFailure?{developFailure}:{}),...(pendingAction&&!done?{pendingAction}:{}),...(ask?{ask:true}:{}),delivery,
+    ...(autonomous?{autonomous:true}:{})};
 }
 
 // The attention record a successful, non-read-only step clears (see clearAttention).

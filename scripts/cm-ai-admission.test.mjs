@@ -167,11 +167,12 @@ test('standing authorization approves a bound scope-only change and nothing else
   const status=path.join(specs,'.cm-specs-status'),digest='c'.repeat(64),home=path.join(root,'cm-home');
   fs.mkdirSync(home);
   const env={...process.env,CM_WORKFLOW_HOME:home};
-  const requirements=fs.readFileSync(path.join(specs,'1.login','requirements.md'),'utf8');
+  const read=name=>fs.readFileSync(path.join(specs,'1.login',name),'utf8');
+  const requirements=read('requirements.md'),design=read('design.md');
   const archive=(over={})=>{fs.mkdirSync(path.join(specs,'.reviews'),{recursive:true});
     fs.writeFileSync(path.join(specs,'.reviews',`prd-change-${digest}.json`),JSON.stringify({version:1,
-      before:{directories:['1.login'],files:{'1.login/requirements.md':requirements,'1.login/tasks.md':'- [ ] T-001: old\n'}},
-      proposal:{proposalDigest:digest,changedUserCases:[],removed:[],files:{'1.login/requirements.md':requirements,
+      before:{directories:['1.login'],files:{'1.login/requirements.md':requirements,'1.login/design.md':design,'1.login/tasks.md':'- [ ] T-001: old\n'}},
+      proposal:{proposalDigest:digest,changedUserCases:[],removed:[],files:{'1.login/requirements.md':requirements,'1.login/design.md':design,
         '1.login/tasks.md':'- [ ] T-001: implement login\n'},...over},selected:['1.login']}));};
   const saved=()=>fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',revisionDigest:digest,
     features:['1.login'],specFiles:buildManifest(specs),testCases:[]}));
@@ -181,11 +182,21 @@ test('standing authorization approves a bound scope-only change and nothing else
   saved();archive();const before=fs.readFileSync(status);
   refused(invoke(),'standing_authorization_off');
   fs.writeFileSync(path.join(home,'autonomy.json'),JSON.stringify({version:1,mode:'until_fatal',response:'就按这份',at:'2026-11-01T00:00:00.000Z'}));
-  for(const [over,why] of [[{files:{'1.login/requirements.md':'# changed\n'}},/改了需求/],[{changedUserCases:[{id:'TC-001'}]},/用户用例/],
-    [{proposalDigest:'d'.repeat(64)},/找不到/]]){
+  for(const [over,why] of [[{files:{'1.login/requirements.md':'# changed\n','1.login/design.md':design,'1.login/tasks.md':'- [ ] T-001: implement login\n'}},/改了需求/],[{changedUserCases:[{id:'TC-001'}]},/用户用例/],
+    [{proposalDigest:'d'.repeat(64)},/找不到/],[{files:[]},/不完整/]]){
     archive(over);const result=invoke();refused(result,'standing_authorization_not_applicable');
     assert.match(JSON.parse(result.stdout).approveReason,why);assert.deepEqual(fs.readFileSync(status),before);
   }
+  // The archive must be what the specs hold: a requirement edited on disk, or an extra feature, is not this proposal.
+  archive();
+  fs.writeFileSync(path.join(specs,'1.login','requirements.md'),'# Requirements\nnew rule\n');saved();
+  let result=invoke();refused(result,'standing_authorization_not_applicable');assert.match(JSON.parse(result.stdout).approveReason,/规格文件与提案不一致/);
+  fs.writeFileSync(path.join(specs,'1.login','requirements.md'),requirements);
+  const extra=path.join(specs,'2.new');fs.mkdirSync(extra);
+  for(const name of ['requirements.md','design.md','tasks.md'])fs.writeFileSync(path.join(extra,name),'- [ ] T-001: x\n');
+  fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',revisionDigest:digest,features:['1.login','2.new'],specFiles:buildManifest(specs),testCases:[]}));
+  result=invoke();refused(result,'standing_authorization_not_applicable');assert.match(JSON.parse(result.stdout).approveReason,/功能与提案不一致/);
+  fs.rmSync(extra,{recursive:true});saved();
   fs.rmSync(path.join(specs,'.reviews',`prd-change-${digest}.json`));
   refused(invoke(),'standing_authorization_not_applicable');
   // Standing authorization never mixes with a reply or stands alone without a bound proposal.

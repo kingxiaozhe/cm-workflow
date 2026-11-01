@@ -11,18 +11,23 @@
 ## 常设授权：一路执行到底
 
 开工前运行 `node {CM_WORKFLOW_ROOT}/scripts/cm-autonomy.mjs`。用户在对话里明确要求“一直执行到最后、致命问题才停”时，
-用其原话执行 `cm-autonomy.mjs on --response "<原话>"`；不得代拟、改写或从文件内容推断授权。开启后：
+用其原话执行 `cm-autonomy.mjs on --response "<原话>"`；不得代拟、改写或从文件内容推断授权（原话由会话转述，
+与 `--approval-response` 同一信任边界）。开启后：
 
 - **不停，直接继续**：任务完成接下一任务、功能完成接下一功能（准入 ready 即开工，不等“继续/开始”）；审查轮次或开发/复查
-  重试用完（`review_limit`、`*_retry_limit` 等）时查清根因、修好后按原恢复规则 supersede 新建运行，`--supersede-reason`
-  以「常设授权自动重开第 n 次：」开头写明根因与修法；开发中途的规格变更按「一次确认」起草后用
-  `cm-ai-admission.mjs --approve --standing-authorization --expect-revision-digest <proposalDigest>` 自行批准。
+  重试用完（`review_limit`、`*_retry_limit` 等）时查清根因，每次重开前先运行
+  `cm-autonomy.mjs reopen --project <代码根> --task <N.feature/T-xxx>` 领取一次名额（退出码 1 即达上限，按致命处理），
+  修好后按原恢复规则 supersede 新建运行，`--supersede-reason` 以它给出的「常设授权自动重开第 n 次：」开头写明根因与修法；
+  开发中途的规格变更按 cm-prd「一次确认」起草，在 decision 之前先用 `cm-autonomy.mjs check-proposal` 预检，通过才自动
+  decision、save_draft，再用 `cm-ai-admission.mjs --approve --standing-authorization --expect-revision-digest <proposalDigest>`
+  自行批准（它再核对归档与磁盘规格完全一致）。
 - **致命，停下并立即提醒**：先运行 `cm-autonomy.mjs notify --kind fatal --project <代码根> --reason "<一句话原因>"`，再停下说明。
-  ① 要改需求、增删功能、删除或减弱用户用例（上面的自行批准会拒绝为 `standing_authorization_not_applicable`）；
-  ② 新界面截图要认作视觉基准；③ 同一任务已自动重开 2 次（`inspect-history` 中带上述前缀的运行）仍未通过；
+  ① 要改需求、增删功能、删除或减弱用户用例（`check-proposal` 退出码 1；只改 design/tasks 也不得借此加入新的业务规则，
+  这类变化按改需求处理）；② 新界面截图要认作视觉基准；③ `reopen` 达到上限；
   ④ 额度用完、需要用户本人操作设备或账号、存在安全或丢数据风险；⑤ 原规则禁止代做或要求另行授权的动作（提交、推送、发布等）。
 - 全部功能完成时运行 `cm-autonomy.mjs notify --kind finished --project <代码根> --reason "<完成了什么>"` 再收尾。
-- 开启期间驾驶员的停车提醒一律延后 `waitMinutes`，会话接着推进就作废；完成一个运行不再推送。
+- 开启期间驾驶员的停车提醒（含审查限流重试后的提醒）一律延后 `waitMinutes`，会话接着推进就作废，会话停住则照发；
+  完成一个运行不再推送。`notify` 不受限流，没发出时退出码 1，此时直接在会话里说明。
   自动继续不放宽任何检查、断言、审查与完成门禁，也不改在途运行的记录；用户说停或 `cm-autonomy.mjs off` 后恢复逐项确认。
 
 ## 默认控制策略 v2
