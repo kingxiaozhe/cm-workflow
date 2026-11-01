@@ -153,4 +153,10 @@ test('a reopen slot left half-written by a crash still counts',t=>{
   // The second slot exists but its content never got written.
   fs.writeFileSync(path.join(dir,first.replace(/-1$/,'-2')),'');
   assert.deepEqual(takeReopen(h.dir,'1.login/T-004',{env:h.env}),{refused:true,count:2});
+  assert.equal(readReopens(h.env)[`${h.dir}|1.login/T-004`],2,'show counts the half-written slot too');
+  fs.writeFileSync(path.join(dir,first),'');
+  assert.deepEqual(Object.values(readReopens(h.env)),[2],'a group with no readable slot is still shown');
+  // A count kept in any other file stops the take instead of starting over.
+  fs.writeFileSync(path.join(h.dir,'autonomy-reopens.json'),'{}');
+  assert.throws(()=>takeReopen(h.dir,'1.login/T-009',{env:h.env}),/autonomy_reopens_legacy/);
 });

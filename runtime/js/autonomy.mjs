@@ -58,18 +58,23 @@ export function clearAutonomy({env=process.env}={}){
 // when all AUTO_REOPEN_LIMIT are taken (a fatal stop).
 const reopenKey=(project,task)=>`${path.resolve(project)}|${task}`;
 const slotPrefix=key=>createHash('sha256').update(key).digest('hex').slice(0,32);
+// Counted by slot file name, like takeReopen; a group whose files are all unreadable is still shown.
 export function readReopens(env=process.env){
-  const dir=path.join(autonomyHome(env),REOPEN_DIR),counts={};
-  let names;try{names=fs.readdirSync(dir);}catch(error){if(error.code==='ENOENT')return counts;throw error;}
+  const dir=path.join(autonomyHome(env),REOPEN_DIR),groups={};
+  let names;try{names=fs.readdirSync(dir);}catch(error){if(error.code==='ENOENT')return {};throw error;}
   for(const name of names){
+    const prefix=/^([0-9a-f]{32})-\d+$/.exec(name)?.[1];if(!prefix)continue;
     let key=null;try{key=JSON.parse(fs.readFileSync(path.join(dir,name),'utf8')).key;}catch{}
-    if(typeof key==='string'&&name.startsWith(`${slotPrefix(key)}-`))counts[key]=(counts[key]??0)+1;
+    const group=groups[prefix]??={key:null,count:0};group.count++;
+    if(typeof key==='string'&&slotPrefix(key)===prefix)group.key=key;
   }
-  return counts;
+  return Object.fromEntries(Object.entries(groups).map(([prefix,{key,count}])=>[key??`未识别|名额 ${prefix}`,count]));
 }
 export function takeReopen(project,task,{env=process.env,now=Date.now()}={}){
   if(typeof task!=='string'||!/^\d+\.[^/\\\s]+\/T-\d+$/.test(task))throw new Error('autonomy_task_invalid');
   const dir=path.join(autonomyHome(env),REOPEN_DIR),key=reopenKey(project,task);
+  // A count kept some other way is never taken as "none yet".
+  if(fs.existsSync(path.join(autonomyHome(env),'autonomy-reopens.json')))throw new Error('autonomy_reopens_legacy');
   fs.mkdirSync(dir,{recursive:true,mode:0o700});
   for(let slot=1;slot<=AUTO_REOPEN_LIMIT;slot++){
     try{fs.writeFileSync(path.join(dir,`${slotPrefix(key)}-${slot}`),JSON.stringify({key,slot,at:new Date(now).toISOString()})+'\n',{flag:'wx',mode:0o600});}
