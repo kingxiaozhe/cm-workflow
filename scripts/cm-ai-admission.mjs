@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {inspectCmAiAdmission,approveCmAiSpecs,matchesCmAiTaskSelection,explainCmAiTaskSelection} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 
-const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve --approval-response TEXT (no --yes)] [--feature N.slug] [--print-run-definition --scope a,b [--task T-xxx] [--requirements c,d] [--run-id X] [--repository-id Y]]';
+const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve --approval-response TEXT (no --yes) [--expect-revision-digest HEX]] [--feature N.slug] [--print-run-definition --scope a,b [--task T-xxx] [--requirements c,d] [--run-id X] [--repository-id Y]]';
 
 function parse(argv){
   const result={codeProjects:[]};
@@ -27,13 +27,15 @@ function parse(argv){
       if(index+1>=argv.length||result.codeProjects.length>=16)throw new Error('invalid arguments');
       result.codeProjects.push(argv[++index]);continue;
     }
-    const key={'--specs-dir':'specsDir','--approval-response':'approvalResponse','--feature':'feature',
+    const key={'--specs-dir':'specsDir','--approval-response':'approvalResponse','--expect-revision-digest':'expectRevisionDigest','--feature':'feature',
       '--scope':'scope','--task':'task','--requirements':'requirements','--run-id':'runId','--repository-id':'repositoryId'}[flag];
     if(!key||index+1>=argv.length||Object.hasOwn(result,key))throw new Error('invalid arguments');
     result[key]=argv[++index];
   }
   if(!result.specsDir||result.codeProjects.length===0)throw new Error('specs and code project paths are required');
   if(result.assumeYes&&Object.hasOwn(result,'approvalResponse'))throw new Error('approval input is duplicated');
+  if(Object.hasOwn(result,'expectRevisionDigest')&&(!result.approve||!/^[0-9a-f]{64}$/.test(result.expectRevisionDigest)))
+    throw new Error('--expect-revision-digest requires --approve and a 64-character lowercase hex digest');
   if(!result.printRunDefinition&&['scope','task','requirements','runId','repositoryId'].some(key=>Object.hasOwn(result,key)))
     throw new Error('run definition options require --print-run-definition');
   return result;

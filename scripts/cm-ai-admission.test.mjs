@@ -7,6 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {parseFeatureTaskText,validDependencies,identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
+import {buildManifest} from './cm-spec-manifest.mjs';
 
 const entry=fileURLToPath(new URL('./cm-ai-admission.mjs',import.meta.url));
 function fixture(run){
@@ -67,6 +68,44 @@ test('approve writes only after a whitelisted reply and preserves the original r
   const accepted=invoke('开始吧！');assert.equal(accepted.status,0,`stdout: ${accepted.stdout}\nstderr: ${accepted.stderr}`);
   assert.equal(JSON.parse(accepted.stdout).state,'ready');
   assert.equal(JSON.parse(fs.readFileSync(status,'utf8')).approval.response,'开始吧！');
+}));
+
+test('approve bound to a change proposal writes only for that saved proposal and its unchanged bytes',()=>fixture(({specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status'),digest='a'.repeat(64),other='b'.repeat(64);
+  const saved=()=>fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',revisionDigest:digest,
+    features:['1.login'],specFiles:buildManifest(specs),testCases:[]}));
+  const invoke=(...extra)=>spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,
+    '--approve','--approval-response','开始',...extra],{encoding:'utf8'});
+  const refused=(result,reason)=>{assert.equal(result.status,1,result.stderr);assert.equal(JSON.parse(result.stdout).approveRefused,reason);};
+  saved();const before=fs.readFileSync(status);
+  refused(invoke('--expect-revision-digest',other),'revision_digest_mismatch');
+  assert.deepEqual(fs.readFileSync(status),before);
+  // Bytes edited after the save are not the proposal the user confirmed.
+  fs.appendFileSync(path.join(specs,'1.login','tasks.md'),'- [ ] T-002: unreviewed\n');
+  refused(invoke('--expect-revision-digest',digest),'revision_files_changed');
+  assert.deepEqual(fs.readFileSync(status),before);
+  fs.writeFileSync(path.join(specs,'1.login','tasks.md'),'- [ ] T-001: implement login\n');
+  // An unbound status (no revisionDigest) is refused rather than approved under the flag.
+  fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',features:['1.login'],specFiles:buildManifest(specs),testCases:[]}));
+  refused(invoke('--expect-revision-digest',digest),'revision_digest_mismatch');
+  // An approved status that only reopened because the feature list changed is not this proposal's save.
+  fs.writeFileSync(status,JSON.stringify({status:'approved',revisionDigest:digest,features:['0.old'],
+    specFiles:buildManifest(specs),testCases:[]}));
+  refused(invoke('--expect-revision-digest',digest),'revision_digest_mismatch');
+  saved();
+  const accepted=invoke('--expect-revision-digest',digest);
+  assert.equal(accepted.status,0,`stdout: ${accepted.stdout}\nstderr: ${accepted.stderr}`);
+  assert.equal(JSON.parse(accepted.stdout).state,'ready');
+  const approved=JSON.parse(fs.readFileSync(status,'utf8'));
+  assert.equal(approved.status,'approved');assert.equal(approved.revisionDigest,digest);assert.equal(approved.approval.response,'开始');
+  // Already approved: the same reply cannot approve again or rewrite the record.
+  const once=fs.readFileSync(status),again=invoke('--expect-revision-digest',digest);
+  assert.equal(again.status,1);assert.ok(JSON.parse(again.stdout).approveRefused);assert.deepEqual(fs.readFileSync(status),once);
+  // The flag only binds an explicit approval; it never stands alone or takes a malformed digest.
+  for(const args of [['--expect-revision-digest',digest],['--approve','--approval-response','开始','--expect-revision-digest','ABC']]){
+    const result=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,...args],{encoding:'utf8'});
+    assert.equal(result.status,2);assert.match(result.stderr,/--expect-revision-digest requires --approve/);
+  }
 }));
 
 test('ready admission prints a directly valid run definition without writing the project',()=>fixture(({root,specs,code})=>{

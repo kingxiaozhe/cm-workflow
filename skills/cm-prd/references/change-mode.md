@@ -148,4 +148,5 @@ $cm-prd --change 2 ~/projects/my-app-specs
 `awaiting_review`，运行 `scripts/cm-spec-manifest.py` 重算 requirements/design/tasks/
 test-cases 的完整 `specFiles`，并同步兼容字段 `testCases`；按 `runtime/logging.md` 写 `spec_lifecycle/changed`、
 `spec_lifecycle/awaiting_review` 和 `run_done`。改过的规格等于没审过，N1 入口闸将
-再次要求确认。
+再次要求确认。开发中途的变更可把这次确认与提案确认合成一次：用户看完提案回“开始”，
+按 `js-change-recovery.md`「一次确认」绑定提案摘要写审批位，并在原开发会话继续（会话边界：继续本会话）。

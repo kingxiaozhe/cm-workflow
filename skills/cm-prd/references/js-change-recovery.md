@@ -22,6 +22,16 @@
    **全部**feature的specFiles/testCases，写原`.cm-specs-status=awaiting_review`。不自动approved，
    不勾任务、不运行cm-ai。输出C8摘要与路径，请人审后另行运行cm-ai。
 
+**一次确认（开发中途的变更）**：变更来自正在进行的cm-ai开发（如任务越界、需扩范围）时，不先问“要不要走规格变更”，
+直接起草（确认前不写规格）。`change_confirmation`卡片末尾只问一句：回复“开始”即确认这份提案、保存规格并放行开发；
+卡上同时写明放行后的具体动作（如为T-004开替代运行）。用户原话属于cm-ai的明确开始短语时，依次发送
+`decision {proposalDigest,approved:true,allowUserCaseChanges:false}`、`save_draft`，再立即运行
+`cm-ai-admission.mjs --approve --approval-response "<用户原话>" --expect-revision-digest <proposalDigest>`。
+该参数只在状态仍是这份提案保存后的`awaiting_review`、且规格文件与保存时一致才写审批位，否则拒绝为
+`revision_digest_mismatch`/`revision_files_changed`，此时停下重新展示。审批后按卡上写明的动作继续，不再追问。
+不适用：`changedUserCases`非空（用例删除/弱化须单独确认）、用户只回“确认提案”等非开始短语（只保存，停在
+`awaiting_review`，再按原规则请回“开始”）、或用户要求先人审规格。
+
 已完成任务行逐字保留；待办改变标CHANGED、作废标DROPPED、新任务标NEW。变更文档保留旧版本行并追加版本。
 不受影响的feature保持原样。允许提案列明并确认的新feature、删除feature及可选测试合同变化；
 带已完成任务的feature不能删除。删除feature整体移动到该提案的私有removed归档（连同资产），

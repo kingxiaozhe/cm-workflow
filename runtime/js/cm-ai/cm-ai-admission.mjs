@@ -393,6 +393,17 @@ export function approveCmAiSpecs(options){
   if(rejected)return refuse(rejected.approvalIntent!=='explicit'?'explicit_approval_required':rejected.reason);
   const specsDir=projectResults[0].specsDir,status=readSpecsStatus(specsDir);
   if(status.kind==='invalid')return refuse('spec_status_invalid');
+  // A change confirmed together with "开始" binds this approval to the saved proposal:
+  // any other status, or spec bytes that moved since the save, is not what the user saw.
+  if(options.expectRevisionDigest!==undefined){
+    if(status.kind!=='valid'||status.value.status!=='awaiting_review'
+      ||status.value.revisionDigest!==options.expectRevisionDigest)return refuse('revision_digest_mismatch');
+    let unchanged=false;
+    try{const saved=status.value.specFiles;
+      unchanged=Array.isArray(saved)&&JSON.stringify(saved)===JSON.stringify(buildManifest(specsDir));}
+    catch{}
+    if(!unchanged)return refuse('revision_files_changed');
+  }
   try{
     const discovered=discoverFeatures(specsDir);
     if(discovered.error)return refuse(discovered.error);
