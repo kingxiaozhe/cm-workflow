@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
+import {readAutonomy,standingArchiveProblem} from '../autonomy.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {buildManifest,verifyApprovedManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
@@ -381,18 +382,49 @@ export function inspectCmAiAdmission(options){
 // The CLI supplies every code project so no project can be skipped before writing.
 export function approveCmAiSpecs(options){
   const projects=options.codeProjects??[options.codeProject];
-  const inspect=()=>projects.map(codeProject=>inspectCmAiAdmission({...options,codeProject}));
+  // The standing authorization (autonomy.mjs) stands in for the reply, and only for a bound change proposal.
+  const standing=options.standingAuthorization===true?readAutonomy(options.env):null;
+  const inspect=()=>projects.map(codeProject=>inspectCmAiAdmission({...options,...(standing?.on?{assumeYes:true}:{}),codeProject}));
   const projectResults=inspect();
   const refuse=(approveRefused,approveReason=null)=>({projectResults,approveRefused,...(approveReason?{approveReason}:{})});
   if(options.assumeYes)return refuse('assume_yes_not_allowed');
-  if(typeof options.approvalResponse!=='string'||!options.approvalResponse.trim())
+  if(standing&&!standing.on)return refuse('standing_authorization_off');
+  if(standing&&(options.expectRevisionDigest===undefined||options.approvalResponse!==undefined))
+    return refuse('standing_authorization_not_applicable','常设授权只用于绑定提案摘要的规格变更，且不与用户原话同用');
+  const approvalResponse=standing?`常设授权（${standing.value.at}）：${standing.value.response}`:options.approvalResponse;
+  if(typeof approvalResponse!=='string'||!approvalResponse.trim())
     return refuse('approval_response_required');
   const allowed=new Set(['approval_write_required','spec_features_changed','test_cases_changed']);
   const rejected=projectResults.find(item=>item.state!=='awaiting_spec_approval'
     ||item.approvalIntent!=='explicit'||!allowed.has(item.reason));
   if(rejected)return refuse(rejected.approvalIntent!=='explicit'?'explicit_approval_required':rejected.reason);
-  const specsDir=projectResults[0].specsDir,status=readSpecsStatus(specsDir);
+  const specsDir=projectResults[0].specsDir,status=readSpecsStatus(specsDir,{withBytes:true});
   if(status.kind==='invalid')return refuse('spec_status_invalid');
+  // A change confirmed together with "开始" binds this approval to the saved proposal:
+  // any other status, or spec bytes that moved since the save, is not what the user saw.
+  // The write re-checks both just before its rename, so changes after this check are refused too.
+  let bound=null;
+  if(options.expectRevisionDigest!==undefined){
+    if(status.kind!=='valid'||status.value.status!=='awaiting_review'
+      ||status.value.revisionDigest!==options.expectRevisionDigest)return refuse('revision_digest_mismatch');
+    const statusFile=path.join(specsDir,'.cm-specs-status'),saved=status.value.specFiles;
+    const unchanged=()=>{try{return Array.isArray(saved)&&JSON.stringify(saved)===JSON.stringify(buildManifest(specsDir));}catch{return false;}};
+    if(!unchanged())return refuse('revision_files_changed');
+    if(standing){
+      let archive=null;
+      try{const file=path.join(specsDir,'.reviews',`prd-change-${options.expectRevisionDigest}.json`);
+        if(path.dirname(fs.realpathSync(file))===fs.realpathSync(path.join(specsDir,'.reviews')))archive=JSON.parse(fs.readFileSync(file,'utf8'));}
+      catch{}
+      const problem=standingArchiveProblem(specsDir,archive,options.expectRevisionDigest);
+      if(problem)return refuse('standing_authorization_not_applicable',`${problem}，要用户本人确认`);
+    }
+    // The baseline is the very bytes just validated, never a later re-read.
+    bound={statusBytes:status.bytes,saved,check(){
+      options.beforeApprovalWrite?.();
+      if(!fs.readFileSync(statusFile).equals(this.statusBytes)||!unchanged())
+        throw Object.assign(new Error('revision_changed_during_approval'),{code:'revision_changed_during_approval'});
+    }};
+  }
   try{
     const discovered=discoverFeatures(specsDir);
     if(discovered.error)return refuse(discovered.error);
@@ -427,11 +459,12 @@ export function approveCmAiSpecs(options){
         +differing.slice(0,5).map(item=>`第 ${item.line} 行 ${item.text}`).join('；')+`${differing.length>5?` 等 ${differing.length} 行`:''}`
         +'。此前的批准不把这些行当任务（或反之）；是示例就放进 ``` 围栏或删去，是任务就改用英文冒号「:」写法后再批准。');
     }
-    const specFiles=buildManifest(specsDir),at=new Date().toISOString();
+    const specFiles=bound?bound.saved:buildManifest(specsDir),at=new Date().toISOString();
     writeSpecsStatus(specsDir,{status:'approved',summaryDigest:status.value?.summaryDigest??null,at,
       features:discovered.names,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
-      approval:{response:options.approvalResponse,at},taskGrammar:grammar,
-      ...(status.value&&Object.hasOwn(status.value,'revisionDigest')?{revisionDigest:status.value.revisionDigest}:{})});
+      approval:{response:approvalResponse,at},taskGrammar:grammar,
+      ...(status.value&&Object.hasOwn(status.value,'revisionDigest')?{revisionDigest:status.value.revisionDigest}:{})},
+      bound?{beforeRename:()=>bound.check()}:{});
   }catch(error){return refuse(error.code??error.message);}
   return {projectResults:inspect()};
 }

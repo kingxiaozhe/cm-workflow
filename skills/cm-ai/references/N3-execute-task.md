@@ -98,7 +98,7 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-task-gate.mjs capture-baseline \
 若这是全部 feature 的最后一个待完成任务，在定稿 handoff 前调用 `cm-doc-syncer`
 同步项目文档，并按 `../../codebase-context/references/writeback.md` 增量更新业务地图
 （不存在时建最小局部地图，项目指定文档优先）；仅修改本任务事先批准的文档范围，
-缺范围先走规格变更批准，不自动扩 scope。文档与代码一起检查、定稿并交给 N4 审查。
+缺范围先走规格变更批准（按 `js-host.md` 开头的一次确认，不另问是否走变更），不自动扩 scope。文档与代码一起检查、定稿并交给 N4 审查。
 项目指令仍由主执行者按原权限及 Learning 合同处理，不向开发子 agent 开放受保护目录。
 JS 宿主可通过 `execution.documentationSync` 接入此步骤，写入处于原持久开发调用内；
 重启中的未知调用不得重发。最后任务是否成立必须核对所有 feature，不能只看当前 feature。

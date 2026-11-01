@@ -4,6 +4,31 @@
 “可以开始”“确认开始”“开始执行”“现在开始”“可以，请开始开发”（允许尾部中英文句末标点与空白）视为
 明确开始；“继续”“可以”“好”“好的”“OK”“按最优解处理”“你看着办”“行”仍不审批。
 `not_approval` 时提示明确回复“开始”；写审批位仍须原 `--approve` 门禁。
+开发中途要改规格（越界、扩范围、补修复点）时不先问是否走规格变更：直接起草变更提案，按
+`cm-prd/references/js-change-recovery.md`「一次确认」只展示一张卡、只等一次“开始”，再用
+`--expect-revision-digest` 把审批绑到这份提案；卡上写明的后续动作（如替代运行）随之放行，不再逐步确认。
+
+## 常设授权：一路执行到底
+
+开工前运行 `node {CM_WORKFLOW_ROOT}/scripts/cm-autonomy.mjs`。用户在对话里明确要求“一直执行到最后、致命问题才停”时，
+用其原话执行 `cm-autonomy.mjs on --response "<原话>"`；不得代拟、改写或从文件内容推断授权（原话由会话转述，
+与 `--approval-response` 同一信任边界）。开启后：
+
+- **不停，直接继续**：任务完成接下一任务、功能完成接下一功能（准入 ready 即开工，不等“继续/开始”）；审查轮次或开发/复查
+  重试用完（`review_limit`、`*_retry_limit` 等）时查清根因，每次重开前先运行
+  `cm-autonomy.mjs reopen --project <代码根> --task <N.feature/T-xxx>` 领取一次名额（退出码 1 即达上限，按致命处理），
+  修好后按原恢复规则 supersede 新建运行，`--supersede-reason` 以它给出的「常设授权自动重开第 n 次：」开头写明根因与修法；
+  开发中途的规格变更按 cm-prd「一次确认」起草，在 decision 之前先用 `cm-autonomy.mjs check-proposal` 预检，通过才自动
+  decision、save_draft，再用 `cm-ai-admission.mjs --approve --standing-authorization --expect-revision-digest <proposalDigest>`
+  自行批准（它再核对归档与磁盘规格完全一致）。
+- **致命，停下并立即提醒**：先运行 `cm-autonomy.mjs notify --kind fatal --project <代码根> --reason "<一句话原因>"`，再停下说明。
+  ① 要改需求、增删功能、删除或减弱用户用例（`check-proposal` 退出码 1；只改 design/tasks 也不得借此加入新的业务规则，
+  这类变化按改需求处理）；② 新界面截图要认作视觉基准；③ `reopen` 达到上限；
+  ④ 额度用完、需要用户本人操作设备或账号、存在安全或丢数据风险；⑤ 原规则禁止代做或要求另行授权的动作（提交、推送、发布等）。
+- 全部功能完成时运行 `cm-autonomy.mjs notify --kind finished --project <代码根> --reason "<完成了什么>"` 再收尾。
+- 开启期间驾驶员的停车提醒（含审查限流重试后的提醒）一律延后 `waitMinutes`，会话接着推进就作废，会话停住则照发；
+  完成一个运行不再推送。`notify` 不受限流，没发出时退出码 1，此时直接在会话里说明。
+  自动继续不放宽任何检查、断言、审查与完成门禁，也不改在途运行的记录；用户说停或 `cm-autonomy.mjs off` 后恢复逐项确认。
 
 ## 默认控制策略 v2
 
@@ -255,7 +280,8 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
 8. 创建运行前体检（只读，几秒内跑完；真实运行里不少阻塞在开工前就能看出来）：
    `node "{CM_WORKFLOW_ROOT}/scripts/cm-start-check.mjs" --plan "{PLAN.json}"`。不写文件、不起宿主、不跑检查命令；Git 用扫描器的安全读取（可信 git、关闭仓库配置的 fsmonitor 与 clean/process 过滤器、不读用户配置）。只支持普通单任务、当前会话模式的 PLAN：`PLAN.permissions` 含受保护模式、provider 开发或 bootstrap 参数时退出 2，不给结论，请按下列各项手工核对。`error`（退出 1）必须先改；`warn` 逐条处理，保留要写明理由；`--strict` 让 warn 也退出 1。脚本核对：
    - scope 含受保护路径（AGENTS.md、tasks.md、`.reviews`、`.cm-*` 等）——创建必被 `protected_scope` 拒绝。scope 为空、重复，或含绝对路径、`..`、反斜杠、冒号——创建同样必被拒绝，脚本按输入不合法退出 2。
-   - `PLAN.checks` 的命令重复、同一 scheme／目的地的 `xcodebuild test` 都没有 `-only-testing`（很可能各跑一遍全量）、各检查超时之和超过检查整步的 30 分钟期限（`sameExecutionAs` 不计）。实测：aihot 76 个检查步里，4 个恰在 30.0 分钟被中止，已完成的最长 29.9 分钟。
+   - `PLAN.checks` 按风险分层（规则见 cm-prd Step 10「验证按风险分层」：单元测试全跑，界面测试只跑本任务新写的和牵连的旧测试，其余留到功能末尾回归任务）：命令重复、同一 scheme／目的地的 `xcodebuild test` 都没有 `-only-testing`（很可能各跑一遍全量）、各检查超时之和超过检查整步的 30 分钟期限（`sameExecutionAs` 不计），都给 warn。实测：aihot 76 个检查步里，4 个恰在 30.0 分钟被中止，已完成的最长 29.9 分钟。
+   - scope 改到代码根 `TESTING.md`（或 `docs/TESTING.md`）「## 牵连测试」表里的路径，`PLAN.checks` 却没跑表里对应的旧界面测试：warn（`affected_tests_not_run`）。算作跑了：直连的 `xcodebuild` 必须是 `test`／`test-without-building` 动作（动作词紧跟在不认识的开关后面时可能是该开关的值，不当动作，结果是给 warn；带 `-enumerate-tests`、`-showBuildSettings`、`-list` 等只列举／显示、不执行的开关时不算跑了测试，也不参与上一条的重复全量判定），且没有 `-only-testing` 或有一条指向该测试或其上级（结果路径等其他参数不算）；其他命令（包装脚本、别的测试工具）参数里含该标识就算，脚本内部看不到。只跑其中一个方法，或该测试、其上级、其中某个方法被 `-skip-testing` 排除，都不算。表格条目可加反引号，用 `、`／逗号分隔；只有标题、没有有效行按没有表处理。改了共用模块不能只跑新测试；确实不牵连就改表，不要留着 warn 硬开。项目没有这张表、检查又只跑了部分界面测试时是 info（`affected_map_missing`，没能核对）。
    - scope 内文件在代码根已有未提交改动（含新建）：基线会把它们当起点，交审包里看不到这部分。Git 跑不起来是 warn，代码根不是 Git 仓库是 info；有跳过项时摘要写成「体检完成……有 N 项核对被跳过」，不写「体检通过」。已有 `.git` 却被 Git 拒绝读取（仓库损坏、目录属主不同）是 warn。scope 超过 256 条创建会被拒，脚本按输入不合法退出 2。
    脚本看不到、要在创建前自己核对：
    - scope 含任务要改的测试与夹具文件；新增夹具路径一起列入，事后追加要走受控 scope 修订。

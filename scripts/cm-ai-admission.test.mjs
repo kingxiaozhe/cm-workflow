@@ -5,8 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {parseFeatureTaskText,validDependencies,identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {parseFeatureTaskText,validDependencies,identifyApprovedBootstrapFeature,approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
+import {buildManifest} from './cm-spec-manifest.mjs';
 
 const entry=fileURLToPath(new URL('./cm-ai-admission.mjs',import.meta.url));
 function fixture(run){
@@ -67,6 +68,152 @@ test('approve writes only after a whitelisted reply and preserves the original r
   const accepted=invoke('开始吧！');assert.equal(accepted.status,0,`stdout: ${accepted.stdout}\nstderr: ${accepted.stderr}`);
   assert.equal(JSON.parse(accepted.stdout).state,'ready');
   assert.equal(JSON.parse(fs.readFileSync(status,'utf8')).approval.response,'开始吧！');
+}));
+
+test('approve bound to a change proposal writes only for that saved proposal and its unchanged bytes',()=>fixture(({specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status'),digest='a'.repeat(64),other='b'.repeat(64);
+  const saved=()=>fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',revisionDigest:digest,
+    features:['1.login'],specFiles:buildManifest(specs),testCases:[]}));
+  const invoke=(...extra)=>spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,
+    '--approve','--approval-response','开始',...extra],{encoding:'utf8'});
+  const refused=(result,reason)=>{assert.equal(result.status,1,result.stderr);assert.equal(JSON.parse(result.stdout).approveRefused,reason);};
+  saved();const before=fs.readFileSync(status);
+  refused(invoke('--expect-revision-digest',other),'revision_digest_mismatch');
+  assert.deepEqual(fs.readFileSync(status),before);
+  // Bytes edited after the save are not the proposal the user confirmed.
+  fs.appendFileSync(path.join(specs,'1.login','tasks.md'),'- [ ] T-002: unreviewed\n');
+  refused(invoke('--expect-revision-digest',digest),'revision_files_changed');
+  assert.deepEqual(fs.readFileSync(status),before);
+  fs.writeFileSync(path.join(specs,'1.login','tasks.md'),'- [ ] T-001: implement login\n');
+  // An unbound status (no revisionDigest) is refused rather than approved under the flag.
+  fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',features:['1.login'],specFiles:buildManifest(specs),testCases:[]}));
+  refused(invoke('--expect-revision-digest',digest),'revision_digest_mismatch');
+  // An approved status that only reopened because the feature list changed is not this proposal's save.
+  fs.writeFileSync(status,JSON.stringify({status:'approved',revisionDigest:digest,features:['0.old'],
+    specFiles:buildManifest(specs),testCases:[]}));
+  refused(invoke('--expect-revision-digest',digest),'revision_digest_mismatch');
+  saved();
+  const accepted=invoke('--expect-revision-digest',digest);
+  assert.equal(accepted.status,0,`stdout: ${accepted.stdout}\nstderr: ${accepted.stderr}`);
+  assert.equal(JSON.parse(accepted.stdout).state,'ready');
+  const approved=JSON.parse(fs.readFileSync(status,'utf8'));
+  assert.equal(approved.status,'approved');assert.equal(approved.revisionDigest,digest);assert.equal(approved.approval.response,'开始');
+  // Already approved: the same reply cannot approve again or rewrite the record.
+  const once=fs.readFileSync(status),again=invoke('--expect-revision-digest',digest);
+  assert.equal(again.status,1);assert.ok(JSON.parse(again.stdout).approveRefused);assert.deepEqual(fs.readFileSync(status),once);
+  // The flag only binds an explicit approval; it never stands alone or takes a malformed digest.
+  for(const args of [['--expect-revision-digest',digest],['--approve','--approval-response','开始','--expect-revision-digest','ABC']]){
+    const result=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,...args],{encoding:'utf8'});
+    assert.equal(result.status,2);assert.match(result.stderr,/--expect-revision-digest requires --approve/);
+  }
+}));
+
+test('bound approve refuses changes made after its first check, before the approval is written',()=>fixture(({specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status'),digest='a'.repeat(64);
+  const saved=(revision=digest)=>JSON.stringify({status:'awaiting_review',revisionDigest:revision,
+    features:['1.login'],specFiles:buildManifest(specs),testCases:[]});
+  const approve=beforeApprovalWrite=>approveCmAiSpecs({specsDir:specs,codeProjects:[code],approvalResponse:'开始',
+    expectRevisionDigest:digest,beforeApprovalWrite});
+  const requirements=path.join(specs,'1.login','requirements.md'),original=fs.readFileSync(requirements);
+  const interleavings={
+    'spec edited':()=>fs.appendFileSync(requirements,'unreviewed\n'),
+    'another proposal saved':()=>fs.writeFileSync(status,saved('b'.repeat(64))),
+    'duplicate approval landed':()=>assert.equal(approve().approveRefused,undefined)};
+  for(const [name,interleave] of Object.entries(interleavings)){
+    fs.writeFileSync(requirements,original);fs.writeFileSync(status,saved());
+    let after;
+    const result=approve(()=>{interleave();after=fs.readFileSync(status);});
+    assert.equal(result.approveRefused,'revision_changed_during_approval',name);
+    // The late writer never replaces what the interleaved writer left.
+    assert.deepEqual(fs.readFileSync(status),after,name);
+    assert.equal(fs.readdirSync(specs).filter(file=>file.startsWith('.cm-specs-status-')).length,0,name);
+  }
+  // Undisturbed, it approves with the manifest that was checked.
+  fs.writeFileSync(requirements,original);fs.writeFileSync(status,saved());
+  const checked=JSON.parse(fs.readFileSync(status,'utf8')).specFiles;
+  assert.equal(approve().approveRefused,undefined);
+  assert.deepEqual(JSON.parse(fs.readFileSync(status,'utf8')).specFiles,checked);
+}));
+
+test('bound approve compares against the exact status bytes it validated',()=>fixture(({specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status'),digest='a'.repeat(64);
+  const saved=revision=>JSON.stringify({status:'awaiting_review',revisionDigest:revision,
+    features:['1.login'],specFiles:buildManifest(specs),testCases:[]});
+  const approve=()=>approveCmAiSpecs({specsDir:specs,codeProjects:[code],approvalResponse:'开始',expectRevisionDigest:digest});
+  // Swap the status right after the bound check has parsed it (its first read of
+  // the status in the approval), before anything else of the approval runs.
+  const swapped={'another proposal saved':()=>fs.writeFileSync(status,saved('b'.repeat(64))),
+    'duplicate approval landed':()=>assert.equal(approve().approveRefused,undefined)};
+  const read=fs.readFileSync;
+  for(const [name,swap] of Object.entries(swapped)){
+    fs.writeFileSync(status,saved(digest));
+    let reads=0,armed=true,after;
+    fs.readFileSync=function(file,...rest){
+      const result=read.call(this,file,...rest);
+      // The inspections before the approval read the status too; count from the approval's own read.
+      if(armed&&String(file).endsWith('.cm-specs-status')&&++reads===2){armed=false;swap();after=read(status);}
+      return result;
+    };
+    let result;
+    try{result=approveCmAiSpecs({specsDir:specs,codeProjects:[code],approvalResponse:'开始',expectRevisionDigest:digest});}
+    finally{fs.readFileSync=read;}
+    assert.equal(armed,false,name);
+    assert.equal(result.approveRefused,'revision_changed_during_approval',name);
+    assert.deepEqual(read(status),after,name);
+  }
+}));
+
+test('standing authorization approves a bound scope-only change and nothing else',()=>fixture(({root,specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status'),digest='c'.repeat(64),home=path.join(root,'cm-home');
+  fs.mkdirSync(home);
+  const env={...process.env,CM_WORKFLOW_HOME:home};
+  const read=name=>fs.readFileSync(path.join(specs,'1.login',name),'utf8');
+  const requirements=read('requirements.md'),design=read('design.md');
+  const archive=(over={})=>{fs.mkdirSync(path.join(specs,'.reviews'),{recursive:true});
+    fs.writeFileSync(path.join(specs,'.reviews',`prd-change-${digest}.json`),JSON.stringify({version:1,
+      before:{directories:['1.login'],files:{'1.login/requirements.md':requirements,'1.login/design.md':design,'1.login/tasks.md':'- [ ] T-001: old\n'}},
+      proposal:{proposalDigest:digest,changedUserCases:[],removed:[],files:{'1.login/requirements.md':requirements,'1.login/design.md':design,
+        '1.login/tasks.md':'- [ ] T-001: implement login\n'},...over},selected:['1.login']}));};
+  const saved=()=>fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',revisionDigest:digest,
+    features:['1.login'],specFiles:buildManifest(specs),testCases:[]}));
+  const invoke=(...extra)=>spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--approve',
+    '--standing-authorization','--expect-revision-digest',digest,...extra],{encoding:'utf8',env});
+  const refused=(result,reason)=>{assert.equal(result.status,1,result.stderr);assert.equal(JSON.parse(result.stdout).approveRefused,reason);};
+  saved();archive();const before=fs.readFileSync(status);
+  refused(invoke(),'standing_authorization_off');
+  fs.writeFileSync(path.join(home,'autonomy.json'),JSON.stringify({version:1,mode:'until_fatal',response:'就按这份',at:'2026-11-01T00:00:00.000Z'}));
+  for(const [over,why] of [[{files:{'1.login/requirements.md':'# changed\n','1.login/design.md':design,'1.login/tasks.md':'- [ ] T-001: implement login\n'}},/改了需求/],[{changedUserCases:[{id:'TC-001'}]},/用户用例/],
+    [{proposalDigest:'d'.repeat(64)},/找不到/],[{files:[]},/不完整/]]){
+    archive(over);const result=invoke();refused(result,'standing_authorization_not_applicable');
+    assert.match(JSON.parse(result.stdout).approveReason,why);assert.deepEqual(fs.readFileSync(status),before);
+  }
+  // The archive must be what the specs hold: a requirement edited on disk, or an extra feature, is not this proposal.
+  archive();
+  fs.writeFileSync(path.join(specs,'1.login','requirements.md'),'# Requirements\nnew rule\n');saved();
+  let result=invoke();refused(result,'standing_authorization_not_applicable');assert.match(JSON.parse(result.stdout).approveReason,/规格文件与提案不一致/);
+  fs.writeFileSync(path.join(specs,'1.login','requirements.md'),requirements);
+  const extra=path.join(specs,'2.new');fs.mkdirSync(extra);
+  for(const name of ['requirements.md','design.md','tasks.md'])fs.writeFileSync(path.join(extra,name),'- [ ] T-001: x\n');
+  fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',revisionDigest:digest,features:['1.login','2.new'],specFiles:buildManifest(specs),testCases:[]}));
+  result=invoke();refused(result,'standing_authorization_not_applicable');assert.match(JSON.parse(result.stdout).approveReason,/功能与提案不一致/);
+  fs.rmSync(extra,{recursive:true});
+  // A spec file the archive does not list (here a test contract with a user case) cannot ride along.
+  fs.writeFileSync(path.join(specs,'1.login','test-cases.json'),JSON.stringify({schemaVersion:1,feature:'login',cases:[]}));saved();
+  result=invoke();refused(result,'standing_authorization_not_applicable');assert.match(JSON.parse(result.stdout).approveReason,/规格文件与提案不一致/);
+  fs.rmSync(path.join(specs,'1.login','test-cases.json'));saved();
+  fs.rmSync(path.join(specs,'.reviews',`prd-change-${digest}.json`));
+  refused(invoke(),'standing_authorization_not_applicable');
+  // Standing authorization never mixes with a reply or stands alone without a bound proposal.
+  for(const args of [['--approval-response','开始'],['--yes']]){
+    const result=invoke(...args);assert.equal(result.status,2);assert.match(result.stderr,/--standing-authorization requires/);
+  }
+  const unbound=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--approve','--standing-authorization'],{encoding:'utf8',env});
+  assert.equal(unbound.status,2);
+  archive();
+  const accepted=invoke();assert.equal(accepted.status,0,`stdout: ${accepted.stdout}\nstderr: ${accepted.stderr}`);
+  const approved=JSON.parse(fs.readFileSync(status,'utf8'));
+  assert.equal(approved.status,'approved');assert.equal(approved.revisionDigest,digest);
+  assert.equal(approved.approval.response,'常设授权（2026-11-01T00:00:00.000Z）：就按这份');
 }));
 
 test('ready admission prints a directly valid run definition without writing the project',()=>fixture(({root,specs,code})=>{

@@ -12,6 +12,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {createHash,randomUUID} from 'node:crypto';
 import {readRegularFileSync} from './notify-safe-read.mjs';
+import {readAutonomy} from './autonomy.mjs';
 
 export const NOTIFY_LIMITS=Object.freeze({sameKeyMs:6*3600*1000,perDay:150,
   windowMs:10*60000,perWindow:3,followUpMs:2*3600*1000,attentionTtlMs:24*3600*1000,
@@ -563,7 +564,7 @@ function dropPending(home,hash,before){
   if(pending?.missing||pending&&pending.at>before)return false;
   return removePending(home,hash);
 }
-function reserve(home,{hash,attention=null,event,code=null,pendingToken},now,limits){
+function reserve(home,{hash,attention=null,event,code=null,pendingToken,urgent=false},now,limits){
   return withState(home,state=>{
     // A deferred waiter fires only for its own still-pending stop; any other
     // notice about the same session supersedes a pending one.
@@ -587,7 +588,10 @@ function reserve(home,{hash,attention=null,event,code=null,pendingToken},now,lim
       else return {status:'duplicate'};
     }
     const persist=extra=>writeState(home,{version:2,keys,attention:records,sends,suppressed:state.suppressed,...extra});
-    if(sends.filter(at=>now-at<limits.windowMs).length>=limits.perWindow||sends.length>=NOTIFY_LIMITS.perDay){
+    // A fatal stop (urgent) is never rate limited. A deferred stop already waited and its
+    // pending record is gone, so neither limit may lose it for good: each one is a real
+    // stop the session did not move past within waitMinutes, which already bounds them.
+    if(!urgent&&pendingToken===undefined&&(sends.filter(at=>now-at<limits.windowMs).length>=limits.perWindow||sends.length>=NOTIFY_LIMITS.perDay)){
       const status=sends.length>=NOTIFY_LIMITS.perDay?'rate_day':'rate_window';
       return persist({suppressed:state.suppressed+1})?{status}:{status:'state_write_failed'};
     }
@@ -696,7 +700,7 @@ export async function sendPendingNotice(fields,token,{env=process.env,attempts=2
 const LEVEL_OF=Object.freeze({done:'passive',idle:'active'});
 // Never throws and never waits. Returns {sent, reason}; sent means the command
 // was handed to the detached launcher, whose own failures go to notify.log.
-export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_LIMITS.commandTimeoutMs,pendingToken}={}){
+export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_LIMITS.commandTimeoutMs,pendingToken,urgent=false}={}){
   try{
     const config=readNotifyConfig(env);if(!config)return {sent:false,reason:'off'};
     if(typeof fields?.key!=='string'||!fields.key)return {sent:false,reason:'invalid_key'};
@@ -704,7 +708,7 @@ export function notify(fields,{env=process.env,now=Date.now(),timeoutMs=NOTIFY_L
     const attention=typeof fields.attentionKey==='string'&&fields.attentionKey&&Object.hasOwn(ATTENTION_LEVEL,event)
       ?keyHash(fields.attentionKey):null;
     if(pendingToken!==undefined&&attention===null)return {sent:false,reason:'cancelled'};
-    const reserved=reserve(home,{hash,attention,event,code:clean(fields.code,64)||null,pendingToken},now,config);
+    const reserved=reserve(home,{hash,attention,event,code:clean(fields.code,64)||null,pendingToken,urgent:urgent===true},now,config);
     if(reserved.status!=='ok'){
       if(!['duplicate','cancelled'].includes(reserved.status))appendNotifyLog(home,now,{event,workflow,hash,result:`skipped ${reserved.status}`});
       return {sent:false,reason:reserved.status};
@@ -964,11 +968,15 @@ export function classifyDriveResult(workflow,row){
   const kind=classifyRaw(workflow,row);
   return kind==='ask'?'stuck':kind;
 }
-export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
+export function driveNotice({host,cwd,args=[],operation,row=null,failure=null,env=process.env}){
   if(READ_ONLY.has(operation))return null;
+  // Under the standing authorization the session decides: a finished unit is not news,
+  // and any stop waits waitMinutes (dropped once the session moves on). Fatal stops
+  // page at once from the session itself (cm-autonomy.mjs notify).
+  const autonomous=readAutonomy(env).on;
   const workflow=path.basename(String(host??'')).replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
   const raw=failure?'stuck':classifyRaw(workflow,row),kind=raw==='ask'?'stuck':raw,ask=raw==='ask';
-  if(!kind)return null;
+  if(!kind||autonomous&&kind==='done')return null;
   const done=kind==='done',result=obj(row?.result),progress=obj(result.progress),nested=obj(result.result);
   const code=text(failure)??text(row?.error?.code)??text(result.code)??text(result.reason)??text(result.blocker)
     ??text(progress.blocker)??text(result.overall)??text(nested.overall)??text(result.state)??text(result.status)??text(result.stage)??null;
@@ -981,7 +989,7 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   const reviewFailure=typeof result.reviewFailure==='string'&&/^reviewer_[a-z_]{1,48}$/.test(result.reviewFailure)?result.reviewFailure:null;
   const developFailure=typeof result.developFailure==='string'&&/^developer_[a-z_]{1,48}$/.test(result.developFailure)?result.developFailure:null;
   const pendingAction=typeof result.pendingAction==='string'&&/^[a-z_]{1,32}$/.test(result.pendingAction)?result.pendingAction:null;
-  const delivery=done||immediateStop({codes:[failure,row?.error?.code,result.code,result.reason,result.blocker,progress.blocker],
+  const delivery=done||!autonomous&&immediateStop({codes:[failure,row?.error?.code,result.code,result.reason,result.blocker,progress.blocker],
     state:text(result.state),pendingAction,ask})?'now':'later';
   return {key:[workflow,run,task??'',attempt??'',stage??'',done?'done':code??''].join('|'),
     ...(done?{}:{attentionKey:attentionKeyFor({project,session,workflow,runId:run})}),
@@ -989,7 +997,8 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
     code:done?(text(result.code)??text(result.overall)??text(nested.overall)??'done'):code,
     // A finished unit is the natural point to start a fresh session (runtime/model-efficiency.md).
     nextAction:done?'会话边界：换新会话，下一项在新会话里运行':text(result.guidance?.nextStep)??text(progress.nextAction)??text(result.nextAction),
-    ...(reviewFailure?{reviewFailure}:{}),...(developFailure?{developFailure}:{}),...(pendingAction&&!done?{pendingAction}:{}),...(ask?{ask:true}:{}),delivery};
+    ...(reviewFailure?{reviewFailure}:{}),...(developFailure?{developFailure}:{}),...(pendingAction&&!done?{pendingAction}:{}),...(ask?{ask:true}:{}),delivery,
+    ...(autonomous?{autonomous:true}:{})};
 }
 
 // The attention record a successful, non-read-only step clears (see clearAttention).

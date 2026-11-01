@@ -105,7 +105,8 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
   // the session moves on (notifyLater); a rate limit after this driver's own
   // retries is sent at once and says how many were tried.
   const sendNotice=(fields,mod)=>{
-    if(!failureCode&&rateLimitedReview(finalRow)&&retriesDone>0)fields={...fields,rateLimitRetries:retriesDone,delivery:'now'};
+    // Under the standing authorization the session retries on its own: the stop still waits.
+    if(!failureCode&&rateLimitedReview(finalRow)&&retriesDone>0)fields={...fields,rateLimitRetries:retriesDone,...(fields.autonomous?{}:{delivery:'now'})};
     if(fields.delivery!=='later')return mod.notify(fields);
     // An unsafe pending directory already produced its once-a-day fault notice
     // and the stop is not sent; any other failure to schedule (state busy, write

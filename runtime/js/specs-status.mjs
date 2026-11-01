@@ -10,7 +10,8 @@ const revisionHex=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const iso=value=>typeof value==='string'&&/^\d{4}-\d\d-\d\dT/.test(value)&&Number.isFinite(Date.parse(value));
 const need=condition=>{if(!condition)throw new Error('spec_status_invalid');};
 
-export function readSpecsStatus(specsDir){
+// withBytes also returns the exact bytes parsed, for callers that must later detect any replacement.
+export function readSpecsStatus(specsDir,{withBytes=false}={}){
   const target=path.join(specsDir,'.cm-specs-status');
   try{
     // lstat distinguishes a missing file from a dangling, invalid symlink.
@@ -19,14 +20,14 @@ export function readSpecsStatus(specsDir){
   try{
     const root=fs.realpathSync(specsDir),real=fs.realpathSync(target),relative=path.relative(root,real);
     need(relative!==''&&relative!=='..'&&!relative.startsWith(`..${path.sep}`)&&!path.isAbsolute(relative));
-    const source=JSON.parse(fs.readFileSync(real,'utf8'));
+    const bytes=fs.readFileSync(real),source=JSON.parse(bytes.toString('utf8'));
     need(record(source)&&['approved','awaiting_review'].includes(source.status));
     if(Object.hasOwn(source,'revisionDigest'))need(revisionHex(source.revisionDigest));
     // Keep optional fields absent: admission distinguishes legacy omissions.
     const value=Object.fromEntries(fields.filter(key=>Object.hasOwn(source,key)).map(key=>[key,source[key]]));
     if(record(value.approval))value.approval=Object.fromEntries(['response','at']
       .filter(key=>Object.hasOwn(value.approval,key)).map(key=>[key,value.approval[key]]));
-    return {kind:'valid',value};
+    return withBytes?{kind:'valid',value,bytes}:{kind:'valid',value};
   }catch{return {kind:'invalid'};}
 }
 

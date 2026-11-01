@@ -7,6 +7,12 @@ import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {notify,notifyLater,cancelPendingNotice,clearAttention,sessionTitle,scheduleWaitNotice,driveProgressKey,readNotifyConfig,writeHostRegistry,scheduleIdleNotice,parseNotifyConfig,buildNotifyMessage,normalizeNotifyText,driveNotice,NOTIFY_LIMITS,NOTIFY_WORKFLOWS,DEFAULT_NOTIFY_TEXT} from '../runtime/js/notify.mjs';
 
+// driveNotice and spawned drivers read the standing authorization from the default
+// home: point it at an empty directory, never the tester's own ~/.cm-workflow.
+if(!process.env.CM_WORKFLOW_HOME){
+  process.env.CM_WORKFLOW_HOME=fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-default-home-'));
+  process.on('exit',()=>fs.rmSync(process.env.CM_WORKFLOW_HOME,{recursive:true,force:true}));
+}
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
 const BRIDGE=new URL('../runtime/js/cm-ai/host-tool-bridge.mjs',import.meta.url).href;
