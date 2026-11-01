@@ -395,14 +395,19 @@ export function approveCmAiSpecs(options){
   if(status.kind==='invalid')return refuse('spec_status_invalid');
   // A change confirmed together with "开始" binds this approval to the saved proposal:
   // any other status, or spec bytes that moved since the save, is not what the user saw.
+  // The write re-checks both just before its rename, so changes after this check are refused too.
+  let bound=null;
   if(options.expectRevisionDigest!==undefined){
     if(status.kind!=='valid'||status.value.status!=='awaiting_review'
       ||status.value.revisionDigest!==options.expectRevisionDigest)return refuse('revision_digest_mismatch');
-    let unchanged=false;
-    try{const saved=status.value.specFiles;
-      unchanged=Array.isArray(saved)&&JSON.stringify(saved)===JSON.stringify(buildManifest(specsDir));}
-    catch{}
-    if(!unchanged)return refuse('revision_files_changed');
+    const statusFile=path.join(specsDir,'.cm-specs-status'),saved=status.value.specFiles;
+    const unchanged=()=>{try{return Array.isArray(saved)&&JSON.stringify(saved)===JSON.stringify(buildManifest(specsDir));}catch{return false;}};
+    if(!unchanged())return refuse('revision_files_changed');
+    bound={statusBytes:fs.readFileSync(statusFile),saved,check(){
+      options.beforeApprovalWrite?.();
+      if(!fs.readFileSync(statusFile).equals(this.statusBytes)||!unchanged())
+        throw Object.assign(new Error('revision_changed_during_approval'),{code:'revision_changed_during_approval'});
+    }};
   }
   try{
     const discovered=discoverFeatures(specsDir);
@@ -438,11 +443,12 @@ export function approveCmAiSpecs(options){
         +differing.slice(0,5).map(item=>`第 ${item.line} 行 ${item.text}`).join('；')+`${differing.length>5?` 等 ${differing.length} 行`:''}`
         +'。此前的批准不把这些行当任务（或反之）；是示例就放进 ``` 围栏或删去，是任务就改用英文冒号「:」写法后再批准。');
     }
-    const specFiles=buildManifest(specsDir),at=new Date().toISOString();
+    const specFiles=bound?bound.saved:buildManifest(specsDir),at=new Date().toISOString();
     writeSpecsStatus(specsDir,{status:'approved',summaryDigest:status.value?.summaryDigest??null,at,
       features:discovered.names,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
       approval:{response:options.approvalResponse,at},taskGrammar:grammar,
-      ...(status.value&&Object.hasOwn(status.value,'revisionDigest')?{revisionDigest:status.value.revisionDigest}:{})});
+      ...(status.value&&Object.hasOwn(status.value,'revisionDigest')?{revisionDigest:status.value.revisionDigest}:{})},
+      bound?{beforeRename:()=>bound.check()}:{});
   }catch(error){return refuse(error.code??error.message);}
   return {projectResults:inspect()};
 }

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {parseFeatureTaskText,validDependencies,identifyApprovedBootstrapFeature} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
+import {parseFeatureTaskText,validDependencies,identifyApprovedBootstrapFeature,approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 import {buildManifest} from './cm-spec-manifest.mjs';
 
@@ -106,6 +106,33 @@ test('approve bound to a change proposal writes only for that saved proposal and
     const result=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,...args],{encoding:'utf8'});
     assert.equal(result.status,2);assert.match(result.stderr,/--expect-revision-digest requires --approve/);
   }
+}));
+
+test('bound approve refuses changes made after its first check, before the approval is written',()=>fixture(({specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status'),digest='a'.repeat(64);
+  const saved=(revision=digest)=>JSON.stringify({status:'awaiting_review',revisionDigest:revision,
+    features:['1.login'],specFiles:buildManifest(specs),testCases:[]});
+  const approve=beforeApprovalWrite=>approveCmAiSpecs({specsDir:specs,codeProjects:[code],approvalResponse:'开始',
+    expectRevisionDigest:digest,beforeApprovalWrite});
+  const requirements=path.join(specs,'1.login','requirements.md'),original=fs.readFileSync(requirements);
+  const interleavings={
+    'spec edited':()=>fs.appendFileSync(requirements,'unreviewed\n'),
+    'another proposal saved':()=>fs.writeFileSync(status,saved('b'.repeat(64))),
+    'duplicate approval landed':()=>assert.equal(approve().approveRefused,undefined)};
+  for(const [name,interleave] of Object.entries(interleavings)){
+    fs.writeFileSync(requirements,original);fs.writeFileSync(status,saved());
+    let after;
+    const result=approve(()=>{interleave();after=fs.readFileSync(status);});
+    assert.equal(result.approveRefused,'revision_changed_during_approval',name);
+    // The late writer never replaces what the interleaved writer left.
+    assert.deepEqual(fs.readFileSync(status),after,name);
+    assert.equal(fs.readdirSync(specs).filter(file=>file.startsWith('.cm-specs-status-')).length,0,name);
+  }
+  // Undisturbed, it approves with the manifest that was checked.
+  fs.writeFileSync(requirements,original);fs.writeFileSync(status,saved());
+  const checked=JSON.parse(fs.readFileSync(status,'utf8')).specFiles;
+  assert.equal(approve().approveRefused,undefined);
+  assert.deepEqual(JSON.parse(fs.readFileSync(status,'utf8')).specFiles,checked);
 }));
 
 test('ready admission prints a directly valid run definition without writing the project',()=>fixture(({root,specs,code})=>{
