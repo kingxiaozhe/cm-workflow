@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {main} from './cm-autonomy.mjs';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {readAutonomy,standingProposalProblem} from '../runtime/js/autonomy.mjs';
 import {driveNotice,notifyLater,sendPendingNotice} from '../runtime/js/notify.mjs';
 
@@ -126,6 +128,20 @@ test('a deferred stop that comes due is not lost to the window limit',async t=>{
   assert.equal((await notifyLater(fields,{env:h.env,delayMs:5*60000})).scheduled,true);
   const pending=path.join(h.dir,'notify-pending'),[name]=fs.readdirSync(pending);
   const token=JSON.parse(fs.readFileSync(path.join(pending,name),'utf8')).token,now=Date.now();
-  fs.writeFileSync(path.join(h.dir,'notify-state.json'),JSON.stringify({version:2,keys:{},attention:{},sends:[now-3000,now-2000,now-1000],suppressed:0}));
+  // Both the window and the daily limit are already used up.
+  fs.writeFileSync(path.join(h.dir,'notify-state.json'),JSON.stringify({version:2,keys:{},attention:{},
+    sends:Array.from({length:150},(_,i)=>now-1000-i*1000),suppressed:0}));
   assert.deepEqual(await sendPendingNotice(fields,token,{env:h.env}),{sent:true,reason:'launched'});
+});
+
+test('concurrent reopen takers never pass the limit',async t=>{
+  const h=home(t),cli=fileURLToPath(new URL('./cm-autonomy.mjs',import.meta.url));
+  h.run('on','--response','就按这份');
+  const take=()=>new Promise(resolve=>{
+    const child=spawn(process.execPath,[cli,'reopen','--project',h.dir,'--task','1.login/T-004'],{env:h.env,stdio:'ignore'});
+    child.on('exit',code=>resolve(code));
+  });
+  const codes=await Promise.all(Array.from({length:8},take));
+  assert.deepEqual(codes.sort(),[0,0,1,1,1,1,1,1]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(h.dir,'autonomy-reopens.json'),'utf8'))[`${h.dir}|1.login/T-004`],2);
 });

@@ -61,12 +61,31 @@ export function readReopens(env=process.env){
     throw new Error('autonomy_reopens_invalid');
   return read.value;
 }
+// Read, check, increment and replace under one cross-process lock, so concurrent
+// takers (any project) never lose a count. A lock older than 30 s is a dead taker's.
+function withReopenLock(env,run){
+  const home=autonomyHome(env),lock=path.join(home,`${REOPEN_FILE}.lock`),pause=new Int32Array(new SharedArrayBuffer(4));
+  fs.mkdirSync(home,{recursive:true,mode:0o700});
+  for(let attempt=0;;attempt++){
+    let fd;
+    try{fd=fs.openSync(lock,'wx',0o600);}
+    catch(error){
+      if(error.code!=='EEXIST')throw error;
+      try{if(Date.now()-fs.statSync(lock).mtimeMs>30000)fs.unlinkSync(lock);}catch{}
+      if(attempt>=100)throw new Error('autonomy_reopens_busy');
+      Atomics.wait(pause,0,0,50);continue;
+    }
+    try{return run();}finally{fs.closeSync(fd);try{fs.unlinkSync(lock);}catch{}}
+  }
+}
 export function takeReopen(project,task,{env=process.env}={}){
   if(typeof task!=='string'||!/^\d+\.[^/\\\s]+\/T-\d+$/.test(task))throw new Error('autonomy_task_invalid');
-  const counts=readReopens(env),key=reopenKey(project,task),count=counts[key]??0;
-  if(count>=AUTO_REOPEN_LIMIT)return {refused:true,count};
-  writeJson(autonomyHome(env),REOPEN_FILE,{...counts,[key]:count+1});
-  return {count:count+1};
+  return withReopenLock(env,()=>{
+    const counts=readReopens(env),key=reopenKey(project,task),count=counts[key]??0;
+    if(count>=AUTO_REOPEN_LIMIT)return {refused:true,count};
+    writeJson(autonomyHome(env),REOPEN_FILE,{...counts,[key]:count+1});
+    return {count:count+1};
+  });
 }
 
 const DOCUMENTS=['requirements.md','design.md','tasks.md'],CHANGEABLE=new Set(['design.md','tasks.md','test-cases.json']);
@@ -117,12 +136,21 @@ export function standingArchiveProblem(specsDir,archive,digest){
   if(!record(archive)||archive.proposal?.proposalDigest!==digest)return '找不到这份提案的归档';
   const problem=standingProposalProblem(archive.before,archive.proposal);
   if(problem)return problem;
-  const {before,proposal}=archive,read=file=>{try{return fs.readFileSync(path.join(specsDir,file),'utf8');}catch{return null;}};
+  const {before,proposal}=archive;
   const listed=fs.readdirSync(specsDir).filter(dir=>/^\d+\./.test(dir)).sort();
   if(listed.join('\n')!==[...before.directories].sort().join('\n'))return '规格目录的功能与提案不一致';
-  for(const [file,content] of Object.entries(proposal.files))if(read(file)!==content)return '规格文件与提案不一致';
-  const changed=new Set(Object.keys(proposal.files).map(file=>file.split('/')[0]));
-  for(const [file,content] of Object.entries(before.files))if(!changed.has(file.split('/')[0])&&read(file)!==content)
-    return '规格文件与提案不一致';
+  // What the save leaves (cm-prd change.mjs applyPrdChange): the selected features hold
+  // exactly the proposal's files, every other feature its original ones. Compare the
+  // complete spec file set, so a file the archive does not list cannot stay on disk.
+  const selected=Array.isArray(archive.selected)?archive.selected:[...new Set(Object.keys(proposal.files).map(file=>file.split('/')[0]))];
+  const expected={...before.files};
+  for(const file of Object.keys(expected))if(selected.includes(file.split('/')[0]))delete expected[file];
+  Object.assign(expected,proposal.files);
+  const onDisk={};
+  for(const dir of listed)for(const name of [...DOCUMENTS,'test-cases.json']){
+    const file=`${dir}/${name}`;try{onDisk[file]=fs.readFileSync(path.join(specsDir,file),'utf8');}catch(error){if(error.code!=='ENOENT')return '规格文件与提案不一致';}
+  }
+  const files=Object.keys(expected).sort();
+  if(files.join('\n')!==Object.keys(onDisk).sort().join('\n')||files.some(file=>onDisk[file]!==expected[file]))return '规格文件与提案不一致';
   return null;
 }

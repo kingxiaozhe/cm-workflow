@@ -588,9 +588,10 @@ function reserve(home,{hash,attention=null,event,code=null,pendingToken,urgent=f
       else return {status:'duplicate'};
     }
     const persist=extra=>writeState(home,{version:2,keys,attention:records,sends,suppressed:state.suppressed,...extra});
-    // A fatal stop (urgent) is never rate limited; a deferred stop already waited and
-    // its pending record is gone, so the window limit would lose it for good.
-    if(!urgent&&(pendingToken===undefined&&sends.filter(at=>now-at<limits.windowMs).length>=limits.perWindow||sends.length>=NOTIFY_LIMITS.perDay)){
+    // A fatal stop (urgent) is never rate limited. A deferred stop already waited and its
+    // pending record is gone, so neither limit may lose it for good: each one is a real
+    // stop the session did not move past within waitMinutes, which already bounds them.
+    if(!urgent&&pendingToken===undefined&&(sends.filter(at=>now-at<limits.windowMs).length>=limits.perWindow||sends.length>=NOTIFY_LIMITS.perDay)){
       const status=sends.length>=NOTIFY_LIMITS.perDay?'rate_day':'rate_window';
       return persist({suppressed:state.suppressed+1})?{status}:{status:'state_write_failed'};
     }

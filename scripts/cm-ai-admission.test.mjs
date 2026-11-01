@@ -196,7 +196,11 @@ test('standing authorization approves a bound scope-only change and nothing else
   for(const name of ['requirements.md','design.md','tasks.md'])fs.writeFileSync(path.join(extra,name),'- [ ] T-001: x\n');
   fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',revisionDigest:digest,features:['1.login','2.new'],specFiles:buildManifest(specs),testCases:[]}));
   result=invoke();refused(result,'standing_authorization_not_applicable');assert.match(JSON.parse(result.stdout).approveReason,/功能与提案不一致/);
-  fs.rmSync(extra,{recursive:true});saved();
+  fs.rmSync(extra,{recursive:true});
+  // A spec file the archive does not list (here a test contract with a user case) cannot ride along.
+  fs.writeFileSync(path.join(specs,'1.login','test-cases.json'),JSON.stringify({schemaVersion:1,feature:'login',cases:[]}));saved();
+  result=invoke();refused(result,'standing_authorization_not_applicable');assert.match(JSON.parse(result.stdout).approveReason,/规格文件与提案不一致/);
+  fs.rmSync(path.join(specs,'1.login','test-cases.json'));saved();
   fs.rmSync(path.join(specs,'.reviews',`prd-change-${digest}.json`));
   refused(invoke(),'standing_authorization_not_applicable');
   // Standing authorization never mixes with a reply or stands alone without a bound proposal.
