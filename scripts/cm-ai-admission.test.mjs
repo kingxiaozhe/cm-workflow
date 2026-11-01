@@ -135,6 +135,34 @@ test('bound approve refuses changes made after its first check, before the appro
   assert.deepEqual(JSON.parse(fs.readFileSync(status,'utf8')).specFiles,checked);
 }));
 
+test('bound approve compares against the exact status bytes it validated',()=>fixture(({specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status'),digest='a'.repeat(64);
+  const saved=revision=>JSON.stringify({status:'awaiting_review',revisionDigest:revision,
+    features:['1.login'],specFiles:buildManifest(specs),testCases:[]});
+  const approve=()=>approveCmAiSpecs({specsDir:specs,codeProjects:[code],approvalResponse:'开始',expectRevisionDigest:digest});
+  // Swap the status right after the bound check has parsed it (its first read of
+  // the status in the approval), before anything else of the approval runs.
+  const swapped={'another proposal saved':()=>fs.writeFileSync(status,saved('b'.repeat(64))),
+    'duplicate approval landed':()=>assert.equal(approve().approveRefused,undefined)};
+  const read=fs.readFileSync;
+  for(const [name,swap] of Object.entries(swapped)){
+    fs.writeFileSync(status,saved(digest));
+    let reads=0,armed=true,after;
+    fs.readFileSync=function(file,...rest){
+      const result=read.call(this,file,...rest);
+      // The inspections before the approval read the status too; count from the approval's own read.
+      if(armed&&String(file).endsWith('.cm-specs-status')&&++reads===2){armed=false;swap();after=read(status);}
+      return result;
+    };
+    let result;
+    try{result=approveCmAiSpecs({specsDir:specs,codeProjects:[code],approvalResponse:'开始',expectRevisionDigest:digest});}
+    finally{fs.readFileSync=read;}
+    assert.equal(armed,false,name);
+    assert.equal(result.approveRefused,'revision_changed_during_approval',name);
+    assert.deepEqual(read(status),after,name);
+  }
+}));
+
 test('ready admission prints a directly valid run definition without writing the project',()=>fixture(({root,specs,code})=>{
   fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],testCases:[]}));
   fs.writeFileSync(path.join(code,'package.json'),JSON.stringify({name:'login-app'}));

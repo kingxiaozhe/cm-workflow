@@ -391,7 +391,7 @@ export function approveCmAiSpecs(options){
   const rejected=projectResults.find(item=>item.state!=='awaiting_spec_approval'
     ||item.approvalIntent!=='explicit'||!allowed.has(item.reason));
   if(rejected)return refuse(rejected.approvalIntent!=='explicit'?'explicit_approval_required':rejected.reason);
-  const specsDir=projectResults[0].specsDir,status=readSpecsStatus(specsDir);
+  const specsDir=projectResults[0].specsDir,status=readSpecsStatus(specsDir,{withBytes:true});
   if(status.kind==='invalid')return refuse('spec_status_invalid');
   // A change confirmed together with "开始" binds this approval to the saved proposal:
   // any other status, or spec bytes that moved since the save, is not what the user saw.
@@ -403,7 +403,8 @@ export function approveCmAiSpecs(options){
     const statusFile=path.join(specsDir,'.cm-specs-status'),saved=status.value.specFiles;
     const unchanged=()=>{try{return Array.isArray(saved)&&JSON.stringify(saved)===JSON.stringify(buildManifest(specsDir));}catch{return false;}};
     if(!unchanged())return refuse('revision_files_changed');
-    bound={statusBytes:fs.readFileSync(statusFile),saved,check(){
+    // The baseline is the very bytes just validated, never a later re-read.
+    bound={statusBytes:status.bytes,saved,check(){
       options.beforeApprovalWrite?.();
       if(!fs.readFileSync(statusFile).equals(this.statusBytes)||!unchanged())
         throw Object.assign(new Error('revision_changed_during_approval'),{code:'revision_changed_during_approval'});
