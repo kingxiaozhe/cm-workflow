@@ -5,6 +5,8 @@
 
 ## 未发布
 
+## 0.19.0 — 2026-11-01
+
 - **新增常设授权：一路执行到底，只在致命问题时停下并用手机提醒**（aihot 第二批实测：四个功能停下等人十几次）：
   - 用户明确要求后，用 `cm-autonomy.mjs on --response "<用户原话>"` 开启，`off` 关闭，`show` 查看；只认用户原话。
   - 开启后任务、功能之间不再等「继续」；审查轮次或重试用完时查清根因后自动新建运行重做，每次先用 `cm-autonomy.mjs reopen` 领名额，同一任务最多自动重开 2 次；开发中途只改设计、任务或生成用例的规格变更先用 `cm-autonomy.mjs check-proposal` 预检，再用 `cm-ai-admission.mjs --approve --standing-authorization` 自行批准（核对归档与磁盘规格完全一致），改需求、增删功能或动用户用例的一律拒绝。

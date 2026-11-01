@@ -17,6 +17,12 @@
 
 ## 最近更新
 
+**0.19.0**
+
+- **每个任务的测试按风险分层**：`/cm:prd` 拆任务时单元测试全跑，界面测试只跑本任务新写的和直接牵连的旧测试，功能末尾再统一回归；改了共用模块却没跑牵连测试，开工体检会提醒（牵连关系记在项目 `TESTING.md` 的「牵连测试」表）。
+- **开发中途改规格只确认一次**：提案卡只问一次「开始」，确认、保存、放行一步完成；审批绑定到你确认的那份提案。
+- **常设授权：一路执行到底**：用 `cm-autonomy.mjs on` 按你的原话开启后，任务之间自动继续、审查没过自动修好重做（同一任务最多 2 次），只在改需求、额度用完等致命问题时停下并立即手机提醒。默认关闭。详见[更新日志](CHANGELOG.md)。
+
 **0.18.0**
 
 - **升级注意（开发方式）**：`/cm-ai` 新批次默认按 `tasks.md` 自动分组，符合条件的任务各自在 worktree 开发，独立任务可并行；功能末任务、要用设备的任务和部分 QA 场景仍在主目录串行。项目配置写 `parallel: {enabled: false}` 完全不建 worktree，写 `parallel: {worktree_all: false}` 恢复以前只让可并行任务进 worktree 的做法。升级前已开始的运行和批次按原配置恢复。
@@ -256,7 +262,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.18.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.19.0 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
