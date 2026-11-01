@@ -12,6 +12,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {createHash,randomUUID} from 'node:crypto';
 import {readRegularFileSync} from './notify-safe-read.mjs';
+import {readAutonomy} from './autonomy.mjs';
 
 export const NOTIFY_LIMITS=Object.freeze({sameKeyMs:6*3600*1000,perDay:150,
   windowMs:10*60000,perWindow:3,followUpMs:2*3600*1000,attentionTtlMs:24*3600*1000,
@@ -964,11 +965,15 @@ export function classifyDriveResult(workflow,row){
   const kind=classifyRaw(workflow,row);
   return kind==='ask'?'stuck':kind;
 }
-export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
+export function driveNotice({host,cwd,args=[],operation,row=null,failure=null,env=process.env}){
   if(READ_ONLY.has(operation))return null;
+  // Under the standing authorization the session decides: a finished unit is not news,
+  // and any stop waits waitMinutes (dropped once the session moves on). Fatal stops
+  // page at once from the session itself (cm-autonomy.mjs notify).
+  const autonomous=readAutonomy(env).on;
   const workflow=path.basename(String(host??'')).replace(/-host\.mjs$/,'').replace(/\.mjs$/,'')||'cm';
   const raw=failure?'stuck':classifyRaw(workflow,row),kind=raw==='ask'?'stuck':raw,ask=raw==='ask';
-  if(!kind)return null;
+  if(!kind||autonomous&&kind==='done')return null;
   const done=kind==='done',result=obj(row?.result),progress=obj(result.progress),nested=obj(result.result);
   const code=text(failure)??text(row?.error?.code)??text(result.code)??text(result.reason)??text(result.blocker)
     ??text(progress.blocker)??text(result.overall)??text(nested.overall)??text(result.state)??text(result.status)??text(result.stage)??null;
@@ -981,7 +986,7 @@ export function driveNotice({host,cwd,args=[],operation,row=null,failure=null}){
   const reviewFailure=typeof result.reviewFailure==='string'&&/^reviewer_[a-z_]{1,48}$/.test(result.reviewFailure)?result.reviewFailure:null;
   const developFailure=typeof result.developFailure==='string'&&/^developer_[a-z_]{1,48}$/.test(result.developFailure)?result.developFailure:null;
   const pendingAction=typeof result.pendingAction==='string'&&/^[a-z_]{1,32}$/.test(result.pendingAction)?result.pendingAction:null;
-  const delivery=done||immediateStop({codes:[failure,row?.error?.code,result.code,result.reason,result.blocker,progress.blocker],
+  const delivery=done||!autonomous&&immediateStop({codes:[failure,row?.error?.code,result.code,result.reason,result.blocker,progress.blocker],
     state:text(result.state),pendingAction,ask})?'now':'later';
   return {key:[workflow,run,task??'',attempt??'',stage??'',done?'done':code??''].join('|'),
     ...(done?{}:{attentionKey:attentionKeyFor({project,session,workflow,runId:run})}),

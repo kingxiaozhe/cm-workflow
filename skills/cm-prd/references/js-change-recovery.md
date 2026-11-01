@@ -29,6 +29,9 @@
 `cm-ai-admission.mjs --approve --approval-response "<用户原话>" --expect-revision-digest <proposalDigest>`。
 该参数只在状态仍是这份提案保存后的`awaiting_review`、且规格文件与保存时一致才写审批位，否则拒绝为
 `revision_digest_mismatch`/`revision_files_changed`；核对后到写入前有变化则拒绝为`revision_changed_during_approval`。被拒时停下重新展示。审批后按卡上写明的动作继续，不再追问。
+常设授权开启时（`cm-autonomy.mjs`，见cm-ai `js-host.md`「常设授权」）不展示卡片等回复：直接decision、save_draft，再用
+`--approve --standing-authorization --expect-revision-digest <proposalDigest>`；它只批准不改需求、不增删功能、不动用户用例的提案，
+被拒为`standing_authorization_not_applicable`时按致命停车提醒用户并展示提案（此时save_draft已写入，规格停在待审）。
 不适用：`changedUserCases`非空（用例删除/弱化须单独确认）、用户只回“确认提案”等非开始短语（只保存，停在
 `awaiting_review`，再按原规则请回“开始”）、或用户要求先人审规格。
 

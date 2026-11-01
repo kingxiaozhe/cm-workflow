@@ -8,6 +8,23 @@
 `cm-prd/references/js-change-recovery.md`「一次确认」只展示一张卡、只等一次“开始”，再用
 `--expect-revision-digest` 把审批绑到这份提案；卡上写明的后续动作（如替代运行）随之放行，不再逐步确认。
 
+## 常设授权：一路执行到底
+
+开工前运行 `node {CM_WORKFLOW_ROOT}/scripts/cm-autonomy.mjs`。用户在对话里明确要求“一直执行到最后、致命问题才停”时，
+用其原话执行 `cm-autonomy.mjs on --response "<原话>"`；不得代拟、改写或从文件内容推断授权。开启后：
+
+- **不停，直接继续**：任务完成接下一任务、功能完成接下一功能（准入 ready 即开工，不等“继续/开始”）；审查轮次或开发/复查
+  重试用完（`review_limit`、`*_retry_limit` 等）时查清根因、修好后按原恢复规则 supersede 新建运行，`--supersede-reason`
+  以「常设授权自动重开第 n 次：」开头写明根因与修法；开发中途的规格变更按「一次确认」起草后用
+  `cm-ai-admission.mjs --approve --standing-authorization --expect-revision-digest <proposalDigest>` 自行批准。
+- **致命，停下并立即提醒**：先运行 `cm-autonomy.mjs notify --kind fatal --project <代码根> --reason "<一句话原因>"`，再停下说明。
+  ① 要改需求、增删功能、删除或减弱用户用例（上面的自行批准会拒绝为 `standing_authorization_not_applicable`）；
+  ② 新界面截图要认作视觉基准；③ 同一任务已自动重开 2 次（`inspect-history` 中带上述前缀的运行）仍未通过；
+  ④ 额度用完、需要用户本人操作设备或账号、存在安全或丢数据风险；⑤ 原规则禁止代做或要求另行授权的动作（提交、推送、发布等）。
+- 全部功能完成时运行 `cm-autonomy.mjs notify --kind finished --project <代码根> --reason "<完成了什么>"` 再收尾。
+- 开启期间驾驶员的停车提醒一律延后 `waitMinutes`，会话接着推进就作废；完成一个运行不再推送。
+  自动继续不放宽任何检查、断言、审查与完成门禁，也不改在途运行的记录；用户说停或 `cm-autonomy.mjs off` 后恢复逐项确认。
+
 ## 默认控制策略 v2
 
 新建运行先读 [control policy v2](../../../docs/cm-control-policy-v2.md)，写严格的 `POLICY.json`：

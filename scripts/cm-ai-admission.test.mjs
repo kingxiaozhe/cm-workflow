@@ -163,6 +163,44 @@ test('bound approve compares against the exact status bytes it validated',()=>fi
   }
 }));
 
+test('standing authorization approves a bound scope-only change and nothing else',()=>fixture(({root,specs,code})=>{
+  const status=path.join(specs,'.cm-specs-status'),digest='c'.repeat(64),home=path.join(root,'cm-home');
+  fs.mkdirSync(home);
+  const env={...process.env,CM_WORKFLOW_HOME:home};
+  const requirements=fs.readFileSync(path.join(specs,'1.login','requirements.md'),'utf8');
+  const archive=(over={})=>{fs.mkdirSync(path.join(specs,'.reviews'),{recursive:true});
+    fs.writeFileSync(path.join(specs,'.reviews',`prd-change-${digest}.json`),JSON.stringify({version:1,
+      before:{directories:['1.login'],files:{'1.login/requirements.md':requirements,'1.login/tasks.md':'- [ ] T-001: old\n'}},
+      proposal:{proposalDigest:digest,changedUserCases:[],removed:[],files:{'1.login/requirements.md':requirements,
+        '1.login/tasks.md':'- [ ] T-001: implement login\n'},...over},selected:['1.login']}));};
+  const saved=()=>fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',revisionDigest:digest,
+    features:['1.login'],specFiles:buildManifest(specs),testCases:[]}));
+  const invoke=(...extra)=>spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--approve',
+    '--standing-authorization','--expect-revision-digest',digest,...extra],{encoding:'utf8',env});
+  const refused=(result,reason)=>{assert.equal(result.status,1,result.stderr);assert.equal(JSON.parse(result.stdout).approveRefused,reason);};
+  saved();archive();const before=fs.readFileSync(status);
+  refused(invoke(),'standing_authorization_off');
+  fs.writeFileSync(path.join(home,'autonomy.json'),JSON.stringify({version:1,mode:'until_fatal',response:'就按这份',at:'2026-11-01T00:00:00.000Z'}));
+  for(const [over,why] of [[{files:{'1.login/requirements.md':'# changed\n'}},/改了需求/],[{changedUserCases:[{id:'TC-001'}]},/用户用例/],
+    [{proposalDigest:'d'.repeat(64)},/找不到/]]){
+    archive(over);const result=invoke();refused(result,'standing_authorization_not_applicable');
+    assert.match(JSON.parse(result.stdout).approveReason,why);assert.deepEqual(fs.readFileSync(status),before);
+  }
+  fs.rmSync(path.join(specs,'.reviews',`prd-change-${digest}.json`));
+  refused(invoke(),'standing_authorization_not_applicable');
+  // Standing authorization never mixes with a reply or stands alone without a bound proposal.
+  for(const args of [['--approval-response','开始'],['--yes']]){
+    const result=invoke(...args);assert.equal(result.status,2);assert.match(result.stderr,/--standing-authorization requires/);
+  }
+  const unbound=spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--approve','--standing-authorization'],{encoding:'utf8',env});
+  assert.equal(unbound.status,2);
+  archive();
+  const accepted=invoke();assert.equal(accepted.status,0,`stdout: ${accepted.stdout}\nstderr: ${accepted.stderr}`);
+  const approved=JSON.parse(fs.readFileSync(status,'utf8'));
+  assert.equal(approved.status,'approved');assert.equal(approved.revisionDigest,digest);
+  assert.equal(approved.approval.response,'常设授权（2026-11-01T00:00:00.000Z）：就按这份');
+}));
+
 test('ready admission prints a directly valid run definition without writing the project',()=>fixture(({root,specs,code})=>{
   fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],testCases:[]}));
   fs.writeFileSync(path.join(code,'package.json'),JSON.stringify({name:'login-app'}));

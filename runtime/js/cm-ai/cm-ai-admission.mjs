@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
+import {readAutonomy,standingChangeProblem} from '../autonomy.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {buildManifest,verifyApprovedManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
@@ -381,11 +382,17 @@ export function inspectCmAiAdmission(options){
 // The CLI supplies every code project so no project can be skipped before writing.
 export function approveCmAiSpecs(options){
   const projects=options.codeProjects??[options.codeProject];
-  const inspect=()=>projects.map(codeProject=>inspectCmAiAdmission({...options,codeProject}));
+  // The standing authorization (autonomy.mjs) stands in for the reply, and only for a bound change proposal.
+  const standing=options.standingAuthorization===true?readAutonomy(options.env):null;
+  const inspect=()=>projects.map(codeProject=>inspectCmAiAdmission({...options,...(standing?.on?{assumeYes:true}:{}),codeProject}));
   const projectResults=inspect();
   const refuse=(approveRefused,approveReason=null)=>({projectResults,approveRefused,...(approveReason?{approveReason}:{})});
   if(options.assumeYes)return refuse('assume_yes_not_allowed');
-  if(typeof options.approvalResponse!=='string'||!options.approvalResponse.trim())
+  if(standing&&!standing.on)return refuse('standing_authorization_off');
+  if(standing&&(options.expectRevisionDigest===undefined||options.approvalResponse!==undefined))
+    return refuse('standing_authorization_not_applicable','常设授权只用于绑定提案摘要的规格变更，且不与用户原话同用');
+  const approvalResponse=standing?`常设授权（${standing.value.at}）：${standing.value.response}`:options.approvalResponse;
+  if(typeof approvalResponse!=='string'||!approvalResponse.trim())
     return refuse('approval_response_required');
   const allowed=new Set(['approval_write_required','spec_features_changed','test_cases_changed']);
   const rejected=projectResults.find(item=>item.state!=='awaiting_spec_approval'
@@ -403,6 +410,14 @@ export function approveCmAiSpecs(options){
     const statusFile=path.join(specsDir,'.cm-specs-status'),saved=status.value.specFiles;
     const unchanged=()=>{try{return Array.isArray(saved)&&JSON.stringify(saved)===JSON.stringify(buildManifest(specsDir));}catch{return false;}};
     if(!unchanged())return refuse('revision_files_changed');
+    if(standing){
+      let archive=null;
+      try{const file=path.join(specsDir,'.reviews',`prd-change-${options.expectRevisionDigest}.json`);
+        if(path.dirname(fs.realpathSync(file))===fs.realpathSync(path.join(specsDir,'.reviews')))archive=JSON.parse(fs.readFileSync(file,'utf8'));}
+      catch{}
+      const problem=standingChangeProblem(archive,options.expectRevisionDigest);
+      if(problem)return refuse('standing_authorization_not_applicable',`${problem}，要用户本人确认`);
+    }
     // The baseline is the very bytes just validated, never a later re-read.
     bound={statusBytes:status.bytes,saved,check(){
       options.beforeApprovalWrite?.();
@@ -447,7 +462,7 @@ export function approveCmAiSpecs(options){
     const specFiles=bound?bound.saved:buildManifest(specsDir),at=new Date().toISOString();
     writeSpecsStatus(specsDir,{status:'approved',summaryDigest:status.value?.summaryDigest??null,at,
       features:discovered.names,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
-      approval:{response:options.approvalResponse,at},taskGrammar:grammar,
+      approval:{response:approvalResponse,at},taskGrammar:grammar,
       ...(status.value&&Object.hasOwn(status.value,'revisionDigest')?{revisionDigest:status.value.revisionDigest}:{})},
       bound?{beforeRename:()=>bound.check()}:{});
   }catch(error){return refuse(error.code??error.message);}
