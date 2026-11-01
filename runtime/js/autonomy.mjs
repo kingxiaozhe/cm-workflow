@@ -7,9 +7,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 
-export const AUTONOMY_FILE='autonomy.json',AUTONOMY_OFF_FILE='autonomy.off.json',REOPEN_FILE='autonomy-reopens.json',AUTO_REOPEN_LIMIT=2;
+export const AUTONOMY_FILE='autonomy.json',AUTONOMY_OFF_FILE='autonomy.off.json',REOPEN_DIR='autonomy-reopens',AUTO_REOPEN_LIMIT=2;
 // Same directory as notify.json (notify.mjs notifyHome); kept here so notify.mjs can import this module.
 export const autonomyHome=(env=process.env)=>path.resolve(env.CM_WORKFLOW_HOME||path.join(os.homedir(),'.cm-workflow'));
 const iso=value=>typeof value==='string'&&/^\d{4}-\d\d-\d\dT/.test(value)&&Number.isFinite(Date.parse(value));
@@ -51,54 +51,32 @@ export function clearAutonomy({env=process.env}={}){
   catch(error){if(error.code==='ENOENT')return false;throw error;}
 }
 
-// Automatic reopens per task, counted before each reopen: {count} when allowed,
-// {refused:true,count} at the limit (a fatal stop).
+// Automatic reopens per task. Each reopen claims one numbered slot file with an
+// exclusive create, which is atomic: concurrent takers (any project) can never
+// claim the same slot, and there is no lock to reclaim. A slot left half-written
+// by a crash still counts. {count} when a slot was claimed, {refused:true,count}
+// when all AUTO_REOPEN_LIMIT are taken (a fatal stop).
 const reopenKey=(project,task)=>`${path.resolve(project)}|${task}`;
+const slotPrefix=key=>createHash('sha256').update(key).digest('hex').slice(0,32);
 export function readReopens(env=process.env){
-  const read=readJson(path.join(autonomyHome(env),REOPEN_FILE));
-  if(read.missing)return {};
-  if(read.invalid||!record(read.value)||!Object.values(read.value).every(count=>Number.isSafeInteger(count)&&count>=0))
-    throw new Error('autonomy_reopens_invalid');
-  return read.value;
-}
-// Read, check, increment and replace under one cross-process lock, so concurrent
-// takers (any project) never lose a count. The lock names its holder; only a lock
-// whose holder process is gone is reclaimed (never by age alone), and a lock is
-// removed only by its own holder. When that cannot be shown, the take is busy.
-const lockBody=raw=>{try{const value=JSON.parse(raw);return Number.isSafeInteger(value?.pid)&&typeof value.token==='string'?value:null;}catch{return null;}};
-const readLockFile=file=>{try{return fs.readFileSync(file,'utf8');}catch{return null;}};
-const holderGone=pid=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}};
-function withReopenLock(env,run){
-  const home=autonomyHome(env),lock=path.join(home,`${REOPEN_FILE}.lock`),pause=new Int32Array(new SharedArrayBuffer(4));
-  const mine=JSON.stringify({pid:process.pid,token:randomUUID()});
-  fs.mkdirSync(home,{recursive:true,mode:0o700});
-  for(let attempt=0;;attempt++){
-    try{fs.writeFileSync(lock,mine,{flag:'wx',mode:0o600});}
-    catch(error){
-      if(error.code!=='EEXIST')throw error;
-      const seen=readLockFile(lock),holder=seen===null?null:lockBody(seen);
-      if(holder&&holderGone(holder.pid)){
-        // Move it aside, then make sure it was the very lock judged dead; anything else goes back.
-        const grave=`${lock}.dead-${randomUUID()}`;
-        try{fs.renameSync(lock,grave);
-          if(readLockFile(grave)!==seen){try{fs.linkSync(grave,lock);}catch{}}
-          fs.unlinkSync(grave);}catch{}
-        continue;
-      }
-      if(attempt>=100)throw new Error('autonomy_reopens_busy');
-      Atomics.wait(pause,0,0,50);continue;
-    }
-    try{return run();}finally{if(readLockFile(lock)===mine){try{fs.unlinkSync(lock);}catch{}}}
+  const dir=path.join(autonomyHome(env),REOPEN_DIR),counts={};
+  let names;try{names=fs.readdirSync(dir);}catch(error){if(error.code==='ENOENT')return counts;throw error;}
+  for(const name of names){
+    let key=null;try{key=JSON.parse(fs.readFileSync(path.join(dir,name),'utf8')).key;}catch{}
+    if(typeof key==='string'&&name.startsWith(`${slotPrefix(key)}-`))counts[key]=(counts[key]??0)+1;
   }
+  return counts;
 }
-export function takeReopen(project,task,{env=process.env}={}){
+export function takeReopen(project,task,{env=process.env,now=Date.now()}={}){
   if(typeof task!=='string'||!/^\d+\.[^/\\\s]+\/T-\d+$/.test(task))throw new Error('autonomy_task_invalid');
-  return withReopenLock(env,()=>{
-    const counts=readReopens(env),key=reopenKey(project,task),count=counts[key]??0;
-    if(count>=AUTO_REOPEN_LIMIT)return {refused:true,count};
-    writeJson(autonomyHome(env),REOPEN_FILE,{...counts,[key]:count+1});
-    return {count:count+1};
-  });
+  const dir=path.join(autonomyHome(env),REOPEN_DIR),key=reopenKey(project,task);
+  fs.mkdirSync(dir,{recursive:true,mode:0o700});
+  for(let slot=1;slot<=AUTO_REOPEN_LIMIT;slot++){
+    try{fs.writeFileSync(path.join(dir,`${slotPrefix(key)}-${slot}`),JSON.stringify({key,slot,at:new Date(now).toISOString()})+'\n',{flag:'wx',mode:0o600});}
+    catch(error){if(error.code==='EEXIST')continue;throw error;}
+    return {count:slot};
+  }
+  return {refused:true,count:AUTO_REOPEN_LIMIT};
 }
 
 const DOCUMENTS=['requirements.md','design.md','tasks.md'],CHANGEABLE=new Set(['design.md','tasks.md','test-cases.json']);
