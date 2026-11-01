@@ -4,9 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {main} from './cm-autonomy.mjs';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {readAutonomy,standingProposalProblem} from '../runtime/js/autonomy.mjs';
+import {readAutonomy,standingProposalProblem,takeReopen} from '../runtime/js/autonomy.mjs';
 import {driveNotice,notifyLater,sendPendingNotice} from '../runtime/js/notify.mjs';
 
 function home(t){
@@ -144,4 +144,18 @@ test('concurrent reopen takers never pass the limit',async t=>{
   const codes=await Promise.all(Array.from({length:8},take));
   assert.deepEqual(codes.sort(),[0,0,1,1,1,1,1,1]);
   assert.equal(JSON.parse(fs.readFileSync(path.join(h.dir,'autonomy-reopens.json'),'utf8'))[`${h.dir}|1.login/T-004`],2);
+});
+
+test('a reopen lock is reclaimed only from a holder that is gone, never by age',t=>{
+  const h=home(t),lock=path.join(h.dir,'autonomy-reopens.json.lock'),old=new Date(Date.now()-3600*1000);
+  // A live holder (this process) keeps its lock however old it is: the take is busy, the lock untouched.
+  const live=JSON.stringify({pid:process.pid,token:'live'});
+  fs.writeFileSync(lock,live);fs.utimesSync(lock,old,old);
+  assert.throws(()=>takeReopen(h.dir,'1.login/T-004',{env:h.env}),/autonomy_reopens_busy/);
+  assert.equal(fs.readFileSync(lock,'utf8'),live);
+  // A holder that has exited is reclaimed and the take goes ahead.
+  const dead=spawnSync(process.execPath,['-e','']).pid;
+  fs.writeFileSync(lock,JSON.stringify({pid:dead,token:'dead'}));
+  assert.deepEqual(takeReopen(h.dir,'1.login/T-004',{env:h.env}),{count:1});
+  assert.equal(fs.existsSync(lock),false);
 });

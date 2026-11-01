@@ -62,20 +62,33 @@ export function readReopens(env=process.env){
   return read.value;
 }
 // Read, check, increment and replace under one cross-process lock, so concurrent
-// takers (any project) never lose a count. A lock older than 30 s is a dead taker's.
+// takers (any project) never lose a count. The lock names its holder; only a lock
+// whose holder process is gone is reclaimed (never by age alone), and a lock is
+// removed only by its own holder. When that cannot be shown, the take is busy.
+const lockBody=raw=>{try{const value=JSON.parse(raw);return Number.isSafeInteger(value?.pid)&&typeof value.token==='string'?value:null;}catch{return null;}};
+const readLockFile=file=>{try{return fs.readFileSync(file,'utf8');}catch{return null;}};
+const holderGone=pid=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}};
 function withReopenLock(env,run){
   const home=autonomyHome(env),lock=path.join(home,`${REOPEN_FILE}.lock`),pause=new Int32Array(new SharedArrayBuffer(4));
+  const mine=JSON.stringify({pid:process.pid,token:randomUUID()});
   fs.mkdirSync(home,{recursive:true,mode:0o700});
   for(let attempt=0;;attempt++){
-    let fd;
-    try{fd=fs.openSync(lock,'wx',0o600);}
+    try{fs.writeFileSync(lock,mine,{flag:'wx',mode:0o600});}
     catch(error){
       if(error.code!=='EEXIST')throw error;
-      try{if(Date.now()-fs.statSync(lock).mtimeMs>30000)fs.unlinkSync(lock);}catch{}
+      const seen=readLockFile(lock),holder=seen===null?null:lockBody(seen);
+      if(holder&&holderGone(holder.pid)){
+        // Move it aside, then make sure it was the very lock judged dead; anything else goes back.
+        const grave=`${lock}.dead-${randomUUID()}`;
+        try{fs.renameSync(lock,grave);
+          if(readLockFile(grave)!==seen){try{fs.linkSync(grave,lock);}catch{}}
+          fs.unlinkSync(grave);}catch{}
+        continue;
+      }
       if(attempt>=100)throw new Error('autonomy_reopens_busy');
       Atomics.wait(pause,0,0,50);continue;
     }
-    try{return run();}finally{fs.closeSync(fd);try{fs.unlinkSync(lock);}catch{}}
+    try{return run();}finally{if(readLockFile(lock)===mine){try{fs.unlinkSync(lock);}catch{}}}
   }
 }
 export function takeReopen(project,task,{env=process.env}={}){
