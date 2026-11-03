@@ -534,8 +534,12 @@ for(const size of [65536,65537,1024*1024+4])test(`design byte limit ${size} pres
 
 test('new specification requires bound acceptance evidence while legacy receipt eligibility is retained',t=>{
   const f=specificationFixture(t);
-  f.writeSpec('tasks.md',fs.readFileSync(path.join(f.specsRoot,f.feature,'tasks.md'),'utf8').replace('T-001: implement','T-001: 必验: implement'));f.approve();
+  // Commands count only under an explicit declaration (acceptance-contract.mjs
+  // commandDeclaration); the shared fixture's bare verification line is prose.
+  f.writeSpec('tasks.md',fs.readFileSync(path.join(f.specsRoot,f.feature,'tasks.md'),'utf8').replace('T-001: implement','T-001: 必验: implement')
+    .replace('- T-001: node --test priority.test.mjs','- T-001: 运行：node --test priority.test.mjs'));f.approve();
   const baseline=f.capture();
+  assert.deepEqual(baseline.specification.acceptanceContract.requiredCommands,[['node','--test','priority.test.mjs']]);
   const legacyBaseline=captureReviewBaseline({root:f.code,identity,scope:['code.js'],requirements:['requirements.md']});
   write(f.code,'code.js','after');
   const contract=baseline.specification.acceptanceContract;
