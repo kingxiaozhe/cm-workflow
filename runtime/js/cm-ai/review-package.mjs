@@ -426,7 +426,9 @@ export function captureReviewInventory(root,baseline,{withMode=false}={}){
 }
 // withMode also reports permission-only changes; the mode is part of a reviewed
 // file record. The default keeps the historical content-only comparison.
-export function compareReviewInventoryToBaseline(root,baseline,{withMode=false}={}){
+// probe: one path also reported from this same scan, changed or not, flagged
+// probe:true (sha256 null when the current inventory does not contain it).
+export function compareReviewInventoryToBaseline(root,baseline,{withMode=false,probe=null}={}){
   validBaseline(baseline);
   const stable=baseline.ignorePolicy?.version===2;
   const policy=stable?stableSnapshotPolicy(root,baseline.ignorePolicy)
@@ -438,8 +440,9 @@ export function compareReviewInventoryToBaseline(root,baseline,{withMode=false}=
   const previous=new Map(before.map(file=>[file.path,key(file)]));
   const current=new Map(after.map(file=>[file.path,key(file)]));
   const records=new Map(after.map(file=>[file.path,file]));
-  return [...new Set([...previous.keys(),...current.keys()])].filter(p=>previous.get(p)!==current.get(p))
-    .map(p=>({path:p,sha256:records.get(p)?.sha256??null,...(withMode?{mode:records.get(p)?.mode??null}:{})}));
+  const row=p=>({path:p,sha256:records.get(p)?.sha256??null,...(withMode?{mode:records.get(p)?.mode??null}:{})});
+  const rows=[...new Set([...previous.keys(),...current.keys()])].filter(p=>previous.get(p)!==current.get(p)).map(row);
+  return probe===null?rows:[...rows,{...row(probe),probe:true}];
 }
 export function compareReviewBaseline(current,expected){
   if(digest(current)===digest(expected))return true;
