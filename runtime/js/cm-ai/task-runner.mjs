@@ -711,7 +711,8 @@ export function createTaskRunner(options) {
     } catch(error){
       return freeze({...current,code:'correction_review_required',...(error?.code==='fix_current_code_unexplained'
         ?{reason:`未经审查的改动：${error.paths.slice(0,20).join(', ')}${error.paths.length>20?` 等 ${error.paths.length} 个路径`:''}`}
-        :error?.code==='fix_association_unverified'?{reason:'已登记 QA 修复所接续的后续交付无法按其运行存档核实（存档缺失、未完成或内容不符）'}:{})});
+        :error?.code==='fix_association_unverified'?{reason:'已登记 QA 修复所接续的后续交付无法按其运行存档核实（存档缺失、未完成或内容不符）'}
+        :error?.code==='user_maintained_invalid'?{reason:`代码根的用户维护文件声明 .cm-user-maintained.json 无效：${error.detail}`}:{})});
     }
   };
   const halt=(next,why,detail=null)=>{state=next;code=why;reason=detail;};

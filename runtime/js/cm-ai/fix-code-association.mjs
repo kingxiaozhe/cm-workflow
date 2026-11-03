@@ -4,6 +4,7 @@ import {verifySpecificationMaterial} from './specification-material.mjs';
 import {CONFIG_FILENAMES} from '../../../scripts/cm-workflow-config.mjs';
 import {digest,hex,id,json,need,shape} from './effect-contract.mjs';
 import {assertSnapshotBoundaries} from './integration-snapshots.mjs';
+import {USER_MAINTAINED_FILE,readUserMaintainedPaths,userMaintainedInvalid} from './user-maintained-paths.mjs';
 
 const inventoryFile=({contentBase64,...metadata})=>metadata;
 const sameFile=(a,b)=>digest(a===null?null:inventoryFile(a))===digest(b===null?null:inventoryFile(b));
@@ -70,6 +71,15 @@ function unexplainedError(paths){
 // The root CM workflow config outside the run's scope is user-editable policy,
 // not delivered code, and is the one tolerated unreviewed difference.
 const toleratedConfig=ownScope=>{const scope=new Set(ownScope);return p=>CONFIG_FILENAMES.includes(p)&&!scope.has(p);};
+// The plain completed-run chain also tolerates the files the code root declares
+// as user-maintained, and that declaration, outside the run's own scope (compared
+// case-insensitively). compareCurrent binds the declaration bytes it was read
+// from to the inventory it compares.
+const toleratedUserMaintained=(ownScope,root)=>{
+  const config=toleratedConfig(ownScope),scope=new Set(ownScope.map(p=>p.toLowerCase()));
+  const {paths,sha256}=readUserMaintainedPaths(root),declared=new Set(paths);
+  return Object.assign(p=>config(p)||!scope.has(p.toLowerCase())&&(p===USER_MAINTAINED_FILE||declared.has(p)),{declaration:sha256});
+};
 // Apply one later delivery strictly: its reviewed before-state must be the
 // running composition on every path it touches (tolerated config aside). None
 // is ever skipped; a mismatch names the paths.
@@ -83,10 +93,14 @@ const strict=()=>false;
 // The composition must be the current tree exactly, content and mode.
 function compareCurrent({root,base,state,tolerated}){
   const original=new Map(base.files.map(file=>[file.path,inventoryFile(file)]));
-  const actual=new Map(compareReviewInventoryToBaseline(root,base,{withMode:true})
-    .map(row=>[row.path,row.sha256===null?null:`${row.sha256}:${row.mode}`]));
+  const declared=Object.hasOwn(tolerated,'declaration');
+  const rows=compareReviewInventoryToBaseline(root,base,{withMode:true,...(declared?{probe:USER_MAINTAINED_FILE}:{})});
+  const actual=new Map(rows.filter(row=>!row.probe).map(row=>[row.path,row.sha256===null?null:`${row.sha256}:${row.mode}`]));
   const wanted=new Map([...new Set([...original.keys(),...state.keys()])]
     .filter(p=>key(original.get(p))!==key(state.get(p))).map(p=>[p,key(state.get(p))]));
+  // The tolerance stands only on the declaration this very scan contains.
+  if(declared&&(rows.find(row=>row.probe).sha256??null)!==tolerated.declaration)
+    throw userMaintainedInvalid('核对期间声明已变化，或声明被忽略规则排除');
   const unexplained=[...new Set([...wanted.keys(),...actual.keys()])]
     .filter(p=>!tolerated(p)&&wanted.get(p)!==actual.get(p)).sort();
   if(unexplained.length)throw unexplainedError(unexplained);
@@ -141,7 +155,7 @@ export function composeFixCode({baseline,parentPackage,fixPackages,steps=[]}){
 // order and strictly; the result must be the current tree exactly.
 export function explainReviewedDrift({root,baseline,composed,ownScope,deliveries,after}){
   const base=readReviewBaseline(baseline);
-  const state=new Map(composed.map(file=>[file.path,inventoryFile(file)])),tolerated=toleratedConfig(ownScope);
+  const state=new Map(composed.map(file=>[file.path,inventoryFile(file)])),tolerated=toleratedUserMaintained(ownScope,root);
   for(const entry of laterSequence(deliveries,after,base.rootDigest))applyDelivery(state,entry.pkg,tolerated);
   compareCurrent({root,base,state,tolerated});
 }
