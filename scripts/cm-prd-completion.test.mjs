@@ -73,6 +73,18 @@ test('actual change CLI resumes unsaved phase across processes and stops at huma
   c=await client(t,dir,respond,{session:runId});assert.equal((await c.request('status')).result.stage,'change_design');
   for(const text of ['Design','Tasks','Check']){result=await c.request('advance',{text});assert.ok(result.result,JSON.stringify(result));}
   assert.equal(result.result.stage,'change_confirmation');const proposalDigest=result.result.proposal.proposalDigest;
+  assert.equal(result.result.acceptancePreview.proposalDigest,proposalDigest);
+  assert.equal(result.result.acceptancePreview.sourceKind,'proposed_documents');
+  assert.equal(result.result.acceptancePreview.taskGrammar,1,'unpublished existing change retains legacy grammar');
+  assert.equal(result.result.acceptancePreview.approvalAuthorized,false);
+  assert.equal(result.result.acceptancePreview.executionAuthorized,false);
+  const checkpointPath=path.join(dir,'.reviews/prd-sessions',runId,'state.json'),checkpoint=fs.readFileSync(checkpointPath);
+  const sourcePath=path.join(dir,'1.guide/requirements.md'),originalSource=fs.readFileSync(sourcePath);
+  fs.appendFileSync(sourcePath,'\nExternal edit\n');
+  const stale=await c.request('status');assert.equal(stale.result.acceptancePreview.status,'stale');
+  assert.equal(stale.result.acceptancePreview.proposalDigest,proposalDigest);
+  assert.deepEqual(fs.readFileSync(checkpointPath),checkpoint,'preview status does not rewrite the session');
+  fs.writeFileSync(sourcePath,originalSource);
   assert.equal((await c.request('save_draft')).error.code,'host_request_failed');
   assert.ok((await c.request('decision',{proposalDigest,approved:true,allowUserCaseChanges:false})).result);
   result=await c.request('save_draft');assert.equal(result.result.status,'awaiting_review');assert.equal(result.result.counts.preservedCompletedTasks,1);

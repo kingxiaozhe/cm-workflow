@@ -220,7 +220,10 @@ def add_observed(counts: Dict[str, int], row: Dict[str, Any]) -> None:
         counts["duration_observed_calls"] += 1
 
 
-def build_report(log_home: Path, refs: List[RunRef]) -> Dict[str, Any]:
+def build_report(
+    log_home: Path, refs: List[RunRef],
+    rows_by_run: Optional[Dict[str, List[Tuple[int, Dict[str, Any]]]]] = None,
+) -> Dict[str, Any]:
     summary = {
         "runs": len(refs),
         "observed_calls": 0,
@@ -249,10 +252,12 @@ def build_report(log_home: Path, refs: List[RunRef]) -> Dict[str, Any]:
 
     for ref in refs:
         log_path = safe_log_path(log_home, ref.log_file)
-        if log_path is None or not log_path.is_file():
+        if rows_by_run is None and (log_path is None or not log_path.is_file()):
             print(f"warning: missing run log for {ref.run_id}", file=sys.stderr)
             continue
-        for line_number, row in read_jsonl(log_path):
+        # The specs-local report supplies its already validated immutable snapshot.
+        rows = read_jsonl(log_path) if rows_by_run is None else rows_by_run.get(ref.run_id, [])
+        for line_number, row in rows:
             if row.get("run_id") != ref.run_id:
                 continue
             if row.get("event") == "model_call":

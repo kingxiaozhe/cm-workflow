@@ -8,18 +8,20 @@
 // run "red" needs the test-files-only run to have run and failed; run "baseline"
 // needs the baseline to have run (a run that could not start proves nothing) and,
 // with a result, to have that result. An untagged item is not a run claim here.
-// The same limit as the session-answered gate: coverage of every written
-// requirement, and the tagging of every run claim, are not proven.
+// Legacy material has no expected set. New material supplies a frozen contract:
+// coverage and run tags are checked against it before accepting any report.
+// Neither mode proves arbitrary prose/physical evidence true; independent review remains.
+import {acceptanceProblems} from './acceptance-contract.mjs';
 const ran=run=>run&&['passed','failed'].includes(run.outcome);
 const redFact=facts=>facts.status!=='replayed'?`未实跑（${facts.reason}）`
   :facts.red.skipped?'tasks.md 未写测试文件，没有只放入测试文件的实跑'
     :`只放入测试文件时检查 ${facts.red.outcome}`;
 
 // report: the developer's items, null (absent) or 'invalid'. facts: replayDelivery's result.
-export function autoVerificationVerdict({report,facts}){
+export function autoVerificationVerdict({report,facts,contract=null}){
   if(report===null)return {satisfied:false,unsatisfied:['开发结果没有逐条要求与证据（requirements）']};
   if(report==='invalid')return {satisfied:false,unsatisfied:['开发结果的逐条要求与证据（requirements）格式不合法']};
-  const unsatisfied=[],replayed=facts.status==='replayed';
+  const unsatisfied=contract?acceptanceProblems(contract,report,facts):[],replayed=facts.status==='replayed';
   for(const item of report){
     if(item.satisfied!==true){unsatisfied.push(item.requirement);continue;}
     if(item.run==='red'&&!(replayed&&!facts.red.skipped&&facts.red.outcome==='failed'))

@@ -26,11 +26,12 @@ export function scanRows(log,visit) {
 // read to its recorded size. Lines are parsed with plain JSON.parse, as the
 // historical log readers did; only selected rows are kept, in log order.
 const stableKey=s=>[s.dev,s.ino,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].join(':');
-export function readStableLogRows(file,select,code){
+export function readStableLogRows(file,select,code,{maxBytes=Infinity}={}){
   let descriptor;
   try{
     const before=fs.lstatSync(file,{bigint:true});
-    need(before.isFile()&&!before.isSymbolicLink()&&before.nlink===1n,code);
+    need(before.isFile()&&!before.isSymbolicLink()&&before.nlink===1n
+      &&(maxBytes===Infinity||before.size<=BigInt(maxBytes)),code);
     descriptor=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
     need(stableKey(fs.fstatSync(descriptor,{bigint:true}))===stableKey(before),code);
     const rows=[],chunk=Buffer.alloc(64*1024),decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});

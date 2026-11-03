@@ -26,10 +26,73 @@ const documentationMessages={
 const explain=(summary,nextStep,operation=null,prerequisites=[])=>Object.freeze({
   summary,nextStep,recoveryOperation:operation,prerequisites:Object.freeze(prerequisites),authorizationGranted:false,
 });
+const phases={verification_precheck_failed:['verification','验收要求核对'],
+  develop_checks_not_passed:['checks','开发检查'],checks_not_passed:['checks','旧完成检查'],
+  completion_checks_changed:['completion','完成前复查'],completion_package_changed:['completion','完成前复查'],
+  complete_recheck_failed:['completion','完成前复查'],complete_commit_interrupted:['completion','完成写入恢复'],
+  spec_drift:['specification','规格绑定核对']};
+const reviewStops=new Set(['review_transport_timeout','review_provider_failed','review_verdict_invalid',
+  'review_abandoned','review_redispatch_limit','review_blocked','review_limit']);
+const safeLine=value=>typeof value==='string'&&!/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(value);
+const clipDiagnostic=value=>{
+  let text='';for(const char of value){if(Buffer.byteLength(text+char)>1600)break;text+=char;}
+  const truncated=text.length!==value.length;
+  return {status:'recorded',source:'current_result.reason',text:text+(truncated?'…（完整原因见 result.reason）':''),truncated};
+};
+// Reasons are explanatory evidence, never a recovery permission. Display only
+// host-formatted diagnostics for this code; arbitrary provider reasons stay out
+// of the driver's human channel. Older checkpoints legitimately have no detail.
+function diagnosticFor(result){
+  const {reason,code}=result;
+  if(safeLine(reason)&&reason.length<=8192){
+    if(['verification_precheck_failed','develop_checks_not_passed','checks_not_passed','completion_checks_changed'].includes(code)
+      &&reason.startsWith(code+':')&&reason.slice(code.length+1).trim())return clipDiagnostic(reason);
+    if(code==='spec_drift'&&/^(规格当前未处于|规格已重新批准，变更文件：|规格已变更：)/.test(reason))
+      return clipDiagnostic(reason.split('；')[0]); // Do not copy legacy launch flags into v2/batch guidance.
+  }
+  return {status:'unknown',source:null,text:'当前结果未记录可展示的具体缺项；请核对原运行证据，不推断其他检查已通过。',truncated:false};
+}
+const identityMatches=(a,b)=>a&&b&&['repositoryId','runId','taskId','attempt'].every(key=>a[key]===b[key]);
+function validEvidenceFor(result){
+  const c=result.completion,items=[];
+  // A receipt's presence or a successful historical run is insufficient. Only
+  // the already validated, current snapshot projection can supply these claims.
+  if(/^[a-f0-9]{64}$/.test(c?.snapshotDigest??'')&&c?.binding?.runnerRevision
+    &&identityMatches(c.binding.identity,result.identity)&&c.binding.packageDigest===result.packageDigest
+    &&c.task?.status==='completed'&&!['spec_drift','correction_review_required'].includes(result.code)){
+    if(c.task.review?.status==='passed')for(const reference of c.task.review.evidence??[])
+      if(/^receipt:[a-f0-9]{64}$/.test(reference))items.push({kind:'task_review',reference});
+    if(c.feature?.status==='passed'&&c.feature.qa?.status==='passed')items.push({kind:'feature_qa',reference:'completion.feature.qa'});
+  }
+  return {status:items.length?'confirmed':'unknown',items:Object.freeze(items.map(Object.freeze)),
+    message:items.length?'仅列当前完成摘要已核对的证据；恢复动作仍须再次核对原条件。'
+      :'当前结果不足以确认哪些旧证据仍可复用；保留原记录，不将历史通过当作当前通过。'};
+}
+function blockageFor(result,guidance,{executionActive=false}={}){
+  const action=guidance.recoveryOperation;
+  const phase=executionActive?['in_flight','原操作执行中']:Object.hasOwn(phases,result.code)?phases[result.code]
+    :result.state==='pending_review'||reviewStops.has(result.code)||['abandon_review','reconcile_review'].includes(result.pendingAction)
+      ?['review','独立审查']:['unknown','阶段未确认'];
+  let checks='unknown',reviewCalls='unknown';
+  if(['abandon_effect','abandon_review','develop_redo'].includes(action)){checks='not_dispatched';reviewCalls='not_dispatched';}
+  else if(action==='complete'){checks=result.code==='complete_commit_interrupted'?'not_dispatched':'rerun';reviewCalls='not_dispatched';}
+  // advance may cross review -> completion/QA, or review -> next development
+  // attempt. Describe the whole operation, not only the phase where it starts.
+  else if(action==='advance'){checks='may_run';reviewCalls='may_dispatch';}
+  const decision=executionActive?'wait':action&&['abandon_effect','abandon_review','develop_redo','bootstrap_review_recover'].includes(action)
+    ||result.code==='spec_drift'&&result.pendingAction==='spec_rebind'?'required':action?'existing_conditions'
+      :['blocked','unknown'].includes(result.state)?'not_available':'unknown';
+  return Object.freeze({version:1,phase:Object.freeze({code:phase[0],label:phase[1]}),
+    detail:Object.freeze(diagnosticFor(result)),validEvidence:Object.freeze(validEvidenceFor(result)),
+    recovery:Object.freeze({operation:action,decision,checks,reviewCalls,
+      budget:'original_limits_apply',authorizationGranted:false}),
+    inspection:Object.freeze({readOnly:true,dispatchedCalls:0})});
+}
+const withBlockage=(result,guidance,options={})=>guidance?Object.freeze({...guidance,blockage:blockageFor(result,guidance,options)}):null;
 // Rendering context is private and ephemeral; it never enters results or journals.
 const guidanceContext=new WeakMap();
 export function operatorGuidance(result,options={}){
-  const guidance=renderOperatorGuidance(result,options);
+  const guidance=withBlockage(result,renderOperatorGuidance(result,options),options);
   if(guidance)guidanceContext.set(guidance,{executionActive:options.executionActive===true,protocol:options.protocol??'legacy'});
   return guidance;
 }
@@ -161,14 +224,33 @@ function renderOperatorGuidance(result,{executionActive=false,protocol='legacy',
     '核对 code、reason 和原运行证据；保留已有文件与历史，不把通用阻塞当作重试许可。');
   return null;
 }
-// Only bounded static guidance is rendered, never raw provider output.
+// Static instructions plus bounded host-formatted diagnostics; never raw
+// provider output. The structured explanation does not authorize an operation.
 export function guidanceText(result){
   if(result?.workflow!=='cm-ai')return null;
   const guidance=result?.guidance;
-  const bounded=value=>typeof value==='string'&&Buffer.byteLength(value,'utf8')<=2000&&!/[\r\n\0]/.test(value);
+  const bounded=value=>safeLine(value)&&Buffer.byteLength(value,'utf8')<=2000;
   if(!guidance||guidance.authorizationGranted!==false||!bounded(guidance.summary)||!bounded(guidance.nextStep)
     ||!Array.isArray(guidance.prerequisites)||guidance.prerequisites.length>8||!guidance.prerequisites.every(bounded))return null;
-  return `${guidance.summary} ${guidance.nextStep} ${guidance.prerequisites.join('；')}`.trim();
+  const text=`${guidance.summary} ${guidance.nextStep} ${guidance.prerequisites.join('；')}`.trim();
+  const b=guidance.blockage;
+  if(!b||b.version!==1||!bounded(b.phase?.label)||!bounded(b.detail?.text)
+    ||!bounded(b.validEvidence?.message)||!Array.isArray(b.validEvidence?.items)||b.validEvidence.items.length>8
+    ||!b.validEvidence.items.every(item=>item&&['task_review','feature_qa'].includes(item.kind))
+    ||b.recovery?.authorizationGranted!==false)return text;
+  const checks={unknown:'检查是否重跑待核对',not_dispatched:'该恢复动作不直接运行检查',rerun:'将重新运行检查',
+    may_run:'推进可能跨阶段并运行检查或 QA'};
+  const review={unknown:'审查调用待核对',not_dispatched:'该恢复动作不直接派发审查',may_dispatch:'后续可能派发审查，仍受原授权与预算约束'};
+  const decisions={wait:'等待原操作，不重复派发',required:'需要用户按原入口确认具体恢复动作',
+    existing_conditions:'按原运行已有授权与前置条件核对',not_available:'当前没有已确认可直接发送的恢复操作',
+    unknown:'是否需要新决定，须核对上述原入口条件'};
+  if(!Object.hasOwn(checks,b.recovery.checks)||!Object.hasOwn(review,b.recovery.reviewCalls)
+    ||!Object.hasOwn(decisions,b.recovery.decision))return text;
+  const evidence=b.validEvidence.status==='confirmed'
+    ?`当前已核对证据：${b.validEvidence.items.map(item=>item.kind==='task_review'?'任务独立审查':item.kind==='feature_qa'?'功能 QA':'未知').join('、')}`
+    :'当前可复用证据：UNKNOWN';
+  return `${text}\n阶段：${b.phase.label}。门禁记录的缺项/原因：${b.detail.text}\n${evidence}。${b.validEvidence.message}`
+    +`\n恢复条件：${decisions[b.recovery.decision]}；${checks[b.recovery.checks]}；${review[b.recovery.reviewCalls]}。查询本身不派发调用，也不重置原预算。`;
 }
 
 // Q24: in-run recovery operations the batch entry forwards to the stopped member
@@ -182,6 +264,9 @@ const BATCH_RECOVERY={
 // A member result is not a batch control surface. Keep unsupported single-run
 // recovery operations out of batch instructions without changing pendingAction.
 export function batchOperatorGuidance(result,{taskKey=null,protocol='legacy'}={}){
+  return withBlockage(result,renderBatchOperatorGuidance(result,{taskKey,protocol}),guidanceContext.get(result?.guidance));
+}
+function renderBatchOperatorGuidance(result,{taskKey=null,protocol='legacy'}={}){
   const context=guidanceContext.get(result?.guidance);
   const g=context?operatorGuidance(result,{...context,protocol,surface:'batch'}):result?.guidance;
   if(!g)return null;
@@ -205,4 +290,25 @@ export function batchOperatorGuidance(result,{taskKey=null,protocol='legacy'}={}
   if(g.recoveryOperation)return explain(g.summary,
     '批次入口不支持此成员恢复操作；先核对原成员运行与 reason，不通过 advance 重派或新建运行绕过。');
   return g;
+}
+
+// Pure formatting shared by all drivers, including partial check-only runtimes.
+export function deliveryLines(value){
+  return [['productAcceptance','产品人工验收'],['deployment','发布/部署']].map(([field,label])=>{
+    const section=value[field];if(!section?.environments?.length)return `${label}：UNKNOWN`;
+    return `${label}：`+section.environments.map(e=>`${e.environment} [${e.artifactSha256.slice(0,12)}] ${e.status==='recorded'?'声明已记录':e.status==='unknown'?'UNKNOWN':'STALE'}（${
+      field==='productAcceptance'?e.statement.outcome:`执行 ${e.statement.execution}；部署后验证 ${e.statement.verification}`}）`).join('；');
+  });
+}
+
+const label={completed:'已完成',passed:'PASS',failed:'FAIL',blocked:'BLOCKED',unknown:'UNKNOWN',pending:'未完成',
+  skipped:'SKIPPED',finalized:'已收尾',ready_to_finalize:'具备收尾条件，尚未收尾'};
+export function completionLines(summary){
+  if(!summary||summary.version!==1)return [];
+  const feature=summary.feature,project=summary.project;
+  const protection={contract_v1:'冻结合同 v1',legacy_unprotected:'旧运行，未受新合同保护',unknown:'验收保护 UNKNOWN'}[summary.task.acceptanceProtection];
+  return [`完成范围：task ${summary.binding.identity?.taskId??'未知'} ${label[summary.task.status]??'UNKNOWN'}（独立审查 ${label[summary.task.review?.status]??'UNKNOWN'}）${protection?`；${protection}`:''}`,
+    `功能 ${summary.binding.feature??'未知'}：任务 ${feature.tasks?`${feature.tasks.completed}/${feature.tasks.total}`:'UNKNOWN'}；QA ${label[feature.qa?.status]??'UNKNOWN'}；当前资格 ${label[feature.status]??'UNKNOWN'}`,
+    `项目批准范围：${project.totalFeatures===undefined?'UNKNOWN':`${project.completedFeatures}/${project.totalFeatures} 个功能通过，${project.pendingTasks} 个待办`}；${label[project.status]??'UNKNOWN'}`,
+    `本运行收尾：${label[summary.run.status]??'UNKNOWN'}；${deliveryLines(summary).join('；')}`];
 }

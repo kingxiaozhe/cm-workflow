@@ -34,7 +34,7 @@ function fixture(t){
   const file=name=>path.join(specsDir,feature,name);
   fs.writeFileSync(file('requirements.md'),'# Requirements\n- [ ] [AC-001] a exports new\n');
   fs.writeFileSync(file('design.md'),'# Design\nsimple\n');
-  fs.writeFileSync(file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b\n\n- T-002 依赖 T-001\n');
+  fs.writeFileSync(file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-002: 新增 b\n\n- T-002 依赖 T-001\n');
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   const identity=(runId='rebind-run-0001')=>({repositoryId:'rebind-fixture',runId,taskId:'T-001',attempt:1});
   const definition=(runId)=>({version:1,specsDir,codeProject,feature,identity:identity(runId),scope:['a.mjs'],requirements:['requirements.md']});
@@ -60,6 +60,8 @@ function executionFor(f,{decision=null,onReview=()=>{},onDevelop=()=>{}}={}){
         examinedPaths:reviewPaths(request.payload.reviewPackage),findings:[],summary:'Synthetic review'}};
     }};
   return {configuration:{kind:'synthetic-host-v1'},timeoutMs:2000,excludedContexts:['control'],
+    verificationGate:async request=>({satisfied:true,...(request.acceptanceContract?{items:request.acceptanceContract.obligations.map(item=>
+      ({...item,satisfied:true,evidence:'Synthetic fixture checks and independent review cover this approved obligation'}))}:{})}),
     developer:{provider:'codex',requestedModel:'fixture',contextId:'developer',run:createCodexDeveloperRun({
       requestedModel:'fixture',worker:async()=>{fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'export const a=2;\n');onDevelop();
         return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
@@ -83,7 +85,7 @@ const stateFile=(f,runId='rebind-run-0001')=>path.join(f.specsDir,'.reviews','.e
 
 test('another task changed and re-approved: status names spec_drift and the rebind; the rebind keeps the delivery',async t=>{
   const f=fixture(t),packageDigest=await awaitingReview(f);
-  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b（导出 3）\n\n- T-002 依赖 T-001\n');
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-002: 新增 b（导出 3）\n\n- T-002 依赖 T-001\n');
   reapprove(f);
   await withRun(f,'resume',{decision:{status:'approved'}},async(host,identity)=>{
     const status=await ask(host,identity,'status');
@@ -146,7 +148,7 @@ test('a change to what the run saw fails closed, names it, and both recovery exi
 
 test('a rebind cannot carry changed content: a later content change still drifts',async t=>{
   const f=fixture(t);await awaitingReview(f);
-  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
   await withRun(f,'resume',{specRebindReason:'只改了 T-002'},async()=>{});
   fs.appendFileSync(f.file('requirements.md'),'- [ ] [AC-002] b exports 3\n');reapprove(f);
   await withRun(f,'resume',{},async(host,identity)=>{
@@ -162,7 +164,7 @@ test('a spec change during review never leaves status advertising a refused acti
   const f=fixture(t);
   await withRun(f,'create',{},async(host,identity)=>assert.equal((await ask(host,identity,'start')).state,'awaiting_review'));
   const changeDuringReview=()=>{
-    fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 审查期间改了\n\n- T-002 依赖 T-001\n');reapprove(f);};
+    fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-002: 审查期间改了\n\n- T-002 依赖 T-001\n');reapprove(f);};
   await withRun(f,'resume',{decision:{status:'approved'},onReview:changeDuringReview},async(host,identity)=>{
     await ask(host,identity,'advance');
     const status=await ask(host,identity,'status');
@@ -199,7 +201,7 @@ test('host CLI accepts the rebind only on resume with a single-line reason',t=>{
 test('a run rebound before its first delivery develops against the re-approved spec',async t=>{
   const f=fixture(t);
   await withRun(f,'create',{},async(host,identity)=>assert.equal((await ask(host,identity,'status')).state,'ready'));
-  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
   await withRun(f,'resume',{},async(host,identity)=>{
     const status=await ask(host,identity,'status');
     assert.equal(status.state,'ready');assert.equal(status.code,'spec_drift');assert.equal(status.pendingAction,'spec_rebind');
@@ -213,7 +215,7 @@ test('a run rebound before its first delivery develops against the re-approved s
 
 test('journal replay accepts a rebind only bound to this run material and before completion',async t=>{
   const f=fixture(t);await awaitingReview(f);
-  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
   await withRun(f,'resume',{specRebindReason:'只改了 T-002'},async()=>{});
   const records=JSON.parse(fs.readFileSync(stateFile(f),'utf8')).records,config=records[0].payload.config;
   const index=records.findIndex(row=>row.payload.type==='specification-rebound');
@@ -249,7 +251,7 @@ test('a spec change while the developer works stops the run with its real exits'
 // decide from the material alone.
 async function multiLineRun(f){
   fs.writeFileSync(f.file('requirements.md'),'# Requirements\n- [ ] [AC-001] Store user data\n  必须静态加密\n- [ ] [AC-002] b exports 3\n');
-  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n  - 约束：保留旧接口\n- [ ] T-002: 新增 b\n  - 约束：导出 3\n\n## 验证要求\n- T-002: node --test b\n\n## 依赖关系\n- T-002 依赖 T-001\n');
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n  - 约束：保留旧接口\n- [ ] T-002: 新增 b\n  - 约束：导出 3\n\n## 验证要求\n- T-002: node --test b\n\n## 依赖关系\n- T-002 依赖 T-001\n');
   reapprove(f);
   return awaitingReview(f);
 }
@@ -293,12 +295,12 @@ test('multi-line spec: other tasks items, sub-bullets, verification and new task
 test('a run bound before taskScopeDigest keeps verifying but is never rebindable',async t=>{
   const f=fixture(t);
   await withRun(f,'create',{},async(host,identity)=>assert.equal((await ask(host,identity,'status')).state,'ready'));
-  // Legacy-shaped journal: the init baseline material without taskScopeDigest.
+  // Legacy-shaped journal: before either taskScopeDigest or acceptanceContract existed.
   const file=stateFile(f),state=JSON.parse(fs.readFileSync(file,'utf8'));
   assert.equal(state.records.length,1);
   const init=state.records[0],{baselineDigest,...baseline}=init.payload.baseline;
   assert.match(baseline.specification.taskScopeDigest,/^[a-f0-9]{64}$/);
-  const {taskScopeDigest,...material}=baseline.specification;
+  const {taskScopeDigest,acceptanceContract,...material}=baseline.specification;
   const legacyBaseline={...baseline,specification:material};
   const {digest:oldDigest,...body}=init;
   const record={...body,payload:{...init.payload,baseline:{...legacyBaseline,baselineDigest:digest(legacyBaseline)}}};
@@ -307,10 +309,44 @@ test('a run bound before taskScopeDigest keeps verifying but is never rebindable
   await withRun(f,'resume',{},async(host,identity)=>{
     const status=await ask(host,identity,'status');assert.equal(status.state,'ready');assert.equal(status.code,null);
   });
-  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
   const status=await statusOf(f);
   assert.equal(status.code,'spec_drift');assert.equal(status.pendingAction,'none');assert.match(status.reason,/旧版本创建/);
   await assert.rejects(withRun(f,'resume',{specRebindReason:'旧运行'},async()=>{}),error=>error.code==='spec_rebind_refused');
+});
+
+test('a 0.19 journal without acceptanceContract resumes through review and completion without rewriting its baseline',async t=>{
+  const f=fixture(t);
+  // The old material allowed a task description beyond the new evidence-item
+  // bound. Resume must not construct a new contract just to discard it later.
+  fs.writeFileSync(f.file('tasks.md'),fs.readFileSync(f.file('tasks.md'),'utf8')
+    .replace('修改 a [AC-001]','必验: 修改 a [AC-001] '+ 'x'.repeat(2100)));
+  fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[f.feature],
+    specFiles:buildManifest(f.specsDir)}));
+  await withRun(f,'create',{},async(host,identity)=>assert.equal((await ask(host,identity,'status')).state,'ready'));
+  // A 0.19 run already recorded taskScopeDigest, but had no acceptance contract.
+  // Reseal only this synthetic init to model that original, supported shape.
+  const file=stateFile(f),state=JSON.parse(fs.readFileSync(file,'utf8'));
+  assert.equal(state.records.length,1);
+  const init=state.records[0],{baselineDigest,...baseline}=init.payload.baseline;
+  const {acceptanceContract,...material}=baseline.specification;
+  assert.equal(acceptanceContract.version,1);assert.match(material.taskScopeDigest,/^[a-f0-9]{64}$/);
+  assert.ok(material.task.description.length>2100,'legacy task text is beyond the new evidence item bound');
+  const legacyBaseline={...baseline,specification:material},{digest:oldDigest,...body}=init;
+  const record={...body,payload:{...init.payload,baseline:{...legacyBaseline,baselineDigest:digest(legacyBaseline)}}};
+  const legacyInit={...record,digest:digest(record)},{revision,...rest}=state,next={...rest,records:[legacyInit]};
+  fs.writeFileSync(file,JSON.stringify({...next,revision:digest(next)})+'\n');
+  let developments=0,reviews=0;
+  const execution=()=>({...executionFor(f,{onDevelop:()=>developments++,onReview:()=>reviews++}),verificationGate:null});
+  let opened=await openControlRun(f.definition(),'resume',execution());
+  try{assert.equal((await ask(opened.host,f.identity(),'start')).state,'awaiting_review');}finally{opened.close();}
+  opened=await openControlRun(f.definition(),'resume',execution(),{decision:{status:'approved'}});
+  try{assert.equal((await ask(opened.host,f.identity(),'advance')).state,'fixture_completed');}finally{opened.close();}
+  assert.equal(developments,1);assert.equal(reviews,1);
+  const records=JSON.parse(fs.readFileSync(file,'utf8')).records;
+  assert.deepEqual(records[0],legacyInit,'the old baseline and its digest remain original');
+  assert.equal(readRunnerHistory(records,records[0].payload.config,3).state.state,'fixture_completed');
+  assert.match(fs.readFileSync(f.file('tasks.md'),'utf8'),/\[x\] T-001/);
 });
 
 test('test cases: another task case may change, this task case may not',async t=>{
@@ -340,7 +376,7 @@ test('task scope keeps shared fenced text after another task item',async()=>{
 
 test('a line naming this task under another task item changes: refused',async t=>{
   const f=fixture(t);
-  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b\n  - T-001 must encrypt backups\n\n## 依赖关系\n- T-002 依赖 T-001\n');
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-002: 新增 b\n  - T-001 must encrypt backups\n\n## 依赖关系\n- T-002 依赖 T-001\n');
   reapprove(f);await awaitingReview(f);
   fs.writeFileSync(f.file('tasks.md'),fs.readFileSync(f.file('tasks.md'),'utf8').replace('T-001 must encrypt backups','T-001 may store plaintext backups'));
   reapprove(f);
@@ -364,7 +400,7 @@ test('another task test case that names this task changes: refused',async t=>{
 // original parse. Under the old parser `T-001：` is prose, not a duplicate task.
 test('an approval recorded before the shared grammar keeps parsing with the old grammar end to end',async t=>{
   const f=fixture(t);
-  const tasks='# tasks\n- [ ] T-001: 修改 a\n- [ ] T-001：示例写法（旧解析器视为说明）\n- [ ] T-002: 新增 b\n\n- T-002 依赖 T-001\n';
+  const tasks='# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-001：示例写法（旧解析器视为说明）\n- [ ] T-002: 新增 b\n\n- T-002 依赖 T-001\n';
   fs.writeFileSync(f.file('tasks.md'),tasks);
   // Legacy-shaped approval: no taskGrammar field.
   fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[f.feature],specFiles:buildManifest(f.specsDir)}));
@@ -372,7 +408,7 @@ test('an approval recorded before the shared grammar keeps parsing with the old 
   const done=await withRun(f,'create',{decision:{status:'approved'}},(host,identity)=>ask(host,identity,'advance'));
   assert.equal(done.state,'fixture_completed',JSON.stringify(done));
   const after=fs.readFileSync(f.file('tasks.md'),'utf8');
-  assert.equal(after,tasks.replace('- [ ] T-001: 修改 a','- [x] T-001: 修改 a'),'the old mark-done flips only the real task');
+  assert.equal(after,tasks.replace('- [ ] T-001: 修改 a [AC-001]','- [x] T-001: 修改 a [AC-001]'),'the old mark-done flips only the real task');
   assert.equal(inspectCmAiAdmission({specsDir:f.specsDir,codeProject:f.codeProject}).nextTask.id,'T-002');
   // supersede reads the tick with the same old grammar: one task, already ticked.
   await assert.rejects(withRun(f,'create',{supersedeReason:'重跑'},async()=>{},'rebind-run-legacy-2'),
@@ -398,7 +434,7 @@ function reapproveRaw(f){
 
 test('re-approving another feature is refused while an untouched feature would change meaning',async t=>{
   const f=fixture(t);
-  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-001：旧示例\n');
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-001：旧示例\n');
   const other=path.join(f.specsDir,'2.other');fs.mkdirSync(other);
   for(const [name,body] of [['requirements.md','# R\n- [ ] [AC-001] other\n'],['design.md','# D\n'],['tasks.md','- [ ] T-001: other\n']])
     fs.writeFileSync(path.join(other,name),body);
@@ -482,7 +518,7 @@ test('a batch member never advertises spec_rebind and names the real exits',asyn
   executionFor:async()=>({...executionFor(f),check:createHostCheck({cwd:f.codeProject,commands:[{id:'hold',command:[process.execPath,'-e','process.exit(1)']}]})}),logHome:path.join(f.root,'batch-logs')});
   const first=await batch().handle({operation:'advance',requestId:'batch-advance'});
   assert.equal(first.state,'blocked',JSON.stringify(first));assert.equal(first.code,'develop_checks_not_passed');
-  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
+  fs.writeFileSync(f.file('tasks.md'),'# tasks\n- [ ] T-001: 修改 a [AC-001]\n- [ ] T-002: 新增 b 改\n\n- T-002 依赖 T-001\n');reapprove(f);
   const status=await batch().handle({operation:'status',requestId:'batch-status'});
   assert.equal(status.code,'spec_drift');assert.equal(status.pendingAction,'none');
   assert.match(status.reason,/1\.work\/tasks\.md/);assert.match(status.reason,/批次成员不能换绑/);

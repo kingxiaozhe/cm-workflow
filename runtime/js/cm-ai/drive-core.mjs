@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import readline from 'node:readline';
-import {guidanceText} from './operator-guidance.mjs';
+import {guidanceText,completionLines} from './operator-guidance.mjs';
 import {applyRateLimitResume,nextRateLimitRetry,rateLimitedReview,rateLimitRetriesDone,RATE_LIMIT_RETRY_ENV,RATE_LIMIT_EXPECTED_ENV,
   RATE_LIMIT_PLAN_DIGEST_ENV,planFileFromArgv,planDigest,digestBytes,expectedReviewStop,readExpectedReviewStop} from './drive-rate-limit.mjs';
 
@@ -137,7 +137,11 @@ export function driveHost({host,args,cwd,operation,request={},answers,paths,answ
     if(typeof sessionBoundary==='function'&&!row.error){let block=null;try{block=sessionBoundary(row.result,operation);}catch{stderr('会话边界结论生成失败；请按技能输出模板手写三行结论（业务结果不受影响）');}
       // stderr, not stdout: callers parse stdout as one JSON result.
       if(typeof block==='string'&&block)process.stderr.write(block+'\n');}
-    const guidance=guidanceText(row.result);if(guidance)stderr(guidance);
+    try{const guidance=guidanceText(row.result);if(guidance)stderr(guidance);}
+    catch{stderr('恢复指引显示失败；业务结果不受影响');}
+    try{if(row.result?.state!=='run_done'||typeof sessionBoundary!=='function')
+      for(const line of completionLines(row.result?.completion))stderr(line);}
+    catch{stderr('完成摘要显示失败；业务结果不受影响');}
     if(row.result?.stage)stderr(`stage = ${row.result.stage}`);
     if(row.error)stderr(`宿主拒绝：${row.error.code}（真实原因和位置在上面 [host] 那行 diagnostic 里）`);
   };

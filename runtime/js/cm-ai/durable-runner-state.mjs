@@ -1150,7 +1150,7 @@ function checkpoint(before,raw,effect,config,original,session,controls,version=1
     same(s.receipts,before.receipts);same(s.receipt,before.receipt);same(s.priorReview,before.priorReview);
     if(s.state==='fixture_completed') {
       checkCompletion({receipt:s.receipt,registered:before.receipt,execution:s.calls.find(c=>c.invocationId===s.receipt?.id),
-        reviewPackage:s.reviewPackage,identity});expectedState='fixture_completed';
+        reviewPackage:s.reviewPackage,identity,historical:true});expectedState='fixture_completed';
     } else if(s.state==='blocked'){
       expectedState='blocked';
       if(['completion_checks_changed','completion_package_changed'].includes(s.code)){
@@ -1854,7 +1854,7 @@ export function readRunnerHistory(raw,config,version=1) {
         const c=readCommitIntent(p.commit,{owner:completion.owner,identity:pending.identity,fingerprints:completion.fingerprints});
         const base=attemptBaseline(original,pending.identity.attempt),s=beforeIntent;
         checkCompletion({receipt:s.receipt,registered:s.receipts.find(x=>x.id===s.receipt?.id),
-          execution:s.calls.find(x=>x.invocationId===s.receipt?.id),reviewPackage:s.reviewPackage,identity:pending.identity});
+          execution:s.calls.find(x=>x.invocationId===s.receipt?.id),reviewPackage:s.reviewPackage,identity:pending.identity,historical:true});
         same(c.proof,{root:config.root,baselineDigest:base.baselineDigest,packageDigest:s.reviewPackage.packageDigest,
           receiptDigest:s.receipt.receiptDigest,checksDigest:s.reviewPackage.checksDigest});
         need(c.plan.evidence.every(e=>path.dirname(e.path)===completion.reviewsDir)

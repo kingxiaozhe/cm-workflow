@@ -61,6 +61,10 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 
 ## 项目教训
 
+- **跨阶段操作的开销说明要覆盖完整推进路径**：`advance` 可能从审查继续到完成复查、QA 或下一轮开发；显示调用开销时核对整个合法操作，无法确定则标明可能或未知，不能仅按起始阶段宣称不运行检查。来源：P0 阻断指引；证据：`scripts/cm-ai-blockage.test.mjs` 的跨阶段开销、batch 重投影及只读说明用例。
+- **关联集合扩大也可能延期验收**：必验用例的 taskIds 不按超集自动批准；QA 会因新增的未完成关联延期整条用例。只将集合等价视为安全，新增关联走原具体提案确认。来源：0.19.0 验收边界独立审查；证据：`scripts/cm-autonomy-acceptance.test.mjs` 的真实 QA executor 对照、长期授权及归档拒绝回归。
+- **完成摘要须核对原 owner 与当前候选**：严格 QA 轮次只证明该轮结果，汇报还须用原 journal 回放核对完成态、候选、审查回执与批准规格；不能把别的 run 的 PASS 或旧结果对象拼到当前状态。来源：0.19.0 分层汇报独立审查；证据：`scripts/cm-ai-completion-summary.test.mjs`、`scripts/cm-ai-project-qa-gate.test.mjs` 的规格漂移、旧 QA、init-only owner 与实际收尾用例。历史事实保留，当前缺证据记 UNKNOWN/BLOCKED。
+
 - **显示投影须在资格判断后惰性读取真实状态**：状态查询与规格准入摘要不能为显示层额外访问 runner；可投影响应只在既有异常隔离内读取一次最新状态，再核对 state/run/task/attempt。用准入摘要的私有来源标记区分实际等待转换，不能笼统跳过所有 awaiting；读取失败保留原业务结果，取消 epoch 与锁内归属检查仍须生效。来源：基线状态读取回归修复；证据：`scripts/cm-ai-progress.test.mjs` 的只读 status、准入、真实等待、异常读取、迟到与取消用例。[已结构化]
 
 - **状态归属核对与替换必须在同一个锁区间**：多运行共享状态卡时，真实阶段开始认领，完成只更新仍属同一 feature/task/run/attempt 的状态，并用阶段 token 拒绝迟到回调；核对后另行原子改名仍有竞态。复用既有跨进程锁覆盖核对和替换，QA／收尾也使用归属规则，历史回放不算新阶段，状态只作显示。来源：当前任务进度修复；证据：`scripts/cm-ai-progress.test.mjs` 的两进程、旧 QA／N8 和迟到响应用例，`scripts/cm-ai-qa-config-revision.test.mjs` 的真实 resume/status 回放用例。[已结构化]
@@ -129,3 +133,7 @@ Read the relevant files under `.claude/rules/` when modifying shell scripts, doc
 - **显式集成须保留来源身份并固定转换证据**：跨 worktree 或 repositoryId 的历史交付不能靠别名放行；逐 run 绑定原身份、根、revision 和包，文档桥接由新的独立审查绑定准确 before/after，最终整树仍须相等。原 owner 锁内核对固定目标后只追加接纳记录，旧失败、次数和完成事实保留；来源或审查证据变化重新阻断。来源：已完成任务受控集成；证据：scripts/cm-ai-integration-adoption.test.mjs、scripts/cm-ai-integration-launch.test.mjs。
 
 - **证据副本不能靠忽略指令文件来接纳**：先核实来源，再由新独立审查绑定固定新增路径、原权限和全部字节；审查载体按摘要去重并作为数据，不把副本提升为执行指令。旧基线、已审范围及其适用祖先指令继续保护，新增副本只能在完整交付链之后加入严格整树比较，遗漏、替换或漂移均拒绝。来源：reports 指令快照受控处理；证据：scripts/cm-ai-integration-snapshots.test.mjs。
+
+- **原子发布须覆盖中断后的文件约束**：不可覆盖追加记录若用临时硬链接发布，中断会留下双链接并被单链接读取合同永久拒绝；先写完整非空临时目录，再原子改名为不可覆盖的有效序号目录，保留失败 stage。新增声明的当前性须复用当前代码的审查包比较，不能仅因历史 journal 已完成而显示有效。来源：0.19.0 交付声明独立审查补正；证据：`scripts/cm-delivery-evidence.test.mjs` 的碰撞、中断续写、容量拒绝和完成后源码漂移用例。[已结构化]
+
+- **新门禁必须显式启用并验证旧执行链**：新增验收合同时，旧规格、无映射与无新宿主入口默认沿原协议；只有明确标记的新运行冻结新合同，历史回放核对已登记事实而不重解释当前解释器身份。用真实规格全任务枚举及驾驶/批次/恢复全套回归验证，不能以新增功能夹具通过代替旧执行链兼容。来源：cm019 R1；证据：`scripts/cm019-r1-contract.test.mjs`、`scripts/cm019-review-gates.test.mjs` 和本轮全套回归记录。[已结构化]

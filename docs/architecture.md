@@ -2,6 +2,9 @@
 
 CM Workflow has one workflow implementation and two runtime entry surfaces.
 
+New task baselines with explicit mandatory-acceptance declarations freeze `acceptance-contract.mjs` projections of approved obligations; legacy descriptive specs retain their original execution gates; host verification and the existing completion gate compare the same set and bound evidence. `completion-summary.mjs` derives read-only task/feature/project/run claims from original owners and strict QA evidence. Neither introduces a new approval or task database. `delivery-evidence.mjs` stores separately bound local human declarations under specs `.reviews/.delivery/`; these do not grant task or deployment authority. `run-analysis.mjs` reads a stable specs log and reuses the native usage reporter, without adding a state store. See [acceptance and completion boundaries](cm-acceptance-completion.md).
+PRD acceptance previews reuse the task contract builder before approval and bind source snapshots. Operator guidance adds read-only blockage details; bounded verification diagnostics persist in the existing checkpoint reason without creating recovery authority.
+
 ```mermaid
 flowchart LR
     Codex["Codex $cm-*"] --> Skills["skills/cm-*/SKILL.md"]

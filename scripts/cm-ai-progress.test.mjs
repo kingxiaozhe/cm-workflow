@@ -11,6 +11,7 @@ import {installSyntheticReview,syntheticReviewConfig} from './cm-ai-host-fixture
 import {createConversationExecution} from './cm-ai-host.mjs';
 import {createCmAiConversationEntry} from '../runtime/js/cm-ai/cm-ai-conversation-entry.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {captureSpecificationMaterial} from '../runtime/js/cm-ai/specification-material.mjs';
 
 const driver=fileURLToPath(new URL('./cm-ai-drive.mjs',import.meta.url));
 const home=fs.mkdtempSync(path.join(os.tmpdir(),'cm-progress-home-'));
@@ -35,6 +36,9 @@ function fixture(t){
   const answers=path.join(root,'answers');fs.mkdirSync(answers);
   fs.writeFileSync(path.join(answers,'target.txt'),'export const value=42;\n');
   fs.writeFileSync(path.join(answers,'develop.json'),JSON.stringify({status:'succeeded',value:{outcome:'implemented',
+    ...(captureSpecificationMaterial({specsRoot:specsDir,feature,taskId:identity.taskId}).acceptanceContract?{requirements:
+      captureSpecificationMaterial({specsRoot:specsDir,feature,taskId:identity.taskId}).acceptanceContract.obligations
+        .map(item=>({...item,satisfied:true,evidence:'Synthetic progress fixture implementation and check evidence'}))}:{}),
     application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}},edits:{'target.mjs':'target.txt'}}));
   fs.writeFileSync(path.join(root,'review.json'),JSON.stringify(syntheticReviewConfig(codeProject)));
   const plan=(checks,extra={})=>{
@@ -76,6 +80,8 @@ test('failed checks project blocked and do not start later commands or independe
   assert.equal(run.status,0,run.stderr);const result=JSON.parse(run.stdout).result;
   assert.equal(result.code,'develop_checks_not_passed');assert.equal(result.pendingAction,'resume');
   assert.equal(result.guidance.recoveryOperation,'advance');assert.equal(result.guidance.authorizationGranted,false);
+  assert.equal(result.guidance.blockage.phase.code,'checks');assert.equal(result.guidance.blockage.detail.status,'recorded');
+  assert.match(result.guidance.blockage.detail.text,/broken: failed/);assert.match(run.stderr,/缺项\/原因：develop_checks_not_passed: broken: failed/);
   assert.match(f.status().detail,/开发检查未通过/);assert.match(run.stderr,/恢复原运行并发送 advance/);
   assert.equal(f.status().state,'blocked');assert.equal(f.status().code,'develop_checks_not_passed');
   assert.equal(f.status().task,identity.taskId);assert.equal(fs.existsSync(marker),false);
@@ -103,6 +109,7 @@ test('guidance survives original-run status and recovery without writing it into
   assert.equal(result.identity.attempt,1);assert.equal(result.guidance,undefined);
   const after=snapshot();assert.deepEqual(after.records.slice(0,before.records.length),before.records);
   assert.equal(JSON.stringify(after.records).includes('recoveryOperation'),false);
+  assert.equal(JSON.stringify(after.records).includes('"blockage"'),false);
   assert(fs.readFileSync(path.join(f.specsDir,f.feature,'tasks.md'),'utf8').includes('- [ ] T-001'));
   assert(!f.events().some(row=>row.phase_name==='reviewing'),'start recovery preserves the development stage');
 });

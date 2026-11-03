@@ -40,15 +40,20 @@ function readResult(stdout,identity,specsDir) {
 export function recordCmAiRunDone(input) {
   const keys=['specsDir','codeProject','feature','identity','packageDigest','contextDigest','documentationSyncId'];
   if(input&&Object.hasOwn(input,'logHome'))keys.push('logHome');
+  if(input&&Object.hasOwn(input,'scopeFeatures'))keys.push('scopeFeatures');
   shape(input,keys);text(input.specsDir);text(input.codeProject);text(input.feature);validIdentity(input.identity);
   hex(input.packageDigest);hex(input.contextDigest);id(input.documentationSyncId);
+  if(Object.hasOwn(input,'scopeFeatures'))need(Array.isArray(input.scopeFeatures)&&input.scopeFeatures.length>0
+    &&new Set(input.scopeFeatures).size===input.scopeFeatures.length&&input.scopeFeatures.includes(input.feature)
+    &&input.scopeFeatures.every(name=>typeof name==='string'&&/^\d+\.[^/\\\x00-\x1f]+$/.test(name)),'invalid_input');
   need(validRunId(input.identity.runId),'invalid_run_id');
   statusTarget(input.specsDir);
   const data={node:'N8',feature:input.feature,task:input.identity.taskId,package_digest:input.packageDigest,
-    context_digest:input.contextDigest,documentation_sync_id:input.documentationSyncId};
+    context_digest:input.contextDigest,documentation_sync_id:input.documentationSyncId,
+    ...(input.scopeFeatures?{scope_features:input.scopeFeatures,repository_id:input.identity.repositoryId,attempt:input.identity.attempt}:{})};
   const args=[writer,'--workflow','cm-ai','--event','run_done','--runtime','codex',
     '--project-root',input.codeProject,'--specs-dir',input.specsDir,'--run-id',input.identity.runId,
-    '--detail','全部任务和文档同步已完成','--data-json',JSON.stringify(data)];
+    '--detail','本运行选定范围已通过收尾门禁；产品验收与部署另计','--data-json',JSON.stringify(data)];
   const options={timeout:10000,maxBuffer:MiB,killSignal:'SIGKILL'};
   if(Object.hasOwn(input,'logHome')){text(input.logHome);options.env={...process.env,CM_WORKFLOW_LOG_HOME:input.logHome};}
   let result;
@@ -61,7 +66,7 @@ export function recordCmAiRunDone(input) {
   catch{need(false,'run_finalize_unknown');}
   try {
     writeStatusProjection({specsDir:input.specsDir,feature:input.feature,identity:input.identity,node:'N8',
-      state:'run_done',detail:'全部任务和文档同步已完成'});
+      state:'run_done',detail:'本运行选定范围已收尾；产品验收与部署未由本记录证明'});
   }catch{need(false,'run_finalize_unknown');}
   return Object.freeze({eventId:receipt.event_id,runId:receipt.run_id,
     deduplicated:receipt.deduplicated,degraded:receipt.degraded});

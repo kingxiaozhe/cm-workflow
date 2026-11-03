@@ -7,6 +7,7 @@ import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
+import {analyzeRunRows} from '../runtime/js/run-analysis.mjs';
 import {createCmPrdAnalysis} from '../runtime/js/cm-prd/analysis.mjs';
 import {openPrdSession} from '../runtime/js/cm-prd/session.mjs';
 const FIXTURE_TIMEOUT_MS=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??60000);
@@ -148,6 +149,10 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
         send({requestId:'summary',operation:'prepare_summary'});
       }else if(message.requestId==='summary'){
         assert.equal(message.result.status,'human_summary_prepared');assert.equal(message.result.readyForAwaitingReview,true);
+        assert.equal(message.result.acceptancePreview.taskGrammar,3);
+        assert.deepEqual(message.result.acceptancePreview.scope.features,['1.guide']);
+        assert.equal(message.result.acceptancePreview.approvalAuthorized,false);
+        assert.equal(message.result.acceptancePreview.executionAuthorized,false);
         assert.deepEqual(message.result.currentFeatures,['1.guide']);
         assert.match(message.result.notes.join('\n'),/历史 feature 2.history.*旧版归档/);
         assert.equal(message.result.totals.tasks,1);assert.equal(message.result.checklist.every(item=>!item.checked),true);
@@ -166,7 +171,14 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
         assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'))).status,'awaiting_review');
         assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'.cm-specs-status'))).features,['1.guide','2.history']);
         send({requestId:'status',operation:'status'});
-      }else if(message.requestId==='status'){status=message.result;send({type:'host_close',sessionId});}
+      }else if(message.requestId==='status'){
+        status=message.result;
+        if(mode==='self-check'){
+          assert.deepEqual(status.acceptancePreview,status.summaryState.acceptancePreview);
+          assert.equal(status.acceptancePreview.taskGrammar,3);
+        }
+        send({type:'host_close',sessionId});
+      }
     }
     assert.equal((await closed)[0],0,stderr);
     assert.equal(status.stage,mode==='cancel'?'cancelled':mode==='draft'?'draft_ready':mode==='self-check'?'self_check_reported_passed':'analysis_ready');
@@ -175,6 +187,11 @@ for(const mode of ['codex','claude','cancel','cases','materials','draft','self-c
       assert.equal(fs.existsSync(path.join(dir,'1.guide')),false);
     }
     const events=fs.readFileSync(path.join(dir,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    const timing=analyzeRunRows(events).timing;
+    assert(timing.pairedSegments>0,'actual PRD producer timing must be recognized');
+    assert.equal(timing.unrecognizedEvents,0);assert.equal(timing.incompleteSegments,0);
+    if(mode==='draft'){assert(timing.combinedSegments>=3);assert(timing.stages.some(x=>x.stage==='design_generation'));}
+    if(mode==='codex'||mode==='claude')assert(timing.closedForInput>=1);
     assert.equal(events.filter(event=>event.event==='run_start').length,1);
     const done=events.filter(event=>event.event==='run_done');assert.equal(done.length,1);
     assert.equal(done[0].outcome,mode==='cancel'?'cancelled':'incomplete');

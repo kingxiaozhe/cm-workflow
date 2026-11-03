@@ -77,7 +77,20 @@ test(`trusted host execution uses the same entry and sole gate: ${mode} nested=$
     // include/follow its external metadata in the provider review package.
     fs.writeFileSync(path.join(f.codeProject,'.git'),'gitdir: /nonexistent/cm-synthetic-worktree-metadata\n');
     let stdout='',stderr='',calls=0,reviews=0;output.on('data',x=>stdout+=x);error.on('data',x=>stderr+=x);
+    fs.writeFileSync(path.join(f.specsDir,'1.login','tasks.md'),'- [ ] T-001: implement\n  - 必验: preserve implementation\n');
+    fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],specFiles:buildManifest(f.specsDir)}));
     const execution={configuration:{kind:'synthetic-host-v1'},timeoutMs:2000,excludedContexts:['main'],
+      verificationGate:async request=>{
+        // These fixtures deliberately vary Review, not the implemented task's
+        // acceptance. Bind the evidence to the fixed fixture and real check.
+        assert.equal(request.description,'implement');
+        assert.deepEqual(request.acceptanceContract.obligations.map(item=>item.requirement),['- [ ] T-001: implement','- 必验: preserve implementation']);
+        assert.equal(request.checks.length,1);assert.equal(request.checks[0].id,'content');
+        assert.equal(request.checks[0].outcome,'passed');
+        assert.match(fs.readFileSync(path.join(f.codeProject,'a.js'),'utf8'),/^new( 2)?\n$/);
+        return {satisfied:true,items:request.acceptanceContract.obligations.map(item=>({...item,satisfied:true,
+          evidence:'Synthetic fixture a.js matches the implemented value; the real content subprocess passed'}))};
+      },
       developer:{provider:'codex',requestedModel:'fixture',contextId:'dev',run:createCodexDeveloperRun({requestedModel:'fixture',worker:async({prompt})=>{
         // Attempt 2 must change the rejected bytes (develop_unchanged_after_review).
         calls++;fs.writeFileSync(path.join(f.codeProject,'a.js'),JSON.parse(prompt.split('<cm-developer-data-json>\n')[1]).identity.attempt===1?'new\n':'new 2\n');
@@ -367,13 +380,22 @@ test('trusted parallel selection binds admission, Learning, start and resume fin
   const {inspectCmAiTaskLearningInput}=await import('../runtime/js/cm-ai/cm-ai-context-refresh.mjs');
   const {createCodexDeveloperRun}=await import('../runtime/js/cm-ai/codex-developer-adapter.mjs');
   const {createCmAiHost}=await import('../runtime/js/cm-ai/host.mjs');
-  fs.writeFileSync(path.join(f.specsDir,'1.login','tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n');
+  fs.writeFileSync(path.join(f.specsDir,'1.login','tasks.md'),'- [ ] T-001: first\n- [ ] T-002: second\n  - 必验: preserve second\n- [ ] T-003: final\n\n- T-003 依赖 T-001, T-002\n');
   fs.writeFileSync(path.join(f.specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.login'],specFiles:buildManifest(f.specsDir)}));
   const definition={...f.definition,identity:{...identity,taskId:'T-002'}},parallelSelection={version:1,group:['T-001','T-002']};
   const learning={specsDir:f.specsDir,codeProject:f.codeProject,feature:'1.login',identity:definition.identity,applicableAgentFiles:[]};
   assert.throws(()=>inspectCmAiTaskLearningInput(learning),{code:'learning_context_invalid'});
   assert.equal(inspectCmAiTaskLearningInput(learning,{parallelSelection}).identity.taskId,'T-002');
   const execution={configuration:{kind:'selection-fixture'},timeoutMs:2000,excludedContexts:['host'],
+    verificationGate:async request=>{
+      assert.equal(request.description,'second');
+      assert.deepEqual(request.acceptanceContract.obligations.map(item=>item.requirement),
+        ['- [ ] T-002: second','- 必验: preserve second']);
+      assert.equal(fs.readFileSync(path.join(f.codeProject,'a.js'),'utf8'),'selected implementation\n');
+      assert.equal(request.checks[0].outcome,'passed');
+      return {satisfied:true,items:request.acceptanceContract.obligations.map(item=>({...item,satisfied:true,
+        evidence:'Synthetic selected implementation bytes and T-002 dependency references match this fixed fixture'}))};
+    },
     developer:{provider:'codex',requestedModel:'fixture',contextId:'author',run:createCodexDeveloperRun({requestedModel:'fixture',worker:async()=>{fs.writeFileSync(path.join(f.codeProject,'a.js'),'selected implementation\n');return {status:'succeeded',value:{outcome:'implemented',
       application:{status:'no_relevant_lesson',note:null},retrospective:{status:'no_new_lesson',candidates:[],reason:null}}};}})},
     check:async()=>[{id:'check',command:['fixture'],outcome:'passed',exitCode:0,evidence:'fixture'}],reviewers:[{id:'reviewer',adapterId:'codex-review-adapter',provider:'codex',

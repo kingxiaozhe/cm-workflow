@@ -15,6 +15,7 @@ import {REVIEWED_HANDOFF_HINT} from './host-handoff.mjs';
 import {readHostQaFixHandoff} from './host-qa-fix.mjs';
 import {readCloseoutPolicy,readCloseoutReport,closeoutSummary} from './knowledge-closeout.mjs';
 import {digest,freeze,hex,id,json,need,shape,text,validIdentity} from './effect-contract.mjs';
+import {completionSummary,taskCompletion} from './completion-summary.mjs';
 
 const sameIdentity=(left,right)=>['repositoryId','runId','taskId','attempt'].every(key=>left[key]===right[key]);
 const sameTask=(left,right)=>['repositoryId','runId','taskId'].every(key=>left[key]===right[key]);
@@ -97,7 +98,7 @@ export const developFailureClass=status=>{
 };
 const summary=(operation,status,outcome)=>freeze({version:1,workflow:'cm-ai',operation:operation.operation,
   requestDigest:digest(operation),identity:status.identity,outcome,state:status.state,code:status.code??null,
-  packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),
+  packageDigest:status.packageDigest??null,pendingAction:pendingAction(status),completion:{task:taskCompletion(status)},
   ...(status.reviewReconciliation?{reviewReconciliation:status.reviewReconciliation}:{}),
   ...(status.effectiveScope?{effectiveScope:status.effectiveScope}:{}),
   ...(status.acceptedIntegrationDigest?{acceptedIntegrationDigest:status.acceptedIntegrationDigest}:{}),
@@ -218,7 +219,7 @@ const contextSummary=(operation,status,refresh)=>freeze({version:1,workflow:'cm-
   requestDigest:digest(operation),identity:status.identity,outcome:'refreshed',state:status.state,
   code:refresh.state==='complete'?'context_complete':'context_refreshed',packageDigest:status.packageDigest,
   pendingAction:refresh.state==='complete'?'finish':'start_next_task',nextTask:refresh.nextTask,
-  contextDigest:refresh.contextDigest,contextFiles:refresh.contextFiles});
+  contextDigest:refresh.contextDigest,contextFiles:refresh.contextFiles,completion:{task:taskCompletion(status)}});
 
 function validateDocumentationResult(result,status,refresh,policy=null) {
   shape(result,['syncId','identity','packageDigest','contextDigest','status','reason','at',
@@ -877,13 +878,15 @@ export function createCmAiConversationEntry(options) {
           +'宿主只在运行日志记有该命令进程组身份且核对进程组已退出时补记释放；先结束残留进程后重发 run_finalize，记录里没有进程身份的旧资源需人工处理。'},'blocked');
       const input={specsDir:options.specsDir,codeProject:options.codeProject,feature:options.feature,identity,
         packageDigest:operation.packageDigest,contextDigest:refresh.contextDigest,
-        documentationSyncId:documentation.syncId};
+        documentationSyncId:documentation.syncId,
+        scopeFeatures:[...new Set(refresh.contextFiles.filter(file=>file.scope==='specs'&&file.path.endsWith('/tasks.md'))
+          .map(file=>file.path.split('/')[0]))].sort()};
       if(Object.hasOwn(options,'qaLogHome'))input.logHome=options.qaLogHome;
       const result=recordCmAiRunDone(input);
       return freeze({version:1,workflow:'cm-ai',operation:operation.operation,requestDigest:digest(operation),identity,
         outcome:'finalized',state:'run_done',code:result.degraded?'run_done_degraded':'run_done',
         packageDigest:operation.packageDigest,pendingAction:'none',contextDigest:refresh.contextDigest,
-        deduplicated:result.deduplicated,degraded:result.degraded,
+        deduplicated:result.deduplicated,degraded:result.degraded,completion:{task:taskCompletion(status)},
         ...closeoutSummary(knowledgeCloseout,documentation)});
     }
     need(['start','resume'].includes(operation.operation),'invalid_input');
@@ -927,8 +930,9 @@ export function createCmAiConversationEntry(options) {
         token=Symbol(operation.operation);inFlightHandles.add(token);
       }
       const routed=await route(operation);
-      const guidance=operatorGuidance(routed,{executionActive:inFlightHandles.size>(token===null?0:1)});
-      const result=guidance?freeze({...routed,guidance}):routed;
+      const projected={...routed,completion:completionSummary({specsDir:options.specsDir,feature:options.feature,result:routed})};
+      const guidance=operatorGuidance(projected,{executionActive:inFlightHandles.size>(token===null?0:1)});
+      const result=freeze({...projected,...(guidance?{guidance}:{})});
       if(!admissionReports.has(routed)&&(epoch===cancellationEpoch||operation.operation==='cancel'))projectHostResult({specsDir:options.specsDir,
         feature:options.feature,result,readCurrent:()=>runner.status()});
       return result;

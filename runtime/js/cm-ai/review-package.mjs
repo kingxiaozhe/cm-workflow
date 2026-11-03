@@ -466,7 +466,7 @@ const sealed = (data,key) => {
   need(Buffer.byteLength(JSON.stringify(result))<=8*1024*1024,'limit_exceeded');
   return freeze(result);
 };
-export function captureReviewBaseline(options,legacy=false,policyVersion=2,baselinePolicy=null) {
+export function captureReviewBaseline(options,legacy=false,policyVersion=2,baselinePolicy=null,acceptance=true) {
   const v=plain(options); keys(v,['root','identity','scope','requirements',
     ...['specsRoot','codeProjectPaths','bootstrapRequirements','specification','version','scopeRevisionPaths'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
   const version=v.version??2;need([1,2].includes(version));
@@ -480,7 +480,7 @@ export function captureReviewBaseline(options,legacy=false,policyVersion=2,basel
   if(Object.hasOwn(v,'specification')){
     keys(v.specification,['specsRoot','feature']);
     need(v.specification.specsRoot===v.specsRoot,'spec_drift');
-    specification=captureSpecificationMaterial({...v.specification,taskId:v.identity.taskId});
+    specification=captureSpecificationMaterial({...v.specification,taskId:v.identity.taskId,acceptance});
   }
   const scope=paths(v.scope), requirements=requirementPaths(v.requirements,bootstrap!==null||specification!==null),root=rootPath(v.root);
   need(![...scope,...requirements].some(p=>inDependencyDirectory(p)||inCocoaPodsTree(root,p)),'excluded_snapshot_path');

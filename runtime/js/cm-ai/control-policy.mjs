@@ -9,7 +9,9 @@ export const CONTROL_RECOVERY_OPERATIONS=Object.freeze(['abandon_review','abando
 export const CONTROL_FIX_RECOVERY_OPERATIONS=Object.freeze(['abandon_step','abandon_review','rediagnose',
   'rerun_blocked_step','recover_final_review','reconcile_review']);
 // verification is optional so policies saved before it existed keep their exact
-// digest; absent means the same as disabled. precheck enables the delivery
+// digest; absent means the same as disabled for legacy baselines. New baselines
+// carry a mandatory acceptanceContract; disabled never disables that contract.
+// precheck enables the delivery
 // verification gate for every launch of the run it is saved into; auto enables
 // the same gate answered by the host (verification-auto.mjs), for unattended runs.
 export function readControlPolicy(raw){

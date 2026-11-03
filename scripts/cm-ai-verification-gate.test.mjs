@@ -113,5 +113,5 @@ test('the gate receives both the task description and the verification section',
   assert.match(body[1],/written\(description\)\?\{description\}/);
   assert.match(body[1],/written\(verification\)\?\{verification\}/);
   // The gate steps aside only when neither exists.
-  assert.match(body[1],/if\(!written\(verification\)&&!written\(description\)\)return true;/);
+  assert.match(body[1],/if\(!contract&&!written\(verification\)&&!written\(description\)\)return true;/);
 });

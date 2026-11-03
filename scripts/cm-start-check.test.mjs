@@ -6,7 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {CHECK_CALL_LIMIT_MS, MAX_SCOPE_PATHS} from './cm-start-check.mjs';
+import {CHECK_CALL_LIMIT_MS, MAX_SCOPE_PATHS, startCheck, checkMandatoryTests} from './cm-start-check.mjs';
+import {buildManifest} from './cm-spec-manifest.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const script = path.join(here, 'cm-start-check.mjs');
@@ -51,6 +52,49 @@ const checkWithEnv = (p, env) => {
 const codes = report => report.findings.map(item => item.code);
 const cmd = (id, command, timeoutMs) => ({id, command, ...(timeoutMs === undefined ? {} : {timeoutMs})});
 const xcode = (id, ...extra) => cmd(id, ['xcodebuild', 'test', '-scheme', 'App', '-destination', 'id=U1', ...extra]);
+
+test('frozen required tests produce an error without upgrading unrelated affected-map warnings', t => {
+  const p = project(t, {scope: ['src/a.js'], files: {'src/a.js': 'a\n', 'TESTING.md':
+    '## 牵连测试\n\n| 路径 | 测试 |\n| --- | --- |\n| src/a.js | AppUITests/OldTests AppUITests/NewTests |\n'},
+  checks: [cmd('ui', ['/usr/bin/xcodebuild','test','-scheme','App','-only-testing:AppUITests/NewTests'])]});
+  assert.equal(check(p).status, 0, 'without a frozen contract the existing diagnostic remains advisory');
+  const findings = startCheck(p.planFile, {requiredTests: ['AppUITests/OldTests']});
+  assert.equal(findings.find(item => item.code === 'affected_tests_not_run').level, 'warn');
+  assert.equal(findings.find(item => item.code === 'mandatory_tests_not_covered').level, 'error');
+  assert.deepEqual(findings.find(item => item.code === 'mandatory_tests_not_covered').tests, ['AppUITests/OldTests']);
+  const approvedSubset = startCheck(p.planFile, {requiredTests: ['AppUITests/NewTests']});
+  assert.equal(approvedSubset.some(item => item.level === 'error'), true);
+  assert.deepEqual(approvedSubset.find(item=>item.code==='mandatory_tests_not_covered').unverifiable,['AppUITests/NewTests']);
+  assert.equal(approvedSubset.find(item => item.code === 'affected_tests_not_run').level, 'warn');
+});
+
+test('mandatory selection never accepts a wrapper solely because its arguments contain a test name', () => {
+  const findings = checkMandatoryTests({checks: [cmd('wrapper', ['bash', 'tests.sh', 'AppUITests/OldTests'])]}, ['AppUITests/OldTests']);
+  assert.equal(findings[0].level, 'error');
+  assert.deepEqual(findings[0].unverifiable, ['AppUITests/OldTests']);
+  assert.deepEqual(checkMandatoryTests({checks: {}}, []), [], 'an absent contract does not change legacy input handling');
+  assert.equal(checkMandatoryTests({checks: {}}, ['AppUITests/OldTests'])[0].level, 'error');
+});
+
+test('the real CLI reads mandatory checks from approved specs, never the editable PLAN',t=>{
+  const p=project(t,{checks:[cmd('tests',[process.execPath,'--test','a.test.js'])]});
+  const directory=path.join(path.dirname(p.planFile),'specs');fs.mkdirSync(path.join(directory,'1.demo'),{recursive:true});
+  const specsDir=fs.realpathSync(directory),feature='1.demo';
+  fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: implement AC-001\n  - 必跑测试: `a.test.js`, `b.test.js`\n');
+  fs.writeFileSync(path.join(specsDir,feature,'requirements.md'),'- [ ] [AC-001] preserve both tests\n');
+  fs.writeFileSync(path.join(specsDir,feature,'design.md'),'simple\n');
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
+  const config=path.join(path.dirname(p.planFile),'run.json'),definition=JSON.parse(fs.readFileSync(config,'utf8'));
+  fs.writeFileSync(config,JSON.stringify({...definition,specsDir,feature,identity:{repositoryId:'fixture',runId:'start-check',taskId:'T-001',attempt:1}}));
+  const before=snapshot(specsDir),missing=check(p);
+  assert.equal(missing.status,1);assert.ok(codes(missing.report).includes('mandatory_checks_not_covered'));
+  const plan=JSON.parse(fs.readFileSync(p.planFile,'utf8'));plan.requiredTests=[];
+  fs.writeFileSync(p.planFile,JSON.stringify(plan));assert.equal(check(p).status,1,'PLAN cannot waive approved obligations');
+  plan.checks[0].command.push('b.test.js');fs.writeFileSync(p.planFile,JSON.stringify(plan));
+  assert.equal(check(p).status,0);assert.deepEqual(snapshot(specsDir),before,'preflight never writes specs');
+  fs.appendFileSync(path.join(specsDir,feature,'tasks.md'),'  - extra unapproved requirement\n');
+  assert.equal(check(p).status,2,'unapproved drift is not treated as no contract');
+});
 
 function snapshot(dir) {
   const rows = [];
@@ -403,4 +447,35 @@ test('repository config cannot run programs: fsmonitor, clean, process and requi
   const r = checkWithEnv(p, {...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`});
   assert.equal(fs.existsSync(mark), false);
   assert.equal(r.status, 0);
+});
+
+test('B1 legacy empty-spec preflight keeps scope diagnostics without permitting incomplete mandatory specifications',t=>{
+  const p=project(t,{scope:['AGENTS.md','src/a.js'],repo:false,checks:[cmd('syntax',[process.execPath,'--check','src/a.js'])]});
+  const specsDir=path.join(fs.realpathSync(p.dir),'specs');fs.mkdirSync(specsDir);
+  const config=path.join(p.planDir,'run.json'),definition=JSON.parse(fs.readFileSync(config,'utf8'));
+  fs.writeFileSync(config,JSON.stringify({...definition,specsDir,feature:'1.demo',identity:{repositoryId:'fixture',runId:'preflight',taskId:'T-001',attempt:1}}));
+  const before=snapshot(specsDir),legacy=check(p);
+  assert.equal(legacy.status,1,legacy.err);assert(codes(legacy.report).includes('protected_scope'));
+  assert.equal(snapshot(specsDir),before,'scope diagnostics do not create approval or execution evidence');
+  const alias=path.join(p.dir,'specs-alias');fs.symlinkSync(specsDir,alias);
+  const selected=JSON.parse(fs.readFileSync(config,'utf8'));fs.writeFileSync(config,JSON.stringify({...selected,specsDir:alias}));
+  assert.equal(check(p).status,2,'a linked specs root cannot acquire the empty-spec compatibility exception');
+  fs.writeFileSync(config,JSON.stringify({...selected,feature:'../escape'}));assert.equal(check(p).status,2,'feature containment is not bypassed');
+  fs.writeFileSync(config,JSON.stringify(selected));
+  const originalPlan=fs.readFileSync(p.planFile);fs.writeFileSync(p.planFile,JSON.stringify({...JSON.parse(originalPlan),mode:'resume'}));
+  assert.equal(check(p).status,2,'resume always requires its original owner');fs.writeFileSync(p.planFile,originalPlan);
+  const statusPath=path.join(specsDir,'.cm-specs-status');fs.symlinkSync(path.join(p.dir,'absent-status'),statusPath);
+  assert.equal(check(p).status,2,'dangling status link is present, not a legacy absence');fs.unlinkSync(statusPath);
+  const originalStat=fs.lstatSync;
+  fs.lstatSync=function(file,...args){if(file===statusPath)throw Object.assign(new Error('fixture denied'),{code:'EACCES'});return originalStat.call(this,file,...args);};
+  try{assert.throws(()=>startCheck(p.planFile),/必验合同无法/,'read failures are not absence');}finally{fs.lstatSync=originalStat;}
+  const external=path.join(p.dir,'external-feature');fs.mkdirSync(external);fs.symlinkSync(external,path.join(specsDir,'1.demo'));
+  assert.equal(check(p).status,2,'a linked feature is present evidence, never absence');fs.unlinkSync(path.join(specsDir,'1.demo'));
+  fs.symlinkSync(path.join(p.dir,'absent-feature'),path.join(specsDir,'1.demo'));
+  assert.equal(check(p).status,2,'dangling feature links also remain strict');fs.unlinkSync(path.join(specsDir,'1.demo'));
+  fs.mkdirSync(path.join(specsDir,'1.demo'));fs.writeFileSync(path.join(specsDir,'1.demo','tasks.md'),'- [ ] T-001: 必验: verify all files\n');
+  assert.equal(check(p).status,2,'a present mandatory specification without approval cannot be downgraded to legacy');
+  fs.rmSync(path.join(specsDir,'1.demo'),{recursive:true});
+  fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.demo']}));
+  assert.equal(check(p).status,2,'an existing approval with missing source remains a hard input error');
 });

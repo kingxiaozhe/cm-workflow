@@ -70,7 +70,9 @@ export function main(argv=process.argv.slice(2),{env=process.env,stdout=process.
       for(const dir of directories)for(const name of ['requirements.md','design.md','tasks.md','test-cases.json']){
         const file=path.join(specs,dir,name);if(fs.existsSync(file))files[`${dir}/${name}`]=fs.readFileSync(file,'utf8');
       }
-      problem=standingProposalProblem({directories,files},proposal);
+      const statusFile=path.join(specs,'.cm-specs-status');
+      problem=standingProposalProblem({directories,files,
+        ...(fs.existsSync(statusFile)?{status:fs.readFileSync(statusFile,'utf8')}:{})},proposal);
     }catch{problem='读不到提案或规格目录';}
     stdout.write(problem?`不能自行批准：${problem}。这是致命停车：不要发送 decision，先提醒用户。\n`:'可以按常设授权自行批准。\n');
     return problem?1:0;

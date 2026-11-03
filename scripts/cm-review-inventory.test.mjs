@@ -434,6 +434,8 @@ import {buildDeveloperPrompt,readDeveloperRequest} from '../runtime/js/cm-ai/dev
 import {requestFor} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {reviewResult,reviewPaths,reviewReceipt} from '../runtime/js/cm-ai/review-runner.mjs';
 import {checkCompletion} from '../runtime/js/cm-ai/gate-bridge.mjs';
+import {encodeAcceptanceEvidence,acceptanceCoverage} from '../runtime/js/cm-ai/acceptance-contract.mjs';
+import {createHostHandoff} from '../runtime/js/cm-ai/host-handoff.mjs';
 
 function specificationFixture(t,{cases=true,design='export function normalizePriority(value): Priority;\n'}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-specification-')));
@@ -530,22 +532,35 @@ for(const size of [65536,65537,1024*1024+4])test(`design byte limit ${size} pres
   assert(design.startsWith(material.designExcerpt));
 });
 
-test('new specification and legacy packages both retain receipt completion eligibility',t=>{
-  const f=specificationFixture(t),baseline=f.capture();
+test('new specification requires bound acceptance evidence while legacy receipt eligibility is retained',t=>{
+  const f=specificationFixture(t);
+  f.writeSpec('tasks.md',fs.readFileSync(path.join(f.specsRoot,f.feature,'tasks.md'),'utf8').replace('T-001: implement','T-001: 必验: implement'));f.approve();
+  const baseline=f.capture();
   const legacyBaseline=captureReviewBaseline({root:f.code,identity,scope:['code.js'],requirements:['requirements.md']});
   write(f.code,'code.js','after');
-  const current=createReviewPackage({root:f.code,baseline,checks});
+  const contract=baseline.specification.acceptanceContract;
+  const acceptedChecks=contract.requiredCommands.map((command,index)=>({...checks[0],id:`declared-${index}`,
+    command:command.map((token,at)=>at===0&&token==='node'?process.execPath:token)}));
+  const incomplete=createReviewPackage({root:f.code,baseline,checks:acceptedChecks});
+  const handoffPath=path.join(f.specsRoot,'.reviews','priority-T-001-a1-handoff.json');
+  fs.mkdirSync(path.dirname(handoffPath),{recursive:true});
+  const evidence=encodeAcceptanceEvidence({contract,identity,items:contract.obligations.map(item=>({...item,satisfied:true,
+    evidence:'Synthetic fixture approval input, not a product execution'})),facts:null,coverage:acceptanceCoverage(contract,acceptedChecks)});
+  createHostHandoff({root:f.code,baseline,checks:acceptedChecks,handoffPath,evidence:[evidence]});
+  const current=createReviewPackage({root:f.code,baseline,checks:acceptedChecks,handoffPath});
   const old=createReviewPackage({root:f.code,baseline:legacyBaseline,checks});
   const {unchangedScope,packageDigest,...oldBody}=old,legacy={...oldBody,packageDigest:digest(oldBody)};
-  for(const pkg of [current,legacy]){
+  for(const pkg of [incomplete,current,legacy]){
     assert.deepEqual(readReviewPackage(pkg),pkg);
     const result=reviewResult({verdict:'approved',packageDigest:pkg.packageDigest,examinedPaths:reviewPaths(pkg),findings:[],summary:'Synthetic review'},pkg);
     const request=requestFor({invocationId:'receipt',identity,role:'reviewer',provider:'claude',requestedModel:'fixture',contextId:'reviewer',payload:{reviewPackage:pkg,priorReview:null}});
     const call={invocationId:request.invocationId,started:true,terminal:'succeeded',requestDigest:request.requestDigest,resultDigest:digest(result),
       provider:'claude',contextId:'reviewer',requestedModel:'fixture',effectiveModel:'fixture',channel:'fixture'};
     const receipt=reviewReceipt({request,call,result,reviewPackage:pkg,developerProvider:'codex',fallbackReasons:[]});
-    assert.equal(checkCompletion({receipt,registered:receipt,execution:call,reviewPackage:pkg,identity}).outcome,'eligible');
-    assert.equal(verifyReviewPackage({root:f.code,baseline:pkg===current?baseline:legacyBaseline,checks,reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
+    if(pkg===incomplete)assert.throws(()=>checkCompletion({receipt,registered:receipt,execution:call,reviewPackage:pkg,identity}),{code:'verification_precheck_failed'});
+    else assert.equal(checkCompletion({receipt,registered:receipt,execution:call,reviewPackage:pkg,identity}).outcome,'eligible');
+    assert.equal(verifyReviewPackage({root:f.code,baseline:pkg===legacy?legacyBaseline:baseline,checks:pkg===legacy?checks:acceptedChecks,
+      ...(pkg===current?{handoffPath}:{}),reviewPackage:pkg,expectedDigest:pkg.packageDigest}).outcome,'matched');
   }
 });
 

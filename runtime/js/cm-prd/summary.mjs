@@ -17,6 +17,7 @@ import {prdTaskScopeOptions} from './task-scope-record.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdFailedCorrection} from './failed-correction.mjs';
 import {prdDesignRiskSignals} from './design-risk.mjs';
+import {summaryAcceptancePreview} from './acceptance-preview.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
 export function inspectPrdSummaryEvidence(specs,{currentFeatures}={}){
@@ -215,7 +216,11 @@ export function createPrdSummaryOwner({summarize}){
     if(evidence.predecessor)revisionNotes.push(`前序批次 ${evidence.predecessor.sessionId} 因输入已替换而结束；原因：${evidence.predecessor.reason}。旧证据仅作历史，本批全部重新审查。`);
     const humanDetails=riskCard.length||revisionNotes.length?{...details,risks:[...riskCard.map(risk=>
       `${risk.feature}：修正自检失败，待人工裁决；${JSON.stringify(risk.failedChecks)}`),...revisionNotes,details.risks].join('\n')}:details;
+    const acceptancePreview=summaryAcceptancePreview({documents:evidence.documents,currentFeatures:scope.currentFeatures,
+      statusBytes:readCmInitSource(specs,'.cm-specs-status'),taskGrammar:options.taskGrammar??2});
+    need(digest(inspectPrdSummaryEvidence(specs,scope))===evidenceDigest,'prd_summary_inputs_changed');
     const summary=json({...(evidence.predecessor?{predecessor:evidence.predecessor}:{}),status:'human_summary_prepared',evidenceDigest,details:humanDetails,features:evidence.features,totals,
+      acceptancePreview,
       ...(riskCard.length?{riskCard}:{}),
       ...(evidence.currentFeatures===undefined?{}:{currentFeatures:evidence.currentFeatures}),
       notes,historicalSummary:`历史 feature：${historical.length} 个已登记，${historical.filter(item=>Object.values(item.reviews).some(review=>review.archive)).length} 个含旧版归档说明`,
