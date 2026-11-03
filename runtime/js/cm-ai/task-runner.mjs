@@ -346,10 +346,11 @@ export function createTaskRunner(options) {
   // Other task runs' committed, reviewed deliveries in this specs root, only
   // those reviewed after this run's own approving review, and the live proof
   // that recorded interleaving steps are exactly such deliveries.
-  const laterDeliveries=()=>completedReviewedDeliveries({specsRoot:completion.owner.specsRoot,root:config.root,identity:config.identity});
+  const laterDeliveries=()=>completedReviewedDeliveries({specsRoot:completion.owner.specsRoot,root:config.root,identity:config.identity,
+    tasksPath:completion.owner.tasksPath??null});
   const reviewedAt=()=>approvedReviewAt({reviewInvocation,reviewPackage});
   const resolveSteps=(steps,allowAbsent=false)=>resolveDeliverySteps({specsRoot:completion.owner.specsRoot,root:config.root,
-    identity:config.identity,after:reviewedAt(),steps,allowAbsent});
+    identity:config.identity,tasksPath:completion.owner.tasksPath??null,after:reviewedAt(),steps,allowAbsent});
   // This run's own QA fixes take their place in the same order at the final
   // review time their completion evidence cites (evidence: a fix not yet accepted).
   const fixTime=(evidence=null)=>fix=>{
@@ -703,13 +704,15 @@ export function createTaskRunner(options) {
           need(digest(readReviewSourceFiles(path.dirname(handoff),[path.basename(handoff)])[0])===digest(reviewPackage.handoff),'package_mismatch');
         }
         explainCompletedDelivery({root:config.root,baseline:base,parentPackage:reviewPackage,deliveries:laterDeliveries(),after:reviewedAt(),
+          tasksPath:completion.owner.tasksPath??null,
           since:firstReviewAt(journal,config.identity)});
       }
       return current;
     } catch(error){
       return freeze({...current,code:'correction_review_required',...(error?.code==='fix_current_code_unexplained'
         ?{reason:`未经审查的改动：${error.paths.slice(0,20).join(', ')}${error.paths.length>20?` 等 ${error.paths.length} 个路径`:''}`}
-        :error?.code==='fix_association_unverified'?{reason:'已登记 QA 修复所接续的后续交付无法按其运行存档核实（存档缺失、未完成或内容不符）'}:{})});
+        :error?.code==='fix_association_unverified'?{reason:'已登记 QA 修复所接续的后续交付无法按其运行存档核实（存档缺失、未完成或内容不符）'}
+        :error?.code==='user_maintained_invalid'?{reason:`代码根的用户维护文件声明 .cm-user-maintained.json 无效：${error.detail}`}:{})});
     }
   };
   const halt=(next,why,detail=null)=>{state=next;code=why;reason=detail;};

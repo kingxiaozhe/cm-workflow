@@ -223,7 +223,7 @@ export function verifyReviewedIntegration({root,specsRoot,baseline,parentPackage
   equal(history.state.reviewPackage,pkg);
   const after=approvedReviewAt(history.state),since=firstReviewAt(records,pkg.identity);
   need(Number.isSafeInteger(after)&&Number.isSafeInteger(since),'integration_order_unverified');
-  const deliveries=completedReviewedDeliveries({specsRoot,root,identity:pkg.identity});
+  const deliveries=completedReviewedDeliveries({specsRoot,root,identity:pkg.identity,tasksPath:init.config.completion?.owner?.tasksPath??null});
   const sources=resolveSources(plan,{root,specsRoot,deliveries,after});
   if(plan.snapshots){
     const instructions=[...learningPaths(records),...sources.flatMap(row=>row.learningPaths)];

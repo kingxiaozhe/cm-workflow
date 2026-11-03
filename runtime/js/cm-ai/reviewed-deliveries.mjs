@@ -11,11 +11,12 @@ import path from 'node:path';
 import {readExecutionSnapshot} from './execution-snapshot.mjs';
 import {readRunnerHistory} from './durable-runner-state.mjs';
 import {inspectFixCompletionHistory} from '../cm-fix/execution.mjs';
-import {deliveredAfter,deliveryStep} from './fix-code-association.mjs';
+import {deliveredAfter,deliveryStep,sameDeliveryTask} from './fix-code-association.mjs';
 import {digest,need} from './effect-contract.mjs';
 
 const RUN_ID=/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const cache=new Map();
+export {sameDeliveryTask};
 
 function readDelivery(specsRoot,identity,read={}){
   try{
@@ -30,6 +31,7 @@ function readDelivery(specsRoot,identity,read={}){
     // Each package carries its own review time: the run's approving review, or
     // for an accepted QA fix the fix's final review registration it cites.
     return Object.freeze({runId:identity.runId,root:init.config.root,taskId:init.config.identity.taskId,
+      tasksPath:init.config.completion?.owner?.tasksPath??null,
       packages:Object.freeze([{pkg:state.reviewPackage,reviewedAt:approvedReviewAt(state)},
         ...history.acceptedFixes.map(item=>({pkg:item.evidence.reviewPackage,reviewedAt:fixReviewedAt(specsRoot,item.evidence)}))])});
   }catch{return null;}
@@ -43,7 +45,7 @@ function readDelivery(specsRoot,identity,read={}){
 function readFixDelivery(specsRoot,identity,configuration){
   if(Object.hasOwn(configuration??{},'qaSource')||configuration?.archiveMode!==undefined)return null;
   const {identity:fixIdentity,evidence}=inspectFixCompletionHistory({specsRoot,identity});
-  return Object.freeze({runId:identity.runId,root:fs.realpathSync(configuration.reproduction.cwd),taskId:fixIdentity.taskId,
+  return Object.freeze({runId:identity.runId,root:fs.realpathSync(configuration.reproduction.cwd),taskId:fixIdentity.taskId,tasksPath:null,
     packages:Object.freeze([{pkg:evidence.reviewPackage,reviewedAt:fixReviewedAt(specsRoot,evidence)}])});
 }
 // A QA fix package's durable review time: the final review registration its
@@ -84,7 +86,7 @@ function cachedDelivery(specsRoot,repositoryId,runId,stat){
 // Resolve recorded steps to the real, completed, later reviewed packages of the
 // named runs. allowAbsent is only for journal replay: a missing store cannot be
 // re-proved there (returns null), and every live use refuses it.
-export function resolveDeliverySteps({specsRoot,root,identity,after,steps,allowAbsent=false}){
+export function resolveDeliverySteps({specsRoot,root,identity,tasksPath=null,after,steps,allowAbsent=false}){
   const resolved=[];
   for(const step of steps){
     need(RUN_ID.test(step.runId)&&step.runId!==identity.runId,'fix_association_unverified');
@@ -92,7 +94,7 @@ export function resolveDeliverySteps({specsRoot,root,identity,after,steps,allowA
     try{stat=fs.lstatSync(path.join(specsRoot,'.reviews','.execution',step.runId,'state.json'));}
     catch(error){if(error.code==='ENOENT'){need(allowAbsent,'fix_association_unverified');return null;}throw error;}
     const delivery=cachedDelivery(specsRoot,identity.repositoryId,step.runId,stat);
-    need(delivery&&delivery.root===root&&delivery.taskId!==identity.taskId,'fix_association_unverified');
+    need(delivery&&delivery.root===root&&!sameDeliveryTask(delivery,{taskId:identity.taskId,tasksPath}),'fix_association_unverified');
     const found=delivery.packages.find(item=>item.pkg.packageDigest===step.packageDigest);
     need(found&&deliveredAfter(found,after)&&digest(deliveryStep(step.runId,found.pkg,step.beforeFix))===digest(step),'fix_association_unverified');
     resolved.push({...step,pkg:found.pkg});
@@ -102,8 +104,9 @@ export function resolveDeliverySteps({specsRoot,root,identity,after,steps,allowA
 
 // Deliveries for the same code root and repository, excluding the caller's own
 // run and any other run of the same task: a superseding rerun of a task is not
-// a later change that its superseded run may adopt.
-export function completedReviewedDeliveries({specsRoot,root,identity}){
+// a later change that its superseded run may adopt. tasksPath: the caller's
+// feature tasks.md (sameDeliveryTask); null keeps the task-id-only exclusion.
+export function completedReviewedDeliveries({specsRoot,root,identity,tasksPath=null}){
   const execution=path.join(specsRoot,'.reviews','.execution');
   let entries;
   try{entries=fs.readdirSync(execution,{withFileTypes:true});}catch{return [];}
@@ -114,7 +117,7 @@ export function completedReviewedDeliveries({specsRoot,root,identity}){
     try{stat=fs.lstatSync(path.join(execution,entry.name,'state.json'));}catch{continue;}
     // Replay once per journal version; a changed state.json is read again.
     const delivery=cachedDelivery(specsRoot,identity.repositoryId,entry.name,stat);
-    if(delivery&&delivery.root===root&&delivery.taskId!==identity.taskId)deliveries.push(delivery);
+    if(delivery&&delivery.root===root&&!sameDeliveryTask(delivery,{taskId:identity.taskId,tasksPath}))deliveries.push(delivery);
   }
   return deliveries;
 }
