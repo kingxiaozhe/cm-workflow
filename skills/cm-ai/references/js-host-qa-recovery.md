@@ -26,7 +26,8 @@ QA 修复子操作使用原已配置 `qaFix:"manual"|"auto"`；先 fix_status �
 
 ## 补挂 QA
 
-**v2：** 不能靠补挂把冻结的 qa:disabled 改为 qa:run，也不能用 legacy 权限绕开策略/配置指纹。没给 `--workflow-config` 的 v2 运行也有 `qa_assess` 判定；本修复前创建的这类运行恢复时按原样打开，仍会停在 `qa_decision_required`，只能按「卡死任务重开」用新 runId 重做。没有可用 QA 配置/执行能力时保留 qa_triggered 或具体准入阻断，报告当前缺口；本轮未提供切换策略的补挂恢复入口。下面一次性附加步骤仅用于 legacy 的原运行。
+**v2：** 不能用 legacy 权限绕开策略/配置指纹。单任务运行用 `qa:"disabled"` 创建并已到 `fixture_completed`（含停在 `qa_triggered/pendingAction:qa_execution`）时，可补开一次 QA：`--mode resume` 换一份只把 `qa` 改为 `run`、其余字段逐字不变的策略，并带含 `qa` 的 `--workflow-config`；不带 `--allow-*` 或 `--expected-control`。宿主按原策略与去掉 QA 的原配置核对原指纹，追加 `qa-attached`、日志写 `decision/qa_attach`，存档原策略不改写，再按原 N6 门禁跑 QA。补开那次不能并用其他启动恢复（`invalid_input`）；之后普通恢复用补开后的策略与当前绑定的 QA 配置，不能关回 disabled，显式 QA 配置修订仍走下方原入口。任务未完成报 `qa_attach_not_completed`，策略其他字段也变报 `fingerprint_mismatch`，缺 QA 工作流报 `invalid_arguments`（驾驶员可能启动前拒绝）；批次成员未覆盖。完整合同见 [control policy v2](../../../docs/cm-control-policy-v2.md)「已完成运行补开 QA」（事故：AI潮 specs7 按本节旧说法以为 v2 无补开入口，五个 feature 收不了尾）。
+没给 `--workflow-config` 的 v2 运行也有 `qa_assess` 判定；隐式 QA 判定修复前创建的这类运行，按原策略、原配置恢复时照原样打开，仍停在 `qa_decision_required`；已到 `fixture_completed` 的仍可按上段在原 run 补开 QA，不满足补开前提时才按「卡死任务重开」用新 runId 重做。下面一次性附加步骤仅用于 legacy 的原运行。
 
 legacy：原无workflow或`qa:null`且任务已为`fixture_completed`时，可在`--mode resume`显式提供
 含QA的`--workflow-config`与`--allow-qa`，一次性附加N6；原definition/scope/requirements/identity、
@@ -172,7 +173,7 @@ node scripts/cm-ai-host.mjs serve --config run.json --mode resume \
 
 ## 项目收尾核对全部 feature 的 QA
 
-**v2：** 同一finalizer仍要求所有必需QA完整PASS。允许的单任务恢复用上述launch target，子修复恢复用fix_status的含child目标；没有QA/最新skipped不能当通过。原末任务重跑所需supersede在v2未开放，不照下面legacy步骤改tasks或切协议；保留project_qa_not_passed并报告未支持的恢复。
+**v2：** 同一finalizer仍要求所有必需QA完整PASS。允许的单任务恢复用上述launch target，子修复恢复用fix_status的含child目标；没有QA/最新skipped不能当通过。`qa:"disabled"` 建的末任务停在 qa_triggered 时，对该运行按上方「补挂 QA」做 v2 补开，PASS 后再对本运行 advance。补开不适用、确需重开末任务时，只能走 [control policy v2](../../../docs/cm-control-policy-v2.md)「卡死任务重开：v2 create supersede」受控入口（人工批准、tasks 未勾选、旧 writer 已关闭、无未结 effect、固定前驱目标等前提不变）；不照下面legacy步骤改tasks或切协议。都不适用时保留project_qa_not_passed并报告缺口。
 
 `finish` 与 `run_finalize` 在写 run_done 前核对每个已批准 feature 最新一次 QA 决策：触发的 QA 必须以完整 PASS 结束，
 阻塞决策不算通过。任一 feature 最新一轮 FAIL、BLOCKED、已触发未执行、结果未知或旧结果已作废待下一轮时，返回
