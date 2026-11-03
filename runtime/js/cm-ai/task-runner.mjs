@@ -346,10 +346,11 @@ export function createTaskRunner(options) {
   // Other task runs' committed, reviewed deliveries in this specs root, only
   // those reviewed after this run's own approving review, and the live proof
   // that recorded interleaving steps are exactly such deliveries.
-  const laterDeliveries=()=>completedReviewedDeliveries({specsRoot:completion.owner.specsRoot,root:config.root,identity:config.identity});
+  const laterDeliveries=()=>completedReviewedDeliveries({specsRoot:completion.owner.specsRoot,root:config.root,identity:config.identity,
+    tasksPath:completion.owner.tasksPath??null});
   const reviewedAt=()=>approvedReviewAt({reviewInvocation,reviewPackage});
   const resolveSteps=(steps,allowAbsent=false)=>resolveDeliverySteps({specsRoot:completion.owner.specsRoot,root:config.root,
-    identity:config.identity,after:reviewedAt(),steps,allowAbsent});
+    identity:config.identity,tasksPath:completion.owner.tasksPath??null,after:reviewedAt(),steps,allowAbsent});
   // This run's own QA fixes take their place in the same order at the final
   // review time their completion evidence cites (evidence: a fix not yet accepted).
   const fixTime=(evidence=null)=>fix=>{
@@ -703,6 +704,7 @@ export function createTaskRunner(options) {
           need(digest(readReviewSourceFiles(path.dirname(handoff),[path.basename(handoff)])[0])===digest(reviewPackage.handoff),'package_mismatch');
         }
         explainCompletedDelivery({root:config.root,baseline:base,parentPackage:reviewPackage,deliveries:laterDeliveries(),after:reviewedAt(),
+          tasksPath:completion.owner.tasksPath??null,
           since:firstReviewAt(journal,config.identity)});
       }
       return current;

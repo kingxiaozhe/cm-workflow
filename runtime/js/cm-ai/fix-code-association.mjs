@@ -46,13 +46,19 @@ export function firstReviewAt(records,identity){
     &&bound?.repositoryId===identity.repositoryId&&bound.runId===identity.runId&&bound.taskId===identity.taskId
     &&Number.isInteger(bound.attempt)&&bound.attempt>=1?row.registeredAt:null;
 }
+// Features number their tasks independently (each has a T-001), so a task is its
+// feature's tasks.md and task id. A side without a recorded tasks.md keeps the
+// historical, conservative task-id-only match.
+const known=tasksPath=>typeof tasksPath==='string';
+export const sameDeliveryTask=(a,b)=>a.taskId===b.taskId
+  &&(!known(a.tasksPath)||!known(b.tasksPath)||a.tasksPath===b.tasksPath);
 const key=file=>file===null||file===undefined?null:`${file.sha256}:${file.mode}`;
 const applyMeta=(state,pkg)=>{for(const change of pkg.changes){
   if(change.after===null)state.delete(change.path);else state.set(change.path,inventoryFile(change.after));}};
 // Every qualifying later package, in durable review order (ties: run id, then
 // package position). Nothing is chosen or dropped by content.
 function laterSequence(deliveries,after,rootDigest){
-  return deliveries.flatMap(delivery=>delivery.packages.map((item,index)=>({runId:delivery.runId,index,reviewedAt:item.reviewedAt,raw:item.pkg})))
+  return deliveries.flatMap(delivery=>delivery.packages.map((item,index)=>({runId:delivery.runId,tasksPath:delivery.tasksPath??null,index,reviewedAt:item.reviewedAt,raw:item.pkg})))
     .filter(entry=>deliveredAfter(entry,after)).map(entry=>({...entry,pkg:readReviewPackage(entry.raw)}))
     .filter(entry=>entry.pkg.rootDigest===rootDigest)
     .sort((a,b)=>a.reviewedAt-b.reviewedAt||(a.runId<b.runId?-1:a.runId>b.runId?1:0)||a.index-b.index);
@@ -141,7 +147,7 @@ export function explainReviewedDrift({root,baseline,composed,ownScope,deliveries
 }
 
 // Completed run without accepted fixes: its own reviewed composition, then drift.
-export function explainCompletedDelivery({root,baseline,parentPackage,deliveries,after,since=null}){
+export function explainCompletedDelivery({root,baseline,parentPackage,deliveries,after,since=null,tasksPath=null}){
   const base=readReviewBaseline(baseline),parent=readReviewPackage(parentPackage);
   need(parent.baseIdentity===base.baselineDigest&&parent.rootDigest===base.rootDigest
     &&digest(parent.identity)===digest(base.identity),'fix_parent_binding_mismatch');
@@ -165,7 +171,8 @@ export function explainCompletedDelivery({root,baseline,parentPackage,deliveries
     const interval=new Map(base.files.map(file=>[file.path,inventoryFile(file)]));
     for(const entry of earlier){
       need(entry.pkg.identity.repositoryId===parent.identity.repositoryId&&entry.pkg.identity.runId===entry.runId
-        &&entry.runId!==parent.identity.runId&&entry.pkg.identity.taskId!==parent.identity.taskId,'fix_association_unverified');
+        &&entry.runId!==parent.identity.runId
+        &&!sameDeliveryTask({taskId:entry.pkg.identity.taskId,tasksPath:entry.tasksPath},{taskId:parent.identity.taskId,tasksPath}),'fix_association_unverified');
       applyDelivery(interval,entry.pkg,strict);
     }
     // The parent's own reviewed scope remains authoritative, including paths
