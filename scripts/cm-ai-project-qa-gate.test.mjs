@@ -17,6 +17,7 @@ import {explainReviewedDrift} from '../runtime/js/cm-ai/fix-code-association.mjs
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {createTaskRunner} from '../runtime/js/cm-ai/task-runner.mjs';
+import {completionSummary} from '../runtime/js/cm-ai/completion-summary.mjs';
 
 const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'cm-project-qa-gate-'));
 const saved={CM_WORKFLOW_HOME:process.env.CM_WORKFLOW_HOME,CM_WORKFLOW_LOG_HOME:process.env.CM_WORKFLOW_LOG_HOME};
@@ -30,14 +31,14 @@ const lesson={status:'lesson_candidate',reason:null,candidates:[{classification:
 const noLesson={status:'no_new_lesson',candidates:[],reason:null};
 
 // Two approved features: 1.work/T-002 carries one blocking browser case, 2.next/T-003 is the project's last task.
-function project(){
+function project({mandatory=false}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(isolated,'project-')));
   const codeProject=path.join(root,'code'),specsDir=path.join(root,'specs');fs.mkdirSync(codeProject);
   for(const [feature,task] of [['1.work','T-002'],['2.next','T-003']]){
     fs.mkdirSync(path.join(specsDir,feature),{recursive:true});
     fs.writeFileSync(path.join(specsDir,feature,'design.md'),'# D\n');
     fs.writeFileSync(path.join(specsDir,feature,'requirements.md'),feature==='1.work'?'# R\n\n- AC-001: page renders\n':'# R\n');
-    fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),`- [ ] ${task}: fixture\n`);
+    fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),`- [ ] ${task}: ${mandatory?'必验: ':''}fixture\n`);
   }
   fs.writeFileSync(path.join(specsDir,'1.work','test-cases.json'),JSON.stringify({schemaVersion:'1.0',feature:'work',cases:[
     {id:'TC-001',origin:'generated',kind:'browser',blocking:true,acIds:['AC-001'],taskIds:['T-002'],title:'renders',
@@ -65,6 +66,8 @@ function project(){
           examinedPaths:reviewPaths(review.payload.reviewPackage),findings:result==='approved'?[]:
             [{id:'F1',severity:'P2',path:'b.mjs',message:'Again',evidence:'Synthetic'}],summary:'Synthetic review'}};}}],
     reviewInvocation:{developerThreadId:'author-thread',excludedThreadIds:['control']},check:createHostCheck({cwd:codeProject,commands:[{id:'syntax',command:[process.execPath,'--check','a.mjs']}]}),
+    verificationGate:async request=>({satisfied:true,...(request.acceptanceContract?{items:request.acceptanceContract.obligations.map(item=>({...item,
+      satisfied:true,evidence:'Synthetic implementation fixture evidence; separate QA result is exercised below'}))}:{})}),
     qaLogHome:logHome,applicableAgentFiles:[],
     documentationProvider:{timeoutMs:5000,inspect:async binding=>{state.documentation++;
       return {syncId:binding.syncId,identity:binding.identity,packageDigest:binding.packageDigest,contextDigest:binding.contextDigest,
@@ -94,6 +97,41 @@ function project(){
   return {root,codeProject,specsDir,state,execution,definition,advance,first,firstExecution,reapprove};
 }
 const status=p=>JSON.parse(fs.readFileSync(path.join(p.specsDir,'.cm-status.json'),'utf8'));
+
+test('completion layers keep feature PASS separate from pending project work; later QA cannot reuse an old PASS',async()=>{
+  const p=project();p.state.browserUp=true;
+  const selected={...p.first,featureSelection:{version:1,feature:'1.work'}};
+  const done=await p.advance(selected,p.firstExecution(),'create');
+  assert.equal(done.code,'context_refreshed',JSON.stringify(done));
+  assert.equal(done.completion.feature.status,'passed',JSON.stringify(done.completion));
+  assert.equal(done.completion.run.status,'pending');assert.equal(done.completion.task.status,'completed');
+  assert.equal(done.completion.project.status,'pending');assert.equal(done.completion.project.pendingTasks,1);
+  assert.equal(done.completion.project.totalFeatures,2);assert.equal(done.completion.productAcceptance.status,'unknown');
+  const journal=path.join(p.specsDir,'.reviews','.execution',p.first.identity.runId,'state.json');
+  const originalJournal=fs.readFileSync(journal,'utf8'),saved=JSON.parse(originalJournal);
+  const {revision,...initialOnly}=saved;initialOnly.records=saved.records.slice(0,1);
+  fs.writeFileSync(journal,JSON.stringify({...initialOnly,revision:digest(initialOnly)})+'\n');
+  const stale=completionSummary({specsDir:p.specsDir,feature:'1.work',result:done});
+  assert.equal(stale.task.status,'unknown');assert.equal(stale.task.historicalCompleted,true);
+  assert.equal(stale.task.reason,'completion_owner_changed');assert.equal(stale.feature.qa.status,'unknown');
+  assert.notEqual(stale.binding.runnerRevision,done.completion.binding.runnerRevision);
+  fs.writeFileSync(journal,originalJournal);
+  const design=path.join(p.specsDir,'1.work','design.md'),original=fs.readFileSync(design,'utf8');
+  fs.appendFileSync(design,'\nAdditional mandatory acceptance condition\n');p.reapprove();
+  const drift=completionSummary({specsDir:p.specsDir,feature:'1.work',result:done});
+  assert.equal(drift.feature.qa.status,'blocked');assert.equal(drift.feature.qa.reason,'qa_specification_changed');
+  assert.equal(drift.task.status,'blocked');assert.equal(drift.task.historicalCompleted,true);
+  fs.writeFileSync(design,original);p.reapprove();
+  const log=path.join(p.specsDir,'运行日志.jsonl');
+  const rows=fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
+  const start=rows.filter(row=>row.event==='test_run'&&row.phase==='start').at(-1);
+  // Adversarial newer in-flight evidence: even an illegal new round must block,
+  // never let a display fall back to the previous completed PASS.
+  fs.appendFileSync(log,JSON.stringify({...start,event_id:'later-start',operation_id:'later-qa',attempt:start.attempt+1})+'\n');
+  const current=completionSummary({specsDir:p.specsDir,feature:'1.work',result:done});
+  assert.notEqual(current.feature.qa.status,'passed');assert.notEqual(current.feature.status,'passed');
+  assert.equal(current.run.historicalFinalized,false);assert.notEqual(current.run.status,'finalized');
+});
 
 test('qaChangedFiles rejects stale_qa before completion and for a mismatched digest after completion',async()=>{
   const p=project(),identity=p.first.identity;
@@ -126,9 +164,11 @@ test('qaChangedFiles rejects stale_qa before completion and for a mismatched dig
 });
 
 test('#17 an earlier feature whose QA is BLOCKED keeps the project from run_done until it is recovered; #18 its recovery survives a later reviewed task',async()=>{
-  const p=project();
+  const p=project({mandatory:true});
   const blocked=await p.advance(p.first,p.firstExecution(),'create');
   assert.equal(blocked.code,'qa_result_blocked');
+  assert.equal(blocked.completion.task.status,'completed');assert.equal(blocked.completion.task.review.status,'passed');
+  assert.equal(blocked.completion.feature.qa.status,'blocked');assert.equal(blocked.completion.project.pendingTasks,1);
   const admission=inspectCmAiAdmission({specsDir:p.specsDir,codeProject:p.codeProject});
   assert.equal(admission.nextTask.id,'T-003');
   assert.deepEqual(admission.warnings.filter(line=>line.includes('QA 未通过')).length,1);
@@ -160,8 +200,19 @@ test('#17 an earlier feature whose QA is BLOCKED keeps the project from run_done
   const recovered=await p.advance(p.first,p.firstExecution(),'resume',{rerunBlockedQa:true});
   assert.notEqual(recovered.code,'correction_review_required',JSON.stringify(recovered));
   assert.equal(recovered.code,'run_done',JSON.stringify(recovered));
+  const readyRun=await openControlRun(last,'resume',lastExecution());
+  try{
+    const ready=await readyRun.host.handle({version:1,operation:'finish',requestId:'finish-only',identity:last.identity,
+      packageDigest:refused.packageDigest,testRunId});
+    assert.equal(ready.code,'documentation_synced',JSON.stringify(ready));
+    assert.equal(ready.completion.run.status,'ready_to_finalize');assert.equal(ready.completion.run.historicalFinalized,false);
+    assert.equal(ready.completion.project.status,'ready_to_finalize');
+  }finally{readyRun.close();}
   const finished=await p.advance(last,lastExecution(),'resume');
   assert.equal(finished.code,'run_done',JSON.stringify(finished));
+  assert.equal(finished.completion.project.status,'completed',JSON.stringify(finished.completion));
+  assert.equal(finished.completion.run.status,'finalized');assert.equal(finished.completion.task.acceptanceProtection,'contract_v1');
+  assert.equal(finished.completion.productAcceptance.status,'unknown');assert.equal(finished.completion.deployment.status,'unknown');
   assert.equal(status(p).state,'run_done');
 });
 
@@ -386,7 +437,7 @@ test('#17 a feature completed outside N6 has no completion QA and blocks run_don
 test('#17 a skip is fine while tasks remain, but a terminal feature whose latest decision is a skip blocks run_done',async()=>{
   const p=project();
   const tasks=path.join(p.specsDir,'1.work','tasks.md');
-  fs.writeFileSync(tasks,'- [ ] T-001: first\n- [ ] T-002: fixture\n');p.reapprove();
+  fs.writeFileSync(tasks,'- [ ] T-001: first (AC-001)\n- [ ] T-002: fixture\n');p.reapprove();
   const first=p.definition('1.work','T-001',['a.mjs']);
   const skipped=await p.advance(first,p.execution('1.work',{write:()=>fs.writeFileSync(path.join(p.codeProject,'a.mjs'),'export const a=1;\n'),
     decision:{status:'skipped',reason:'no_fixed_trigger',score:null}}),'create');

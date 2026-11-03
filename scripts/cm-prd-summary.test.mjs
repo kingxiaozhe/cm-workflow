@@ -10,13 +10,13 @@ import {preparePrdReview} from '../runtime/js/cm-prd/review-preparation.mjs';
 import {publishPrdReview} from '../runtime/js/cm-prd/review-publication.mjs';
 import {recordPrdHostDisposition,createPrdDispositionOwner} from '../runtime/js/cm-prd/review-disposition.mjs';
 import {inspectPrdSummaryEvidence,createPrdSummaryOwner,publishPrdAwaitingReview} from '../runtime/js/cm-prd/summary.mjs';
-import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange} from '../runtime/js/cm-prd/change.mjs';
+import {inspectPrdChangeSnapshot,inspectPrdChangeProposal,applyPrdChange,createPrdChange} from '../runtime/js/cm-prd/change.mjs';
 import {approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 import {writeSpecsStatus} from '../runtime/js/specs-status.mjs';
 const sha=content=>createHash('sha256').update(content).digest('hex');
-function fixture(t,{pendingCorrection=false}={}){
+function fixture(t,{pendingCorrection=false,mandatory=false}={}){
   const specs=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-summary-marks-')));
   t.after(()=>fs.rmSync(specs,{recursive:true,force:true}));fs.mkdirSync(path.join(specs,'.reviews'));
   const inputs=[];
@@ -24,7 +24,7 @@ function fixture(t,{pendingCorrection=false}={}){
     const findings=pendingCorrection&&feature==='1.guide'?[{id:'R1',severity:'P2',path:`${feature}/tasks.md`,
       message:'Clarify task split',evidence:'Synthetic finding'}]:[];
     const documents=[{path:'requirements.md',content:'## 功能需求\n1. [F-001] Guide\n- [ ] [AC-001] Read guide'},
-      {path:'design.md',content:'## 方案摘要\nDocumentation'}, {path:'tasks.md',content:'- [ ] T-001: Guide\n  - 范围: `README.md`'}];
+      {path:'design.md',content:'## 方案摘要\nDocumentation'}, {path:'tasks.md',content:`- [ ] T-001: ${mandatory?'必验: ':''}Guide\n  - 范围: \`README.md\``}];
     const prepared=preparePrdReview({specs,stage:'split',feature,draft:{draftDigest:'a'.repeat(64),features:[{name:feature.split('.')[1],directory:feature,documents}]}});
     claimPrdReview({...prepared.paths,package_sha256:prepared.packageDigest});
     publishPrdReview({specs,reviewPackage:prepared.reviewPackage,packageDigest:prepared.packageDigest,authorContextId:'author',
@@ -41,7 +41,7 @@ function fixture(t,{pendingCorrection=false}={}){
   return {specs,mark,inputs};
 }
 test('summary includes completed historical feature and exact new feature with runtime metadata',async t=>{
-  const {specs,mark}=fixture(t),before=inspectPrdSummaryEvidence(specs);mark();
+  const {specs,mark}=fixture(t,{mandatory:true}),before=inspectPrdSummaryEvidence(specs);mark();
   const evidence=inspectPrdSummaryEvidence(specs);
   assert.equal(evidence.features.length,2);assert.deepEqual(evidence.specFiles,before.specFiles);
   assert.equal(evidence.features[0].reviews.split.gate.runtimeMarksNormalized,true);
@@ -56,6 +56,10 @@ test('summary includes completed historical feature and exact new feature with r
       evidence:['Synthetic documentation fixture']}))})});
   const summary=await owner(specs,new AbortController().signal);
   assert.equal(summary.status,'human_summary_prepared');
+  assert.equal(summary.acceptancePreview.status,'needs_clarification');
+  assert.equal(summary.acceptancePreview.approvalAuthorized,false);
+  assert.equal(summary.acceptancePreview.executionAuthorized,false);
+  assert(summary.acceptancePreview.features[0].tasks[0].issues.some(issue=>issue.message.includes('no explicit task/case mapping')));
   assert.equal(summary.readyForAwaitingReview,false);
   assert.deepEqual(summary.blockers,['mechanical_self_check_failed']);
   assert.deepEqual(summary.mechanicalSelfCheck.findings,[{feature:'1.guide',code:'new_task_not_pending'}]);
@@ -280,4 +284,15 @@ test('historical gate failure still rejects publication when history changes aft
   const summary=await summaryOwner()(specs,currentScope);assert.equal(summary.readyForAwaitingReview,true);
   fs.appendFileSync(path.join(specs,'1.guide/requirements.md'),'\nAnother edit after preparation');
   assert.throws(()=>publishPrdAwaitingReview({specs,summary,writeEnabled:true}),/prd_summary_inputs_changed/);
+});
+
+test('R1 G5 change preview inventory includes unchanged features outside proposal scope',t=>{
+  const {specs}=fixture(t),admission={specs,project:specs,feature:'1.guide',cases:null,skillDir:path.resolve('skills/cm-prd')};
+  const options={admission,runtime:'codex',call:()=>assert.fail('status is read-only')};
+  const original=createPrdChange(options),state=structuredClone(original.checkpoint());
+  state.stage='change_confirmation';state.proposal={proposalDigest:'a'.repeat(64),removed:[],features:[{directory:'1.guide',
+    documents:['requirements.md','design.md','tasks.md'].map(name=>({path:name,content:fs.readFileSync(path.join(specs,'1.guide',name),'utf8')}))}]};
+  const value=createPrdChange({...options,restored:state}).status();
+  assert.deepEqual(value.acceptancePreview.featureInventory,['1.guide','2.appendix']);
+  assert.deepEqual(value.acceptancePreview.scope.features,['1.guide']);
 });

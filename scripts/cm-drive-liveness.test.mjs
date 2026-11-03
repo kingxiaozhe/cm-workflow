@@ -81,3 +81,9 @@ for(const mode of ['watchdog','unexpected-exit'])test(`owned same-group worker c
   await new Promise(resolve=>setTimeout(resolve,50));
   assert.throws(()=>process.kill(pid,0),{code:'ESRCH'});
 });
+
+test('R1 G11 malformed optional completion display does not change the returned business result',t=>{
+  const out=run(t,`ready();process.stdin.once('data',()=>send({requestId:'drive',result:{state:'fixture_completed',completion:{version:1}}}));process.stdin.on('end',()=>process.exit(0));`);
+  assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.state,'fixture_completed');
+  assert.match(out.stderr,/完成摘要显示失败/);
+});

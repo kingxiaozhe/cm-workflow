@@ -29,6 +29,10 @@ The top-level reason explains blocked outcomes; otherwise it must be null. Use n
 Use outcome blocked when implementation is not possible. Do not claim implementation if no implementation was made.
 Always also return requirements: one item {requirement, satisfied, evidence, run, result} for each requirement written in the
 task's description and verification (specification), evidence naming where it is met (file, test name, expected command result).
+When specification.acceptanceContract exists, its obligations are the mandatory set: return exactly one item per obligation,
+copying id, requirement, evidenceType, environment and run verbatim, and adding satisfied, evidence and optional result.
+Do not omit or combine obligations, reinterpret the required environment, or declare unresolved mappings satisfied.
+Without an acceptanceContract, id, evidenceType and environment may be omitted or null for legacy reports.
 Use null when the task states none. The host runs the task's checks itself before development (baseline) and with only the
 task's test files delivered (red), and checks tagged items against those runs: set run "red" on an item stating that a new
 test fails before the implementation; set run "baseline" on an item stating the result before development, with result

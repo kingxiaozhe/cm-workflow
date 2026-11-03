@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {need} from './effect-contract.mjs';
 import {readStatusProjection,writeStatusProjection} from './status-projection.mjs';
+import {completionLines} from './completion-summary.mjs';
 
 const writer=fileURLToPath(new URL('../../../scripts/cm-log-event.py',import.meta.url));
 const phases={developing:['N3','正在开发'],checking:['N3','正在执行检查'],
@@ -73,7 +74,7 @@ export function projectHostResult({specsDir,feature,result,readCurrent}){
     if(['N6','N7','N8'].includes(previous.node))return;
     const node=['blocked','unknown','cancelled'].includes(result.state)?previous.node:selected[0];
     writeStatusProjection({specsDir,feature,identity:result.identity,node,state:result.state,
-      detail:(result.guidance?.summary??selected[1])+(result.code?`（${result.code}）`:''),code:result.code,
+      detail:(result.guidance?.summary??(result.state==='fixture_completed'?completionLines(result.completion)[0]:null)??selected[1])+(result.code?`（${result.code}）`:''),code:result.code,
       ...(result.state==='changes_requested'&&result.identity.attempt>1?{previousAttempt:result.identity.attempt-1}:{}),
       expectedToken:previous.progress_id??null});
   }catch{diagnostic();}

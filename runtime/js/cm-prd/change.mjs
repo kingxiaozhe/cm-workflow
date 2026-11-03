@@ -2,6 +2,7 @@ import {assertPrdBatchActive} from './inputs-replaced.mjs';
 // Original C1–C8, also used for explicitly confirmed revisions of saved drafts.
 // Proposals are not writes; old review evidence and completed work stay history.
 import fs from 'node:fs';
+import {summaryAcceptancePreview} from './acceptance-preview.mjs';
 import {prdSelfCheckRevisionPath} from './self-check-revision.mjs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -166,7 +167,22 @@ export function createPrdChange({admission,runtime,call,restored=null,selected=[
       reference:path.join(admission.skillDir,'references/change-mode.md')},signal);
   };
   return {
-    status:()=>json({...state,mode:'change',completionAuthorized:false},4*1024*1024),
+    status:()=>{
+      let acceptancePreview=null;
+      if(state.stage==='change_confirmation'&&state.proposal){
+        try{
+          current();
+          const documents=[...state.before.directories.filter(directory=>!state.selected.includes(directory)).map(directory=>({directory,
+            documents:names.filter(name=>state.before.files[`${directory}/${name}`]!==undefined).map(name=>({path:name,content:state.before.files[`${directory}/${name}`]}))})),...state.proposal.features];
+          acceptancePreview={...summaryAcceptancePreview({documents,currentFeatures:state.proposal.features.map(feature=>feature.directory),
+            statusBytes:state.before.status===null?null:Buffer.from(state.before.status),taskGrammar:approvedGrammar(state.before)}),
+            proposalDigest:state.proposal.proposalDigest,sourceKind:'proposed_documents'};
+          current();
+        }catch(error){acceptancePreview={version:1,status:'stale',reason:'prd_change_inputs_changed',
+          proposalDigest:state.proposal.proposalDigest,approvalAuthorized:false,executionAuthorized:false};}
+      }
+      return json({...state,mode:'change',completionAuthorized:false,...(acceptancePreview?{acceptancePreview}:{})},4*1024*1024);
+    },
     checkpoint:()=>json(state,4*1024*1024),
     cancel(){state.stage='cancelled';},
     async advance(answer,signal){

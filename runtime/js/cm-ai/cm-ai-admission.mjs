@@ -380,6 +380,19 @@ export function inspectCmAiAdmission(options){
 }
 
 // The CLI supplies every code project so no project can be skipped before writing.
+// Shared by approval and its read-only preview; returns diagnostics only.
+export function inspectTaskGrammarTransition(source,{grammar,fromLegacy=false}){
+  const parsed=parseFeatureTaskText(source,{allowDependencyPunctuation:true,grammar});
+  if(parsed.error)return {parsed,differing:[]};
+  if(!fromLegacy)return {parsed,differing:[]};
+  const view=version=>taskDeclarations(source,{grammar:version}).map(item=>({line:item.index+1,
+    key:`${item.id}\0${item.completed}\0${item.body.trim()}`,text:item.body.trim()}));
+  const legacy=view(LEGACY_TASK_GRAMMAR),current=view(grammar);
+  const legacyKeys=new Set(legacy.map(item=>item.key)),currentKeys=new Set(current.map(item=>item.key));
+  return {parsed,differing:[...current.filter(item=>!legacyKeys.has(item.key)),...legacy.filter(item=>!currentKeys.has(item.key))]
+    .sort((a,b)=>a.line-b.line)};
+}
+
 export function approveCmAiSpecs(options){
   const projects=options.codeProjects??[options.codeProject];
   // The standing authorization (autonomy.mjs) stands in for the reply, and only for a bound change proposal.
@@ -446,15 +459,10 @@ export function approveCmAiSpecs(options){
     const grammar=status.kind==='valid'&&!fromLegacy?status.value.taskGrammar:SHARED_TASK_GRAMMAR;
     for(const name of discovered.names){
       const source=fs.readFileSync(path.join(specsDir,name,'tasks.md'),'utf8');
-      const parsed=parseFeatureTaskText(source,{allowDependencyPunctuation:true,grammar});
+      const {parsed,differing}=inspectTaskGrammarTransition(source,{grammar,fromLegacy});
       if(parsed.error)return refuse('task_grammar_conflict',`${name}/tasks.md 第 ${parsed.detail.line} 行在新任务行语法下无效（${parsed.error}）：`
         +`${parsed.detail.text}。此前的批准把它当作说明文字；把这类示例放进 \`\`\` 围栏或删去后再批准。`);
       if(!fromLegacy)continue;
-      const view=grammar=>taskDeclarations(source,{grammar}).map(item=>({line:item.index+1,key:`${item.id}\0${item.completed}\0${item.body.trim()}`,text:item.body.trim()}));
-      const legacy=view(LEGACY_TASK_GRAMMAR),current=view(grammar);
-      const legacyKeys=new Set(legacy.map(item=>item.key)),currentKeys=new Set(current.map(item=>item.key));
-      const differing=[...current.filter(item=>!legacyKeys.has(item.key)),...legacy.filter(item=>!currentKeys.has(item.key))]
-        .sort((a,b)=>a.line-b.line);
       if(differing.length)return refuse('task_grammar_conflict',`${name}/tasks.md 在新任务行语法下任务集合会变化：`
         +differing.slice(0,5).map(item=>`第 ${item.line} 行 ${item.text}`).join('；')+`${differing.length>5?` 等 ${differing.length} 行`:''}`
         +'。此前的批准不把这些行当任务（或反之）；是示例就放进 ``` 围栏或删去，是任务就改用英文冒号「:」写法后再批准。');

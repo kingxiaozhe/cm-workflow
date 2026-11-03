@@ -115,7 +115,9 @@ test('context_refresh requires a completed task and returns its bound context su
   assert.equal((await f.entry().handle(request)).code,'context_not_ready');
   f.complete();f.seedQa();
   const result=await f.entry().handle(request);
-  assert.deepEqual(result,{version:1,workflow:'cm-ai',operation:'context_refresh',requestDigest:digest(request),
+  const {completion,...operationResult}=result;
+  assert.equal(completion.project.status,'unknown');assert.equal(completion.task.review.status,'unknown');
+  assert.deepEqual(operationResult,{version:1,workflow:'cm-ai',operation:'context_refresh',requestDigest:digest(request),
     identity,outcome:'refreshed',state:'fixture_completed',code:'context_complete',packageDigest,
     pendingAction:'finish',nextTask:null,contextDigest:result.contextDigest,contextFiles:result.contextFiles});
   assert.match(result.contextDigest,/^[a-f0-9]{64}$/);
@@ -150,7 +152,11 @@ test('run_finalize requires documentation sync and returns the final outcome wit
   const documentationResult={syncId:'docs-completed',identity,packageDigest,contextDigest:refresh.contextDigest,
     status:'completed',reason:'documentation synced',at:'2026-09-04T15:20:00-07:00'};
   const result=await f.entry({documentationResult,qaLogHome:path.join(f.root,'logs')}).handle(request);
-  assert.deepEqual(result,{version:1,workflow:'cm-ai',operation:'run_finalize',requestDigest:digest(request),
+  const {completion,...operationResult}=result;
+  assert.equal(completion.task.status,'unknown','a synthetic runner without a registered receipt does not prove task acceptance');
+  assert.equal(completion.project.status,'unknown','a legacy approval without a manifest does not prove project completion');
+  assert.equal(completion.productAcceptance.status,'unknown');assert.equal(completion.deployment.status,'unknown');
+  assert.deepEqual(operationResult,{version:1,workflow:'cm-ai',operation:'run_finalize',requestDigest:digest(request),
     identity,outcome:'finalized',state:'run_done',code:'run_done',packageDigest,pendingAction:'none',
     contextDigest:refresh.contextDigest,deduplicated:false,degraded:false});
   assert.equal(f.effects(),0);

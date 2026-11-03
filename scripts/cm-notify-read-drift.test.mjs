@@ -256,10 +256,13 @@ test('importing runtime/js/notify.mjs has no process-exit side effect, also when
   assert.equal(plain.status,0,plain.stderr);assert.match(plain.stdout,/imported/);
   // Simulated Node without import.meta.main: copy the whole import graph with
   // every `import.meta.main` replaced by `undefined`, import that copy.
-  const copy=(files,dir)=>{for(const file of files){
-    const target=path.join(dir,file);fs.mkdirSync(path.dirname(target),{recursive:true});
+  const copy=(files,dir,root=dir)=>{for(const file of files){
+    const target=path.resolve(dir,file);
+    assert(target.startsWith(path.resolve(root)+path.sep),`copied module must stay inside the fixture: ${file}`);
+    fs.mkdirSync(path.dirname(target),{recursive:true});
     fs.writeFileSync(target,fs.readFileSync(new URL(file,RUNTIME),'utf8').replaceAll('import.meta.main','undefined'));}};
-  const runtimeCopy=sandbox(t);copy(graph.concat(['notify-run.mjs']),runtimeCopy);
+  const repositoryCopy=sandbox(t),runtimeCopy=path.join(repositoryCopy,'runtime/js');
+  copy(graph.concat(['notify-run.mjs']),runtimeCopy,repositoryCopy);
   const simulated=importChild(path.join(runtimeCopy,'notify.mjs'));
   assert.equal(simulated.status,0,simulated.stderr);assert.match(simulated.stdout,/imported/);
   // Negative control: the same simulation does kill an import of the sender,

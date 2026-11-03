@@ -24,6 +24,7 @@ import {checklistGaps} from './checklist-coverage.mjs';
 import {readRequirementItems,splitRequirementReport} from './requirement-evidence.mjs';
 import {replayDelivery,notReplayed} from './host-replay.mjs';
 import {autoVerificationVerdict} from './verification-auto.mjs';
+import {acceptanceProblems,acceptanceCoverage,describeAcceptanceProblems} from './acceptance-contract.mjs';
 import {declaredTaskScope} from '../task-scope.mjs';
 import {specsPermissionArgs} from './codex-config.mjs';
 import {createProjectExecution} from './host-project-execution.mjs';
@@ -34,7 +35,7 @@ import {verifySpecificationMaterial} from './specification-material.mjs';
 import {isFinalCmAiTask} from './cm-ai-admission.mjs';
 import {createHostBootstrap} from './host-bootstrap.mjs';
 import {withHostProgress} from './host-progress.mjs';
-import {digest,id,hex,json,need,shape,freeze,arrayItems} from './effect-contract.mjs';
+import {digest,id,hex,json,need,shape,freeze,arrayItems,boundedReason} from './effect-contract.mjs';
 export const protectedTextInstructions='\nProtected current-host mode: do not write files or run commands. Return {status,value,edits} on success; '
   +'value retains the original implementation/Learning contract. edits is [{path,beforeSha256,content[,mode]}], complete UTF-8 text or null for deletion; '
   +'optional mode "0755" or "0644" sets the permission bits of a written file. '
@@ -52,11 +53,9 @@ export const externalConversationDefinition=execution=>externalConversations.get
 // passing it is not an approval, produces no receipt and consumes no review
 // round. A satisfied gate still leaves the full independent review ahead.
 //
-// One deliberate limit, stated rather than papered over: a task's verification
-// is free text, so JS cannot prove every requirement in it was enumerated. What
-// is enforced mechanically is the shape, that each returned requirement cites a
-// nonempty evidence location, and that the gate passes only when every returned
-// requirement is satisfied. Mechanical shape is not semantic coverage.
+// This parser validates reports, not coverage. The caller and runner separately
+// compare new reports with their approved acceptanceContract. Legacy reports
+// keep their original shape. Nonempty evidence is still not semantic proof.
 export function readVerificationPrecheck(raw){
   const value=json(raw,256*1024);shape(value,['items']);
   const items=readRequirementItems(arrayItems(value.items));
@@ -226,23 +225,35 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     snapshot:control.baselineSnapshot??null,scope:request.scope??definition.scope,
     tests:declaredTests(request.identity.taskId),checkCommands:protection.checkCommands,timeoutMs:protection.timeoutMs,
     identity:request.identity,greenChecks:request.checks,signal:control.signal}):null;
-  // The gate is opt-in: without it the flow is byte-for-byte what it was.
-  // The runner contract is exactly {satisfied}. Which requirements failed is
-  // what the operator needs to act on, so it goes to this process's stderr the
-  // same way other host diagnostics do, not into the runner state.
+  // The optional legacy gate retains its original policy. A new frozen contract
+  // always runs, including when the optional precheck/auto setting is disabled.
+  // A failed gate carries a bounded diagnostic through the existing checkpoint
+  // reason. It survives restart without becoming approval or recovery authority.
   // A v2 policy may enable the gate durably (it is part of the run fingerprint);
   // the legacy launch flag keeps working for runs created without it.
   // auto: the host answers from the developer's report and its own runs
   // (verification-auto.mjs); precheck: the session answers, seeing the host runs.
   const gateMode=controlPolicy?.verification==='auto'?'auto'
     :options.verificationPrecheck===true||controlPolicy?.verification==='precheck'?'precheck':null;
-  const verificationGate=gateMode?async(request,control)=>{
+  const verificationGate=async(request,control)=>{
+    const contract=request.acceptanceContract??null;
+    if(!gateMode&&!contract)return {satisfied:true}; // original, unprotected run
     const facts=await hostRuns(request,control);
-    const verdict=gateMode==='auto'?autoVerificationVerdict({report:requirementReports.get(reportKey(request.identity))??null,
+    const report=requirementReports.get(reportKey(request.identity))??null;
+    const verdict=gateMode!=='precheck'?autoVerificationVerdict({report,contract,
       facts:facts??notReplayed(definition.codeProjects?'multi_root':'no_host_checks',request.checks)})
       :readVerificationPrecheck(await bridge.call('verification_precheck',
       {...request,codeProject:definition.codeProject,feature:definition.feature,
         scope:request.scope??definition.scope,...(facts?{hostRuns:facts}:{})},control.signal));
+    const coverage=contract?acceptanceCoverage(contract,request.checks):null;
+    const problems=contract?acceptanceProblems(contract,gateMode==='precheck'?verdict.items:report,facts):[];
+    if(coverage&&!coverage.satisfied)problems.push('mandatory checks missing or unverifiable: '+JSON.stringify(coverage));
+    if(problems.length){
+      try{process.stderr.write(JSON.stringify({diagnostic:'acceptance_contract_failed',task:request.identity.taskId,problems})+'\n');}
+      catch{/* presentation never changes the blocking verdict */}
+      return {satisfied:false,reason:boundedReason('verification_precheck_failed: ',
+        describeAcceptanceProblems(contract,[...new Set([...problems,...(verdict.unsatisfied??[])])]))};
+    }
     if(!verdict.satisfied)try{
       process.stderr.write(JSON.stringify({diagnostic:'verification_precheck_failed',
         task:request.identity.taskId,attempt:request.identity.attempt,mode:gateMode,
@@ -264,8 +275,9 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     // The answered items travel to the runner, which binds them into the host
     // handoff the reviewer reads; a failed gate halts before any handoff exists.
     // The host record travels as its own handoff entry (host-replay.mjs), never inside the items.
-    return verdict.satisfied?{satisfied:true,items:verdict.items,...(facts?{hostRecord:facts}:{})}:{satisfied:false};
-  }:null;
+    return verdict.satisfied?{satisfied:true,items:verdict.items,...(facts?{hostRecord:facts}:{}),...(coverage?{coverage}:{})}
+      :{satisfied:false,reason:boundedReason('verification_precheck_failed: ',verdict.unsatisfied??['门禁未记录具体缺项'])};
+  };
   const outerTimeoutMs=provider?protection.timeoutMs:1800000;
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,
     identity:request.identity,runtime:selectedRuntime,stage,signal:control.signal},run);

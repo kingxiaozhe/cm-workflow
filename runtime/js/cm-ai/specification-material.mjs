@@ -8,6 +8,7 @@ import {taskLines,TASK_GRAMMAR,recordedTaskGrammar} from '../spec-task-line.mjs'
 import {readReviewSourceFiles,readReviewSourceExcerpt} from './review-package.mjs';
 import {json,need,shape,hex,id,freeze,digest} from './effect-contract.mjs';
 import {readExecutionSnapshot} from './execution-snapshot.mjs';
+import {buildAcceptanceContract,readAcceptanceContract} from './acceptance-contract.mjs';
 
 const DESIGN_LIMIT=64*1024;
 const filenames=['requirements.md','design.md','tasks.md','test-cases.json'];
@@ -17,7 +18,10 @@ const featureName=value=>need(typeof value==='string'&&/^\d+\.[^/\\\x00-\x1f]+$/
 export function readSpecificationMaterial(raw,taskId){
   const v=json(raw,2*1024*1024);
   shape(v,['feature','task','acceptanceCriteria','designExcerpt','testCases','sources',
-    ...['truncated','taskScopeDigest'].filter(key=>Object.hasOwn(v,key))]);
+    ...['truncated','taskScopeDigest','acceptanceContract'].filter(key=>Object.hasOwn(v,key))]);
+  if(Object.hasOwn(v,'acceptanceContract')){
+    readAcceptanceContract(v.acceptanceContract);need(v.acceptanceContract.taskId===taskId);
+  }
   if(Object.hasOwn(v,'taskScopeDigest'))hex(v.taskScopeDigest);
   featureName(v.feature);
   shape(v.task,['id','description',...(Object.hasOwn(v.task,'verification')?['verification']:[])]);
@@ -53,14 +57,14 @@ const TASK_ID_TOKEN=/(?<![A-Za-z0-9])T-[A-Za-z0-9][A-Za-z0-9._-]*/g;
 const indentOf=line=>/^[ \t]*/.exec(line)[0].length;
 const MENTIONS_TASK=/(?<![A-Za-z0-9])T-[A-Za-z0-9]/;
 const namesTask=(text,taskId)=>(text.match(TASK_ID_TOKEN)??[]).some(id=>id.replace(/[._-]+$/,'')===taskId);
-export function taskScopeText(tasks,taskId,grammar=TASK_GRAMMAR){
+export function taskScopeText(tasks,taskId,grammar=TASK_GRAMMAR,includeHeadings=false){
   const kept=[];let owner=null,ownerIndent=0;
   for(const {body,fenced,declaration} of taskLines(tasks,{grammar})){
     if(!body.trim())continue;
     if(declaration){owner=declaration.id;ownerIndent=indentOf(body);}
     // Only lines indented under an item belong to it; a fence or heading at
     // its level ends it, leaving the rest to the shared/named rules below.
-    else if(owner!==null&&!(indentOf(body)>ownerIndent&&!/^\s*#/.test(body)))owner=null;
+    else if(owner!==null&&!(indentOf(body)>ownerIndent&&(includeHeadings||!/^\s*#/.test(body))))owner=null;
     const dependency=fenced||declaration?null:body.match(DEPENDENCY);
     const belongs=declaration?declaration.id:owner??dependency?.[1]??null;
     if(namesTask(body,taskId)||belongs===taskId||belongs===null&&!MENTIONS_TASK.test(body))kept.push(body);
@@ -90,7 +94,41 @@ function verificationFor(source,taskId){
   return lines.join('\n');
 }
 
-export function captureSpecificationMaterial({specsRoot,feature,taskId}){
+// Acceptance selection is narrower than the conservative rebind drift scope.
+// A mention in another task, dependency, heading or version table is not an
+// acceptance declaration for this task; only its own list body and children are.
+export function taskAcceptanceText(tasks,taskId,grammar=TASK_GRAMMAR){
+  const kept=[];let owner=null,ownerIndent=0;
+  for(const {body,declaration} of taskLines(tasks,{grammar})){
+    if(declaration){owner=declaration.id;ownerIndent=indentOf(body);}
+    else if(body.trim()&&owner!==null&&indentOf(body)<=ownerIndent)owner=null;
+    if(owner===taskId&&body.trim())kept.push(body);
+  }
+  // The dedicated verification section is an explicit task-keyed declaration,
+  // unlike incidental mentions elsewhere in the document.
+  let level=null;
+  for(const body of tasks.split(/\r?\n/)){
+    const heading=/^\s*(#{1,6})\s+(.+)$/.exec(body);
+    if(heading){if(level!==null&&heading[1].length<=level)level=null;if(heading[2].includes('验证要求'))level=heading[1].length;continue;}
+    const key=/^\s*(?:[-*]\s+)?(T-[A-Za-z0-9][A-Za-z0-9._-]*)(?=[:：\s])/.exec(body)?.[1];
+    if(level!==null&&key===taskId)kept.push(body);
+  }
+  return kept.join('\n');
+}
+
+// Draft previews and approved captures use exactly the same source selection.
+// This pure projection carries no approval, filesystem access or execution.
+export function buildTaskAcceptanceContract({texts,taskId,grammar=TASK_GRAMMAR}){
+  const tasks=normalizeRuntimeMarks(texts['tasks.md'],'tasks.md');
+  const requirements=normalizeRuntimeMarks(texts['requirements.md'],'requirements.md');
+  const cases=texts['test-cases.json']===undefined?[]:JSON.parse(texts['test-cases.json']).cases;
+  need(Array.isArray(cases)&&cases.every(item=>item&&Array.isArray(item.taskIds)),'acceptance_preview_cases_invalid');
+  const taskText=taskAcceptanceText(tasks,taskId,grammar);
+  return buildAcceptanceContract({taskId,taskText,explicitOnly:true,
+    requirementsText:requirements,testCases:cases.filter(item=>item.taskIds.includes(taskId))});
+}
+
+export function captureSpecificationMaterial({specsRoot,feature,taskId,acceptance=true}){
   try{
     featureName(feature);
     need(path.isAbsolute(specsRoot)&&fs.realpathSync(specsRoot)===specsRoot);
@@ -129,27 +167,33 @@ export function captureSpecificationMaterial({specsRoot,feature,taskId}){
       [...declaredAcceptanceIds(line)].map(id=>({id,text:line.trim()})));
     const cases=texts['test-cases.json']===undefined?[]:JSON.parse(texts['test-cases.json']).cases;
     need(Array.isArray(cases)&&cases.every(item=>item&&Array.isArray(item.taskIds)));
+    const acceptanceContract=acceptance?buildTaskAcceptanceContract({texts,taskId,grammar}):null;
     return readSpecificationMaterial({feature,task,acceptanceCriteria,designExcerpt:design.excerpt,
       ...(design.truncated?{truncated:true}:{}),testCases:cases.filter(item=>item.taskIds.includes(taskId)),sources,
-      taskScopeDigest:taskScopeDigest(texts,taskId,grammar)},taskId);
+      taskScopeDigest:taskScopeDigest(texts,taskId,grammar),
+      ...(acceptanceContract?{acceptanceContract}:{})},taskId);
   }catch{throw Object.assign(new Error('spec_drift'),{code:'spec_drift'});}
 }
 
 // Material captured by older versions has no taskScopeDigest; compare a fresh
 // capture in the bound representation so their runs keep verifying.
 const asBound=(bound,current)=>{
-  if(Object.hasOwn(bound,'taskScopeDigest'))return current;
-  const {taskScopeDigest:unused,...legacy}=current;return legacy;
+  const result={...current};
+  for(const key of ['taskScopeDigest','acceptanceContract'])if(!Object.hasOwn(bound,key))delete result[key];
+  // Stored contracts are data in the original validated baseline, not executable
+  // parser rules. The source digests and all other material still compare below.
+  if(Object.hasOwn(bound,'acceptanceContract'))result.acceptanceContract=bound.acceptanceContract;
+  return result;
 };
 // Rebind eligibility, deliberately conservative: requirements.md and design.md
 // must be unchanged as whole files (acceptance items may span lines, and prose
 // can state requirements); in tasks.md and test-cases.json only other tasks'
 // items, dependency lines and cases may differ (taskScopeDigest). A run bound
 // before taskScopeDigest existed cannot prove that and is never rebindable.
-const CONTENT_FIELDS=['feature','task','acceptanceCriteria','designExcerpt','truncated','testCases','taskScopeDigest'];
+const CONTENT_FIELDS=['feature','task','acceptanceCriteria','designExcerpt','truncated','testCases','taskScopeDigest','acceptanceContract'];
 const FIELD_NAMES={feature:'feature',task:'本任务描述/验证要求',acceptanceCriteria:'验收标准',
   designExcerpt:'设计摘录',truncated:'设计摘录',testCases:'本任务测试用例',
-  taskScopeDigest:'tasks.md／test-cases.json 中本任务的条目、续行、依赖、用例或共用说明'};
+  taskScopeDigest:'tasks.md／test-cases.json 中本任务的条目、续行、依赖、用例或共用说明',acceptanceContract:'冻结的必验合同'};
 const WHOLE_FILES={'requirements.md':'requirements.md（整份核对，含验收标准续行与说明）','design.md':'design.md（整份核对）'};
 
 // Explicit, journaled rebind (task-runner rebindSpecification). It can only ever
@@ -194,7 +238,7 @@ const accepted=(baseline,captured)=>{
 
 export function verifySpecificationMaterial(baseline){
   const current=captureSpecificationMaterial({specsRoot:baseline.specificationRoot,
-    feature:baseline.specification.feature,taskId:baseline.identity.taskId});
+    feature:baseline.specification.feature,taskId:baseline.identity.taskId,acceptance:false});
   need(accepted(baseline,current),'spec_drift');
   return baseline.specification;
 }
@@ -213,9 +257,10 @@ export function boundSpecificationMaterial(baseline,captured){
 export function inspectSpecificationDrift(baseline){
   let current;
   try{current=captureSpecificationMaterial({specsRoot:baseline.specificationRoot,
-    feature:baseline.specification.feature,taskId:baseline.identity.taskId});}
+    feature:baseline.specification.feature,taskId:baseline.identity.taskId,acceptance:false});}
   catch{return freeze({approved:false,files:[],fields:[],rebindable:false});}
   if(accepted(baseline,current))return null;
+  current=asBound(baseline.specification,current);
   const bound=baseline.specification,before=new Map(bound.sources.map(row=>[row.path,row.sha256]));
   const after=new Map(current.sources.map(row=>[row.path,row.sha256]));
   const files=[...new Set([...before.keys(),...after.keys()])].filter(file=>before.get(file)!==after.get(file)).sort();
@@ -223,7 +268,7 @@ export function inspectSpecificationDrift(baseline){
     ...files.map(file=>WHOLE_FILES[file.split('/').at(-1)]).filter(Boolean),
     ...(before.size!==after.size?['test-cases.json 的有无']:[]),
     ...(Object.hasOwn(bound,'taskScopeDigest')?[]:['本运行由旧版本创建，未记录本任务段落摘要，无法证明其未变']),
-    ...CONTENT_FIELDS.filter(field=>Object.hasOwn(bound,'taskScopeDigest')||field!=='taskScopeDigest')
+    ...CONTENT_FIELDS.filter(field=>!['taskScopeDigest','acceptanceContract'].includes(field)||Object.hasOwn(bound,field))
       .filter(field=>digest(current[field]??null)!==digest(bound[field]??null)).map(field=>FIELD_NAMES[field])])];
   return freeze({approved:true,files,fields,rebindable:fields.length===0,sources:current.sources});
 }

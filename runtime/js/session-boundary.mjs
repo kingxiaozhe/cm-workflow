@@ -6,6 +6,7 @@ import path from 'node:path';
 import {approvedTaskGrammar} from './spec-task-line.mjs';
 import {parseFeatureTaskText} from './cm-ai/cm-ai-admission.mjs';
 import {writeHandoff} from './session-handoff.mjs';
+import {completionLines} from './cm-ai/completion-summary.mjs';
 
 const HEADER='=== 会话边界（默认结论：把下面几行原样放在给用户回复的最后。例外：用户还要在本会话讨论本次结果时，第一行改为「会话边界：继续本会话。」；'
   +'用户拒绝换会话或宿主开不了新会话时，第一行改为「会话边界：留在本会话（原因）。」；这两种都删掉「新会话里运行」那一行，并按实际情况改写原因。'
@@ -35,15 +36,26 @@ export function openTasks(specsDir,feature){
 
 export function cmAiSessionBoundary(result,{specsDir,feature,identity,write=writeHandoff}={}){
   if(result?.workflow!=='cm-ai'||result?.state!=='run_done')return null;
-  const open=openTasks(specsDir,feature);
+  const completion=result.completion;
+  // A structured host snapshot must stay one snapshot through the driver and
+  // handoff; do not reread tasks and splice a later task list into it.
+  const open=completion?completion.feature?.tasks?.open??null:openTasks(specsDir,feature);
   // 不指定「下一个可执行任务」：依赖与选择由准入决定，这里只如实列出未完成项。
   const next=open===null?'无法确定（任务清单读不到或无法解析），在新会话里运行 $cm-ai 由准入给出下一项'
     :open.length?`$cm-ai（${feature} 仍有未完成任务：${open.join('、')}）`
-      :`无，${feature} 的任务已全部完成`;
+      :completion?.project?.pendingTasks>0?`$cm-ai（其他已批准功能仍有 ${completion.project.pendingTasks} 个未完成任务）`
+        :completion&&completion.project?.status!=='completed'?'恢复原运行核对 QA／收尾；项目完成尚未证实'
+          :`无，${feature} 的任务已全部完成`;
+  const todo=completion?.project?.features?completion.project.features.flatMap(item=>[
+    ...item.tasks.open.map(id=>`${item.name} ${id}`),
+    ...(item.qa.status==='passed'?[]:[`${item.name} QA ${item.qa.status}：核对对应原运行证据`])]):
+    open===null?['无法确定：tasks.md 读不到或无法解析']:open.map(id=>`${feature} ${id}`);
   const handoff=identity===undefined?null:handoffLine(specsDir,{workflow:'cm-ai',runId:identity?.runId,
-    done:[`${feature} ${identity?.taskId??'任务编号未知'}：已到 run_done（审查、完成门禁都已通过）`],
-    todo:open===null?['无法确定：tasks.md 读不到或无法解析']:open.map(id=>`${feature} ${id}`),next},write);
-  return sessionBoundaryBlock({next,reason:'本运行已到 run_done，记录都已落盘，下一项是新单元。',handoff});
+    done:[`${feature} ${identity?.taskId??'任务编号未知'}：已到 run_done（仅表示本运行选定范围收尾）`],
+    todo,next,
+    ...(result.completion?{completion:result.completion}:{})},write);
+  const block=sessionBoundaryBlock({next,reason:'本运行已到 run_done，记录都已落盘，下一项是新单元。',handoff});
+  return [block,...completionLines(result.completion)].join('\n');
 }
 
 export function cmFixSessionBoundary(result,operation,{archive,runId,write=writeHandoff}={}){

@@ -16,6 +16,7 @@ import {createPrdDispositionOwner} from '../runtime/js/cm-prd/review-disposition
 import {savePrdDraft,savePrdDesign,savePrdPromotedDraft} from '../runtime/js/cm-prd/draft-save.mjs';
 import {createPrdCorrectionOwner,inspectPrdCorrectionRecovery,resumePrdCorrection} from '../runtime/js/cm-prd/review-correction.mjs';
 import {createPrdSummaryOwner,publishPrdAwaitingReview} from '../runtime/js/cm-prd/summary.mjs';
+import {currentAcceptancePreview} from '../runtime/js/cm-prd/acceptance-preview.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
 import {serveCmAiHost} from '../runtime/js/cm-ai/host-session.mjs';
 import {need,shape,json,id,digest} from '../runtime/js/cm-ai/effect-contract.mjs';
@@ -138,6 +139,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     // Repair older cancelled checkpoints without replaying their retained call.
     if(cancelled&&!ended){reviewController.abort();session.commit(checkpoint());}
     const status=()=>ended?{stage:'inputs_replaced',runId,replacement:ended,completionAuthorized:false}:({...change?.status()??analysis.status(),...(predecessor?{predecessor}:{}),runId,logWriteEnabled:true,reviewState,summaryState,publishedSummary,
+      ...(summaryState?.acceptancePreview?{acceptancePreview:currentAcceptancePreview({specs:admission.specs,preview:summaryState.acceptancePreview})}:{}),
       recovery:session.state.active?{request:session.state.active.request,calls:session.state.active.calls.map(({callId,requestDigest,kind,result})=>
         ({callId,requestDigest,kind,status:result===undefined?'unknown':'recorded'}))}:null});
     const handle=async raw=>{
@@ -185,7 +187,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         summaryState=null;
         try{
           need(Array.isArray(currentFeatures)&&currentFeatures.length>0,'prd_summary_scope_unknown');
-          summaryState=await summarize(admission.specs,{currentFeatures},reviewController.signal);return summaryState;
+          summaryState=await summarize(admission.specs,{currentFeatures,taskGrammar:session.versions().taskGrammar},reviewController.signal);return summaryState;
         }catch(cause){
           // The shared transport redacts thrown errors. Keep this recoverable
           // scope failure visible without changing that transport contract.

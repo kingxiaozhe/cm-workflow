@@ -71,14 +71,15 @@ test('under autonomy a driver stop waits and a finished unit is not paged',t=>{
   assert.equal(notice(limit).delivery,'later');assert.equal(notice(done),null);
 });
 
-test('standing approval covers design, tasks and generated cases, never requirements, features or user cases',()=>{
-  const cases=list=>JSON.stringify({schemaVersion:1,feature:'login',cases:list});
-  const user={id:'TC-001',origin:'user',title:'login works'},generated={id:'TC-002',origin:'generated',title:'g'};
-  const before={directories:['1.login'],files:{'1.login/requirements.md':'R','1.login/design.md':'D','1.login/tasks.md':'T',
+test('standing approval preserves existing obligations while allowing scope expansion and optional generated cases',()=>{
+  const cases=list=>JSON.stringify({schemaVersion:'1.0',feature:'login',cases:list});
+  const user={id:'TC-001',origin:'user',kind:'logic',blocking:true,title:'login works',acIds:['AC-001'],taskIds:['T-001'],
+    preconditions:[],steps:['sign in'],expected:['signed in'],cleanup:[]},generated={...user,id:'TC-002',origin:'generated',blocking:false,title:'g'};
+  const before={directories:['1.login'],files:{'1.login/requirements.md':'R','1.login/design.md':'D','1.login/tasks.md':'- [ ] T-001: implement login\n  - 范围: `login.js`\n',
     '1.login/test-cases.json':cases([user,generated])}};
-  const proposal=(files={},over={})=>({changedUserCases:[],removed:[],...over,files:{...before.files,'1.login/tasks.md':'T2',...files}});
+  const proposal=(files={},over={})=>({changedUserCases:[],removed:[],...over,files:{...before.files,'1.login/tasks.md':'- [ ] T-001: implement login\n  - 范围: `login.js`, `helper.js`\n',...files}});
   assert.equal(standingProposalProblem(before,proposal()),null);
-  assert.equal(standingProposalProblem(before,proposal({'1.login/design.md':'D2','1.login/test-cases.json':cases([user])})),null);
+  assert.equal(standingProposalProblem(before,proposal({'1.login/test-cases.json':cases([user])})),null);
   const refused=[
     [proposal({'1.login/requirements.md':'R2'}),'提案改了需求'],
     [proposal({},{changedUserCases:[{id:'TC-001'}]}),'提案删除或减弱了用户用例'],
@@ -100,14 +101,14 @@ test('standing approval covers design, tasks and generated cases, never requirem
 test('check-proposal judges against the specs on disk and reopen counts to the limit',t=>{
   const h=home(t),specs=path.join(h.dir,'specs'),feature=path.join(specs,'1.login');
   fs.mkdirSync(feature,{recursive:true});
-  for(const [name,content] of [['requirements.md','R'],['design.md','D'],['tasks.md','T']])fs.writeFileSync(path.join(feature,name),content);
+  for(const [name,content] of [['requirements.md','R'],['design.md','D'],['tasks.md','- [ ] T-001: login\n  - 范围: `login.js`\n']])fs.writeFileSync(path.join(feature,name),content);
   const file=path.join(h.dir,'proposal.json'),check=files=>{
     fs.writeFileSync(file,JSON.stringify({result:{proposal:{changedUserCases:[],removed:[],files}}}));
     return h.run('check-proposal','--specs-dir',specs,'--proposal',file);
   };
-  const ok=check({'1.login/requirements.md':'R','1.login/design.md':'D','1.login/tasks.md':'T2'});
+  const ok=check({'1.login/requirements.md':'R','1.login/design.md':'D','1.login/tasks.md':'- [ ] T-001: login\n  - 范围: `login.js`, `helper.js`\n'});
   assert.equal(ok.code,0);assert.match(ok.out,/可以按常设授权自行批准/);
-  const no=check({'1.login/requirements.md':'R2','1.login/design.md':'D','1.login/tasks.md':'T2'});
+  const no=check({'1.login/requirements.md':'R2','1.login/design.md':'D','1.login/tasks.md':'- [ ] T-001: login\n  - 范围: `login.js`, `helper.js`\n'});
   assert.equal(no.code,1);assert.match(no.out,/提案改了需求.*不要发送 decision/);
   assert.equal(h.run('check-proposal','--specs-dir',specs,'--proposal',path.join(h.dir,'missing.json')).code,1);
   const reopen=()=>h.run('reopen','--project',h.dir,'--task','1.login/T-004');

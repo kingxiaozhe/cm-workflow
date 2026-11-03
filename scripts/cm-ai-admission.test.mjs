@@ -165,15 +165,18 @@ test('bound approve compares against the exact status bytes it validated',()=>fi
 
 test('standing authorization approves a bound scope-only change and nothing else',()=>fixture(({root,specs,code})=>{
   const status=path.join(specs,'.cm-specs-status'),digest='c'.repeat(64),home=path.join(root,'cm-home');
+  const priorTasks='- [ ] T-001: implement login\n  - 范围: `README.md`\n';
+  const proposedTasks='- [ ] T-001: implement login\n  - 范围: `README.md`, `login.js`\n';
+  fs.writeFileSync(path.join(specs,'1.login','tasks.md'),proposedTasks);
   fs.mkdirSync(home);
   const env={...process.env,CM_WORKFLOW_HOME:home};
   const read=name=>fs.readFileSync(path.join(specs,'1.login',name),'utf8');
   const requirements=read('requirements.md'),design=read('design.md');
   const archive=(over={})=>{fs.mkdirSync(path.join(specs,'.reviews'),{recursive:true});
     fs.writeFileSync(path.join(specs,'.reviews',`prd-change-${digest}.json`),JSON.stringify({version:1,
-      before:{directories:['1.login'],files:{'1.login/requirements.md':requirements,'1.login/design.md':design,'1.login/tasks.md':'- [ ] T-001: old\n'}},
+      before:{directories:['1.login'],files:{'1.login/requirements.md':requirements,'1.login/design.md':design,'1.login/tasks.md':priorTasks}},
       proposal:{proposalDigest:digest,changedUserCases:[],removed:[],files:{'1.login/requirements.md':requirements,'1.login/design.md':design,
-        '1.login/tasks.md':'- [ ] T-001: implement login\n'},...over},selected:['1.login']}));};
+        '1.login/tasks.md':proposedTasks},...over},selected:['1.login']}));};
   const saved=()=>fs.writeFileSync(status,JSON.stringify({status:'awaiting_review',revisionDigest:digest,
     features:['1.login'],specFiles:buildManifest(specs),testCases:[]}));
   const invoke=(...extra)=>spawnSync(process.execPath,[entry,'--specs-dir',specs,'--code-project',code,'--approve',

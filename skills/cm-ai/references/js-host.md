@@ -1,5 +1,9 @@
 # 当前会话作为 JS workflow 工具宿主
 
+明确写了必验标记的新运行才冻结 `specification.acceptanceContract`；未写标记的旧规格沿原门禁，不强制新增验证入口。已启用合同是批准规格派生的必验集合。逐 ID 回答，不能删项、降低环境或换较小检查；`verification:disabled` 不关闭它。映射不明先改规格并批准，旧运行不迁移。字段与命令边界见 [必验合同](../../../docs/cm-acceptance-completion.md)。
+汇报使用返回的只读 `completion`：task、feature、project、run 分开；缺证据显示 UNKNOWN，历史完成与当前资格分开。不能从 `fixture_completed`/`run_done` 推导产品验收或上线，handoff 不授予执行权限。
+阻断时展示 `guidance.blockage`：阶段、门禁记录的缺项、当前有效证据和原恢复动作及其开销。未记录细项明确 UNKNOWN；说明只解释原状态，恢复仍绑定原运行与权限。见 [阻断说明](../../../docs/cm-acceptance-completion.md#阻断说明与恢复指引)。
+
 规格待审批时先展示摘要卡并请用户回复“开始”。`approvalIntent` 仅把“开始”“开始吧”
 “可以开始”“确认开始”“开始执行”“现在开始”“可以，请开始开发”（允许尾部中英文句末标点与空白）视为
 明确开始；“继续”“可以”“好”“好的”“OK”“按最优解处理”“你看着办”“行”仍不审批。
@@ -22,7 +26,7 @@
   decision、save_draft，再用 `cm-ai-admission.mjs --approve --standing-authorization --expect-revision-digest <proposalDigest>`
   自行批准（它再核对归档与磁盘规格完全一致）。
 - **致命，停下并立即提醒**：先运行 `cm-autonomy.mjs notify --kind fatal --project <代码根> --reason "<一句话原因>"`，再停下说明。
-  ① 要改需求、增删功能、删除或减弱用户用例（`check-proposal` 退出码 1；只改 design/tasks 也不得借此加入新的业务规则，
+  ① 要改需求、增删功能、删除或减弱既有必验义务，或无法证明条款未减弱（不限用例来源；`check-proposal` 退出码 1；只改 design/tasks 也不得借此加入新的业务规则，
   这类变化按改需求处理）；② 新界面截图要认作视觉基准；③ `reopen` 达到上限；
   ④ 额度用完、需要用户本人操作设备或账号、存在安全或丢数据风险；⑤ 原规则禁止代做或要求另行授权的动作（提交、推送、发布等）。
 - 全部功能完成时运行 `cm-autonomy.mjs notify --kind finished --project <代码根> --reason "<完成了什么>"` 再收尾。

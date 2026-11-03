@@ -31,7 +31,7 @@
 `revision_digest_mismatch`/`revision_files_changed`；核对后到写入前有变化则拒绝为`revision_changed_during_approval`。被拒时停下重新展示。审批后按卡上写明的动作继续，不再追问。
 常设授权开启时（`cm-autonomy.mjs`，见cm-ai `js-host.md`「常设授权」）不展示卡片等回复：把`change_confirmation`返回的
 proposal存成文件，先运行`cm-autonomy.mjs check-proposal --specs-dir <SPECS_DIR> --proposal <文件>`；退出码1（改需求、增删
-功能、动用户用例或内容不全）即致命停车：不发decision、不保存，提醒用户后展示卡片等原规则确认。通过才decision、save_draft，
+功能、动用户用例、减弱任意来源必验义务、无法证明既有条款未减弱或内容不全）即致命停车：不发decision、不保存，先立即提醒用户，再展示具体差异等原规则确认。通过才decision、save_draft，
 再用`--approve --standing-authorization --expect-revision-digest <proposalDigest>`；准入再次核对归档与磁盘规格一致才写审批位。
 不适用：`changedUserCases`非空（用例删除/弱化须单独确认）、用户只回“确认提案”等非开始短语（只保存，停在
 `awaiting_review`，再按原规则请回“开始”）、或用户要求先人审规格。

@@ -8,7 +8,12 @@ import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {protectedScopePaths, validateDeveloperScope} from '../runtime/js/cm-ai/developer-adapter.mjs';
 import {planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
+import {isXcodebuild, isTestAction, advisoryRunsTest as runsTest, mandatoryCheckCoverage} from '../runtime/js/check-coverage.mjs';
 import {git as safeGit} from '../runtime/js/cm-security/scan.mjs';
+import {captureSpecificationMaterial} from '../runtime/js/cm-ai/specification-material.mjs';
+import {readReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
+import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
+import {acceptanceCoverage} from '../runtime/js/cm-ai/acceptance-contract.mjs';
 
 // The whole check step of a current-session run is one host call with this deadline
 // (runtime/js/cm-ai/host-conversation-execution.mjs, outerTimeoutMs). The test
@@ -82,39 +87,6 @@ function checkProtectedScope(scope) {
     message: `scope 含受保护路径 ${item}：创建运行会被 protected_scope 拒绝。先走人工通道同步该文件，再把它从 scope 里去掉`}));
 }
 
-const isXcodebuild = tokens => tokens.some(token => path.basename(token) === 'xcodebuild');
-// xcodebuild options that take no value (xcodebuild -help, Xcode 26). A bare word counts as an
-// action only right after xcodebuild, another bare word (an action or an option's value), an
-// -option:value, or one of these. After any other option it may be that option's value
-// (`-resultBundlePath test`), so it is not an action: an unknown flag then makes the coverage
-// check warn instead of passing, never the other way round.
-const XCODE_FLAGS = new Set(['-usage', '-help', '-verbose', '-license', '-checkFirstLaunchStatus', '-runFirstLaunch',
-  '-checkForNewerComponents', '-downloadAllPlatforms', '-prepareDeviceSupport', '-alltargets', '-parallelizeTargets', '-quiet',
-  '-hideShellScriptEnvironment', '-showsdks', '-showdestinations', '-showTestPlans', '-showBuildSettings', '-showBuildSettingsForIndex',
-  '-list', '-version', '-exportArchive', '-exportNotarizedApp', '-skipUnavailableActions', '-exportLocalizations', '-importLocalizations',
-  '-retry-tests-on-failure', '-run-tests-until-failure', '-disable-concurrent-destination-testing', '-enumerate-tests',
-  '-resolvePackageDependencies', '-disableAutomaticPackageResolution', '-onlyUsePackageVersionsFromResolvedFile', '-skipPackageUpdates',
-  '-disablePackageRepositoryCache', '-skipPackagePluginValidation', '-skipMacroValidation', '-skipPackageSignatureValidation', '-json',
-  '-allowProvisioningUpdates', '-allowProvisioningDeviceRegistration', '-showBuildTimingSummary']);
-function xcodeActions(tokens) {
-  const start = tokens.findIndex(token => path.basename(token) === 'xcodebuild');
-  if (start === -1) return [];
-  return tokens.slice(start + 1).filter((token, index, rest) => {
-    if (token.startsWith('-')) return false;
-    const before = index === 0 ? null : rest[index - 1];
-    return before === null || !before.startsWith('-') || before.includes(':') || XCODE_FLAGS.has(before);
-  });
-}
-// Modes that list, show, export or set up instead of running the scheme action: a `test` beside them
-// selects what to show (xcodebuild -showBuildSettings test) and runs nothing.
-const XCODE_NON_RUNNING = new Set(['-usage', '-help', '-license', '-checkFirstLaunchStatus', '-runFirstLaunch', '-downloadAllPlatforms',
-  '-prepareDeviceSupport', '-downloadPlatform', '-importPlatform', '-downloadComponent', '-importComponent', '-deleteComponent',
-  '-showComponent', '-showsdks', '-showdestinations', '-showTestPlans', '-showBuildSettings', '-showBuildSettingsForIndex', '-list',
-  '-find-executable', '-find-library', '-version', '-exportArchive', '-exportNotarizedApp', '-exportLocalizations', '-importLocalizations',
-  '-enumerate-tests', '-resolvePackageDependencies', '-create-xcframework']);
-// Whether a direct xcodebuild actually runs tests; shared by the overlap and the coverage checks.
-const isTestAction = tokens => !tokens.some(token => XCODE_NON_RUNNING.has(token))
-  && xcodeActions(tokens).some(action => action === 'test' || action === 'test-without-building');
 const optionValue = (tokens, name) => {
   const at = tokens.indexOf(name);
   return at === -1 ? '' : tokens[at + 1] ?? '';
@@ -195,24 +167,6 @@ export function readAffectedMap(root) {
   return null;
 }
 
-const ONLY = '-only-testing:', SKIP = '-skip-testing:';
-const within = (id, target) => id === target || id.startsWith(`${target}/`);
-// Whether one check command runs all of test `id`. A direct xcodebuild counts only with a test
-// action and only through its selection: unnarrowed, or an -only-testing naming `id` or an
-// ancestor. Any other command (wrapper script, other runner) counts when an argument contains
-// `id`; the start check cannot see inside it. An -skip-testing on `id`, an ancestor or a part
-// of it (one method of the class) means it does not run all of it.
-function runsTest(tokens, id) {
-  if (tokens.some(token => token.startsWith(SKIP)
-    && (within(id, token.slice(SKIP.length)) || within(token.slice(SKIP.length), id)))) return false;
-  if (isXcodebuild(tokens)) {
-    if (!isTestAction(tokens)) return false;
-    const only = tokens.filter(token => token.startsWith(ONLY)).map(token => token.slice(ONLY.length));
-    return !tokens.some(token => token.startsWith('-only-testing')) || only.some(target => within(id, target));
-  }
-  return tokens.some(token => !token.startsWith('-skip-testing') && token.includes(id));
-}
-
 function checkAffectedTests(plan, definition) {
   const commands = (Array.isArray(plan.checks) ? plan.checks : [])
     .map(item => item?.command).filter(tokens => Array.isArray(tokens) && tokens.every(token => typeof token === 'string'));
@@ -289,9 +243,62 @@ function checkDirtyScope(definition) {
       + '运行基线会把它们当起点，交审包里看不到这部分改动；若是上次的任务代码，先还原，确认是有意保留的再继续'}];
 }
 
-export function startCheck(planFile) {
+// requiredTests comes from the caller's frozen approved contract, never from the
+// mutable affected-test table or the developer's PLAN. Other warnings stay advisory.
+export function checkMandatoryTests(plan, requiredTests) {
+  const coverage = mandatoryCheckCoverage({requiredTests,
+    commands: (Array.isArray(plan.checks) ? plan.checks : []).map(item => item?.command)});
+  if (coverage.satisfied) return [];
+  return [{level: 'error', code: 'mandatory_tests_not_covered',
+    tests: coverage.missing, unverifiable: coverage.unverifiable,
+    message: `已批准必验合同要求 ${coverage.missing.join('、')}，当前检查命令未能证明完整选择；`
+      + '补充明确执行这些测试的命令。包装脚本须先经原规格流程确认可机械核对的测试映射，不能仅在参数中出现测试名就认定覆盖'}];
+}
+
+function approvedStartContract(plan,definition){
+  // Old scope-only advisory inputs have no task identity and make no claim
+  // about a runnable CM specification. Real run definitions are checked below.
+  if(definition.specsDir===undefined&&definition.specification===undefined)return null;
+  try{
+    if(plan.mode==='resume'){
+      const snapshot=readExecutionSnapshot({specsRoot:definition.specsDir,
+        identity:{repositoryId:definition.identity.repositoryId,runId:definition.identity.runId}});
+      const baseline=readReviewBaseline(snapshot.records[0]?.payload?.baseline);
+      if(baseline.specificationRoot!==definition.specsDir||baseline.identity.taskId!==definition.identity.taskId)
+        throw new Error('owner mismatch');
+      return baseline.specification?.acceptanceContract??null;
+    }
+    // A create-plan may be inspected before any specification has been written.
+    // Preserve its old scope/budget diagnostics; this read-only check grants no
+    // execution admission. Any existing feature/approval (including symlinks),
+    // resume owner or read failure still takes the strict evidence path below.
+    if(plan.mode===undefined||plan.mode==='create'){
+      const root=definition.specsDir;
+      if(typeof root!=='string'||!path.isAbsolute(root)||fs.realpathSync(root)!==root
+        ||!fs.lstatSync(root).isDirectory()||typeof definition.feature!=='string'
+        ||!/^\d+\.[^/\\\x00-\x1f]+$/.test(definition.feature))throw new Error('invalid specification root');
+      const absent=file=>{try{fs.lstatSync(file);return false;}catch(error){if(error.code==='ENOENT')return true;throw error;}};
+      if(absent(path.join(root,'.cm-specs-status'))&&absent(path.join(root,definition.feature)))return null;
+    }
+    return captureSpecificationMaterial({specsRoot:definition.specsDir,feature:definition.feature,
+      taskId:definition.identity.taskId}).acceptanceContract;
+  }catch{throw new InputError('必验合同无法从已批准规格或原运行读取；先核对规格批准与原运行身份，不能由 PLAN 自报或省略必验范围');}
+}
+
+export function startCheck(planFile, {requiredTests = []} = {}) {
   const {plan, definition} = loadStartInputs(planFile);
-  return [...checkProtectedScope(definition.scope), ...checkChecks(plan), ...checkAffectedTests(plan, definition), ...checkDirtyScope(definition)];
+  const contract=approvedStartContract(plan,definition),mandatory=[];
+  if(contract){
+    if(contract.unresolved.length)mandatory.push({level:'error',code:'acceptance_mapping_required',
+      message:`已批准材料的必验映射尚不明确：${contract.unresolved.join('；')}`});
+    // Planned argv is checked before execution; no success evidence is emitted.
+    const coverage=acceptanceCoverage(contract,(Array.isArray(plan.checks)?plan.checks:[]).map(item=>({...item,outcome:'passed'})));
+    if(!coverage.satisfied)mandatory.push({level:'error',code:'mandatory_checks_not_covered',
+      tests:coverage.missing,unverifiable:coverage.unverifiable,commands:coverage.missingCommands,
+      message:'当前计划未完整包含冻结的必验检查；补齐检查，不能缩减批准的验收范围'});
+  }
+  return [...checkProtectedScope(definition.scope), ...checkChecks(plan), ...checkAffectedTests(plan, definition),
+    ...checkMandatoryTests(plan, requiredTests), ...mandatory, ...checkDirtyScope(definition)];
 }
 
 export function main(argv = process.argv.slice(2), out = process.stdout, err = process.stderr) {

@@ -7,6 +7,7 @@ import {readExternalModels} from './external-models.mjs';
 import {beforeFirstQaRound,readQaConfigRevision} from './qa-config-revision.mjs';
 import {readCloseoutPolicy} from './knowledge-closeout.mjs';
 import {readQaAttachment} from './qa-attachment.mjs';
+import {acceptanceProblems,encodeAcceptanceEvidence,acceptanceCoverage,describeAcceptanceProblems} from './acceptance-contract.mjs';
 // Trusted synthetic fixture host; explicit V2 supports isolated task-file writes.
 import { randomUUID } from 'node:crypto';
 import { types } from 'node:util';
@@ -17,7 +18,7 @@ import {verifySpecificationMaterial,boundSpecificationMaterial,inspectSpecificat
   readSpecificationRebind} from './specification-material.mjs';
 import { captureReviewBaseline, captureScopeRevisionSources, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks, readReviewSourceFiles } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode,
-  JOURNAL_PAYLOAD_LIMIT,developCheckpointReserve,taskReviewScope,boundedReason } from './effect-contract.mjs';
+  JOURNAL_PAYLOAD_LIMIT,JOURNAL_REASON_LIMIT,developCheckpointReserve,taskReviewScope,boundedReason } from './effect-contract.mjs';
 import { reviewResult,reviewReceipt,boundReviewText,reviewPaths } from './review-runner.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { runnerPayload,runnerPayloadV3,readRunnerHistory,attemptBaseline,boundRunnerRecord,
@@ -177,7 +178,7 @@ export function createTaskRunner(options) {
   // only block: passing it grants nothing and never substitutes for that review.
   const verificationGate=options.verificationGate??null;
   // The latest satisfied gate's handoff entry; reset on every gate run.
-  let requirementEvidence=null,hostReplayEvidence=null;
+  let requirementEvidence=null,hostReplayEvidence=null,acceptanceEvidence=null;
   need(verificationGate===null||typeof verificationGate==='function');
   if(taskMode)need(Object.hasOwn(options,'persistence'),'runner_completion');
   const config=json({root:options.root,identity:options.identity,scope:options.scope,requirements:options.requirements,
@@ -294,7 +295,7 @@ export function createTaskRunner(options) {
   const calls=[],cache=new Map(),session=restored?.session??randomUUID(),registered=new Map(),receipts=[];
   let state=reviewers.some(r=>r.allowed&&r.available)?'ready':'pending_review',code=null,attempt=1;
   let busy=false,pending=null,sequence=0,base=original,reviewPackage=null,currentChecks=null,workflowRunning=false;
-  let reason=null,checkNewPaths=null;
+  let reason=null,checkNewPaths=null,verificationReason=null;
   let receipt=null,priorReview=null,cancelAfterCommit=false,workflowError=null,cancellationRequested=false,reviewInvocation=null;
   let learningResult=null;
   // Journaled supersession context: shown, never counted as a review verdict.
@@ -461,7 +462,7 @@ export function createTaskRunner(options) {
     const baseline=captureReviewBaseline({...configToBaseline(effectiveMetadata()),version:original.version,
       ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})},
       !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
-      original.ignorePolicy?.version===2?original.ignorePolicy:null);
+      original.ignorePolicy?.version===2?original.ignorePolicy:null,Boolean(original.specification?.acceptanceContract));
     return splitDocumentationState(baseline.files,paths);
   }
   const documentationRefusal=(refusal,detail)=>Object.assign(new Error(refusal),{code:refusal,reason:{
@@ -716,7 +717,7 @@ export function createTaskRunner(options) {
     compareReviewBaseline(withBoundSpecification(captureReviewBaseline({...configToBaseline(effectiveMetadata()),version:original.version,
       ...(Object.hasOwn(original,'specification')?{specification:{specsRoot:original.specificationRoot,feature:original.specification.feature}}:{})},
       !Object.hasOwn(original,'ignorePolicy'),original.ignorePolicy?.version??2,
-      original.ignorePolicy?.version===2?original.ignorePolicy:null)),original);
+      original.ignorePolicy?.version===2?original.ignorePolicy:null,Boolean(original.specification?.acceptanceContract))),original);
   }
   const specificationLive=(currentState,currentCode)=>Object.hasOwn(original,'specification')
     &&['develop','review','complete'].some(kind=>stageAllowed(kind,currentState,currentCode,priorReview?.verdict));
@@ -1167,25 +1168,48 @@ export function createTaskRunner(options) {
     return {files};
   }
   async function verificationSatisfied(checks) {
-    requirementEvidence=null;hostReplayEvidence=null;
-    if(verificationGate===null)return true;
+    requirementEvidence=null;hostReplayEvidence=null;acceptanceEvidence=null;verificationReason=null;
     // The description carries hard requirements too ("also confirm X/Y/Z do not
     // regress", "do not modify A"), and a gate that reads only the verification
     // section lets exactly those through to the independent review. Both are
     // sent; neither is required to exist.
     const specification=Object.hasOwn(original,'specification')?verifySpecificationMaterial(original):null;
+    const contract=specification?.acceptanceContract??null;
+    if(verificationGate===null){
+      if(contract)verificationReason='verification_precheck_failed: 冻结合同需要验证入口，当前宿主未提供 verificationGate';
+      return contract===null;
+    }
     const verification=specification?.task?.verification??null;
     const description=specification?.task?.description??null;
     const written=value=>typeof value==='string'&&value.trim().length>0;
-    if(!written(verification)&&!written(description))return true;
+    if(!contract&&!written(verification)&&!written(description))return true;
     const verdict=json(await bounded(verificationGate,
       json({identity:{...config.identity,attempt},
         ...(written(description)?{description}:{}),
-        ...(written(verification)?{verification}:{}),checks,
+        ...(written(verification)?{verification}:{}),...(contract?{acceptanceContract:contract}:{}),checks,
         ...(parsedHistory?.scopeRevisions?{scope:effectiveScope}: {})}),{baselineSnapshot:baselineSnapshot()}));
-    shape(verdict,['satisfied',...['items','hostRecord'].filter(key=>Object.hasOwn(verdict,key))]);
+    shape(verdict,['satisfied',...['items','hostRecord','coverage','reason'].filter(key=>Object.hasOwn(verdict,key))]);
     need(typeof verdict.satisfied==='boolean','invalid_result');
     need(verdict.satisfied||!Object.hasOwn(verdict,'items')&&!Object.hasOwn(verdict,'hostRecord'),'invalid_result');
+    if(Object.hasOwn(verdict,'reason')){
+      need(!verdict.satisfied&&typeof verdict.reason==='string'
+        &&verdict.reason.startsWith('verification_precheck_failed: ')
+        &&verdict.reason.length<=JOURNAL_REASON_LIMIT&&!/[\x00-\x1f\x7f]/.test(verdict.reason),'invalid_result');
+      verificationReason=verdict.reason;
+    }
+    if(contract){
+      const coverage=acceptanceCoverage(contract,checks);
+      const problems=verdict.satisfied?acceptanceProblems(contract,verdict.items,verdict.hostRecord??null):[];
+      if(!coverage.satisfied)problems.push('mandatory checks missing or unverifiable: '+JSON.stringify(coverage));
+      if(!verdict.satisfied||problems.length){
+        if(problems.length)verificationReason=boundedReason('verification_precheck_failed: ',
+          [...(verificationReason?[verificationReason.replace(/^verification_precheck_failed:\s*/, '')]:[]),
+            ...describeAcceptanceProblems(contract,problems)]);
+        return false;
+      }
+      acceptanceEvidence=encodeAcceptanceEvidence({contract,identity:{...config.identity,attempt},items:verdict.items,
+        facts:verdict.hostRecord??null,coverage});
+    }
     // The host's own replay record (host-replay.mjs) is a separate handoff entry.
     hostReplayEvidence=Object.hasOwn(verdict,'hostRecord')
       ?encodeHostReplayEvidence({identity:{...config.identity,attempt},facts:verdict.hostRecord}):null;
@@ -1240,7 +1264,7 @@ export function createTaskRunner(options) {
   async function hostDeliveryChecks(){
     currentChecks=await collectChecks();active();
     if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return false;}
-    if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return false;}
+    if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed',verificationReason);return false;}
     active();
     // unchangedSinceRejection builds a package too, so an empty delivery or a
     // deleted in-scope requirement surfaces there first and takes the same
@@ -1251,7 +1275,8 @@ export function createTaskRunner(options) {
     try{createHostHandoff({root:config.root,baseline:base,checks:currentChecks,
       handoffPath:completion.handoffs[attempt-1],evidence:[...journal.filter(row=>row.payload.type==='completion-rework-requested')
         .map(row=>'cm-completion-rework-v1: '+JSON.stringify({identity:{...config.identity,attempt:2},recordDigest:row.digest})),
-        ...(requirementEvidence===null?[]:[requirementEvidence]),...(hostReplayEvidence===null?[]:[hostReplayEvidence])]});}
+        ...(requirementEvidence===null?[]:[requirementEvidence]),...(hostReplayEvidence===null?[]:[hostReplayEvidence]),
+        ...(acceptanceEvidence===null?[]:[acceptanceEvidence])]});}
     catch(error){emptyDelivery(error);return false;}
     return true;
   }
@@ -1383,7 +1408,7 @@ export function createTaskRunner(options) {
       if(taskLearning?.hostHandoff!==true){
         currentChecks=await collectChecks();active();
         if(failedChecks(currentChecks).length){halt('blocked','develop_checks_not_passed',checkFailureReason(currentChecks,'develop_checks_not_passed'));return;}
-        if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed');return;}
+        if(!await verificationSatisfied(currentChecks)){halt('blocked','verification_precheck_failed',verificationReason);return;}
         active();
         let unchanged;
         try{unchanged=unchangedSinceRejection();}catch(error){emptyDelivery(error);return;}

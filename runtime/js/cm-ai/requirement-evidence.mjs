@@ -27,12 +27,14 @@ export function readRequirementItems(raw,code='verification_precheck_invalid'){
   need(Array.isArray(raw)&&raw.length>0&&raw.length<=REQUIREMENT_ITEM_LIMIT,code);
   const items=raw.map(item=>{
     need(item!==null&&typeof item==='object'&&!Array.isArray(item),code);
-    try{shape(item,['requirement','satisfied','evidence',...['run','result'].filter(key=>Object.hasOwn(item,key))]);}catch{need(false,code);}
+    try{shape(item,['requirement','satisfied','evidence',...['run','result','id','evidenceType','environment'].filter(key=>Object.hasOwn(item,key))]);}catch{need(false,code);}
     need(typeof item.satisfied==='boolean',code);
     boundedText(item.requirement,code);boundedText(item.evidence,code);
     const run=item.run??null,result=item.result??null;
     need(run===null||RUNS.has(run),code);need(result===null||RESULTS.has(result),code);
+    for(const key of ['id','evidenceType','environment'])if(item[key]!==undefined&&item[key]!==null)boundedText(item[key],code);
     return freeze({requirement:item.requirement,satisfied:item.satisfied,evidence:item.evidence,
+      ...Object.fromEntries(['id','evidenceType','environment'].filter(key=>item[key]!=null).map(key=>[key,item[key]])),
       ...(run===null?{}:{run}),...(result===null||run!=='baseline'?{}:{result})});
   });
   need(Buffer.byteLength(JSON.stringify(items),'utf8')<=REQUIREMENT_EVIDENCE_LIMIT,code);
@@ -68,7 +70,7 @@ export function readRequirementEvidence(entry){
 export function requirementReportProblem(raw){
   if(!Array.isArray(raw))return 'not a list';
   if(raw.length>REQUIREMENT_ITEM_LIMIT)return `more than ${REQUIREMENT_ITEM_LIMIT} items`;
-  const known=['requirement','satisfied','evidence','run','result'];
+  const known=['requirement','satisfied','evidence','run','result','id','evidenceType','environment'];
   for(const [index,item] of raw.entries()){
     const at=`item ${index+1}`;
     if(item===null||typeof item!=='object'||Array.isArray(item))return `${at}: not an object`;

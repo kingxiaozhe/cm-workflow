@@ -17,6 +17,9 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 
 ## 常用命令
 
+- 必验与完成边界：明确必验标记的新运行冻结批准规格的 acceptanceContract；普通旧规格不强制新验证入口，原宿主/完成门禁共用校验；completion 只读区分任务、功能、项目与收尾，产品验收和部署缺证据为 UNKNOWN。旧运行不迁移，见 docs/cm-acceptance-completion.md。
+- 批准前验收预览：`node scripts/cm-acceptance-preview.mjs --specs {SPECS_DIR} [--feature {FEATURE_DIR} --task {TASK_ID}] [--json]`；PRD 摘要也展示同源预览。阻断细项沿原 reason 保存，由 guidance.blockage 解释；只读预览/指引不授予审批或恢复权限。
+
 - 已完成运行受控集成：node scripts/cm-ai-integration-preview.mjs --run-definition {原run.json} --plan {plan.json} 只读预检；独立审查后由原 owner 用固定目标显式接纳，保留历史和次数。详见 docs/reviewed-integration.md。
 
 - 方案推敲：`$cm-challenge` / `/cm-challenge`，显式三轮或必要追问；复用 `runtime/steelman-review.md`，只输出讨论建议，不启动宿主、不替代正式审查。
@@ -59,6 +62,8 @@ macOS/Linux 的历史 `/cm:*` 别名包装。
 - 一致性自检: `./scripts/cm-check-runtime.sh`；完整当前会话机械/语义接线：`node scripts/cm-check-host.mjs --help`
 - 完整 `cm-check` 默认先调用 `scripts/cm-check-update.mjs` 查询并升级已管理安装，再检查返回目录；低层检查仍只读。定点测试：`node --test scripts/cm-check-update.test.mjs scripts/cm-check-host.test.mjs`。
 - 全局日志夹具: `./scripts/cm-check-runtime.sh --log-fixtures`
+- 交付声明：`node scripts/cm-delivery-evidence.mjs --help`；preview/status/history 只读，record 由负责人在交互终端确认，非自动产品验收或部署。
+- 本地运行分析：`node scripts/cm-run-analysis.mjs --specs {SPECS_DIR} [--run-id {RUN_ID}] [--json]`；缺失用量/时间不估算。
 - API 用量报告: `python3 scripts/cm-usage-report.py --last 10`
 - OpenAI 兼容调用夹具: `python3 scripts/test-cm-openai-compatible-call.py`
 - 审批 manifest: `python3 scripts/cm-spec-manifest.py {specs}`

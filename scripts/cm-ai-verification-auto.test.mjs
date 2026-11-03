@@ -29,7 +29,7 @@ async function fixture(fn){
   fs.writeFileSync(path.join(codeProject,'.cm-workflow.json'),JSON.stringify({version:1,runtimes:{available:'codex'}}));
   fs.writeFileSync(path.join(specsDir,feature,'requirements.md'),'# Requirements\n');
   fs.writeFileSync(path.join(specsDir,feature,'design.md'),'# Design\n');
-  fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: 实现 a.js\n  - 范围: `a.js`, `a.test.js`\n  - 测试文件: `a.test.js`\n\n'
+  fs.writeFileSync(path.join(specsDir,feature,'tasks.md'),'- [ ] T-001: 必验: 实现 a.js\n  - 范围: `a.js`, `a.test.js`\n  - 测试文件: `a.test.js`\n\n'
     +'## 验证要求\n\n- T-001: RED 必须先失败；全部放入后检查通过。\n');
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[feature],specFiles:buildManifest(specsDir)}));
   const definition={version:1,codeProject,specsDir,feature,identity,scope:['a.js','a.test.js'],requirements:['requirements.md'],
@@ -40,11 +40,12 @@ async function fixture(fn){
 const develop=(requirements,test=TEST)=>({async call(kind,payload){
   assert.equal(kind,'develop');
   return {status:'succeeded',value:{outcome:'implemented',application:{status:'no_relevant_lesson',note:null},
-    retrospective:{status:'no_new_lesson',candidates:[],reason:null},...(requirements===undefined?{}:{requirements})},
+    retrospective:{status:'no_new_lesson',candidates:[],reason:null},...(requirements===undefined?{}:{requirements:typeof requirements==='function'?requirements(payload.request.payload.specification.acceptanceContract):requirements})},
     edits:[{path:'a.js',beforeSha256:payload.expected['a.js'],content:'new\n'},{path:'a.test.js',beforeSha256:null,content:test}]};
 }});
-const run=async(definition,bridge,protection)=>{
-  const execution=createConversationExecution(definition,'host',bridge,null,null,null,false,'codex',{protection,controlPolicy:policy});
+const completeReport=contract=>contract.obligations.map(item=>({...item,satisfied:true,evidence:'isolated fixture: a.js export and a.test.js assertions'}));
+const run=async(definition,bridge,protection,selectedPolicy=policy)=>{
+  const execution=createConversationExecution(definition,'host',bridge,null,null,null,false,'codex',{protection,controlPolicy:selectedPolicy});
   const control=await openControlRun(definition,'create',execution);
   try{return await control.host.handle(request('start'));}finally{control.close();}
 };
@@ -52,8 +53,7 @@ const handoff=definition=>JSON.parse(fs.readFileSync(path.join(definition.specsD
 
 test('auto gate: a failing-first claim the host replay confirms passes, and the handoff carries the host record',
   {skip:!supported},()=>fixture(async({definition,protection})=>{
-    const result=await run(definition,develop([{requirement:'T-001: RED 必须先失败',satisfied:true,evidence:'a.test.js 在旧 a.js 下失败',run:'red'},
-      {requirement:'全部放入后检查通过',satisfied:true,evidence:'unit 检查'}]),protection);
+    const result=await run(definition,develop(completeReport),protection);
     assert.equal(result.state,'awaiting_review',JSON.stringify(result));
     const entries=handoff(definition).evidence;
     assert.match(entries.find(entry=>entry.startsWith('cm-requirement-evidence-v1: ')),/RED 必须先失败/);
@@ -69,6 +69,7 @@ test('auto gate: no report from the developer stops before review, with nothing 
   {skip:!supported},()=>fixture(async({definition,protection})=>{
     const result=await run(definition,develop(undefined),protection);
     assert.equal(result.state,'blocked');assert.equal(result.code,'verification_precheck_failed');
+    assert.match(result.reason,/mandatory acceptance report missing/);
     assert.equal(fs.existsSync(path.join(definition.specsDir,'.reviews',`${definition.feature.replace(/^\d+\./,'')}-T-001-a1-handoff.json`)),false);
   }));
 
@@ -88,12 +89,36 @@ test('auto gate after a stopped attempt: the replay uses the task baseline, not 
     const first=await run(definition,develop(undefined),protection);
     assert.equal(first.code,'verification_precheck_failed');
     assert.equal(fs.readFileSync(path.join(definition.codeProject,'a.js'),'utf8'),'new\n','the stopped delivery stays on disk');
-    const execution=createConversationExecution(definition,'host',develop([{requirement:'T-001: RED 必须先失败',satisfied:true,
-      evidence:'a.test.js 在旧 a.js 下失败',run:'red'}]),null,null,null,false,'codex',{protection,controlPolicy:policy});
+    const execution=createConversationExecution(definition,'host',develop(completeReport),null,null,null,false,'codex',{protection,controlPolicy:policy});
     const control=await openControlRun(definition,'resume',execution);
     let result;try{result=await control.host.handle(request('advance'));}finally{control.close();}
     // The gate passed and the handoff was published; this fixture has no reviewer, so the run stops at review.
     assert.notEqual(result.code,'verification_precheck_failed',JSON.stringify(result));
     const record=JSON.parse(handoff(definition).evidence.find(entry=>entry.startsWith('cm-host-replay-v1: ')).slice('cm-host-replay-v1: '.length));
     assert.deepEqual([record.facts.baseline.outcome,record.facts.red.outcome],['failed','failed']);
+  }));
+
+for(const verification of ['auto','precheck','disabled'])test(`new contract cannot omit mandatory items through ${verification}`,
+  {skip:!supported},()=>fixture(async({definition,protection})=>{
+    const developer=develop(completeReport);
+    const bridge={async call(kind,payload){
+      if(kind==='verification_precheck')return {items:completeReport(payload.acceptanceContract).slice(0,1)};
+      const result=await developer.call(kind,payload);
+      result.value.requirements=result.value.requirements.slice(0,1);return result;
+    }};
+    const result=await run(definition,bridge,protection,{...policy,verification});
+    assert.equal(result.code,'verification_precheck_failed',JSON.stringify(result));
+    assert.match(result.reason,/missing acceptance obligation/);
+    assert.doesNotMatch(result.reason,/mandatory acceptance report missing/,'a partial report must identify missing items, not claim the whole report is absent');
+  }));
+
+test('manual precheck cannot accept a RED claim contradicted by host replay',
+  {skip:!supported},()=>fixture(async({definition,protection})=>{
+    const developer=develop(completeReport,"process.exit(0);\n");
+    const bridge={async call(kind,payload){
+      if(kind==='verification_precheck')return {items:completeReport(payload.acceptanceContract)};
+      return developer.call(kind,payload);
+    }};
+    const result=await run(definition,bridge,protection,{...policy,verification:'precheck'});
+    assert.equal(result.code,'verification_precheck_failed',JSON.stringify(result));
   }));
