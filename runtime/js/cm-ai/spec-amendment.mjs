@@ -340,6 +340,9 @@ const PROMPT=`你是 CM 规格补正的独立审查者。你没有写这次补�
 before/ 是用户上次回复「开始」时批准的规格，after/ 是现在的规格。先运行：
   diff -ru before after
 
+context/ 是涉及的 feature 里没有改动的规格文件（需求、设计等），内容与批准时相同（不计勾选状态），只供对照。
+判断下面第 1 条时，先读 context/ 里的需求和设计，再看补正是在落实它们，还是在改变它们。
+
 工具已用机器核对过以下条件，全部成立：
 - requirements.md、design.md 未变；
 - test-cases.json 只新增用例，原有用例逐字不变；
@@ -359,8 +362,11 @@ before/ 是用户上次回复「开始」时批准的规格，after/ 是现在�
 {"${REVIEW_MARKER}":1,"deltaDigest":"{DELTA}","verdict":"approved 或 changes_requested","findings":["每条一句中文"]}
 `;
 
-// Writes before/ and after/ copies plus the review prompt into a fresh directory
-// outside the specs tree, so the reviewer reads exactly the classified bytes.
+// Writes before/ and after/ copies, the unchanged files of the touched features
+// (context/), and the review prompt into a fresh directory outside the specs tree,
+// so the reviewer reads exactly the classified bytes. Dogfood (wue v4, 2026-11-04):
+// the amendment aligned tasks.md with design.md, which a reviewer cannot judge
+// without the unchanged design.
 export function prepareSpecAmendment(specsDir,{outDir}={}){
   const result=inspectSpecAmendment(specsDir);
   const summary=publicAmendment(result);
@@ -384,6 +390,10 @@ export function prepareSpecAmendment(specsDir,{outDir}={}){
   for(const file of result.changedFiles){
     if(before.has(file))write('before',file,before.get(file));
     if(after.has(file))write('after',file,after.get(file));
+  }
+  const changed=new Set(result.changedFiles),features=new Set(result.changedFiles.map(file=>file.split('/')[0]));
+  for(const [file,content] of after){
+    if(!changed.has(file)&&features.has(file.split('/')[0]))write('context',file,content);
   }
   const prompt=PROMPT.replace('{DELTA}',result.deltaDigest);
   fs.writeFileSync(path.join(realRoot,'review-prompt.md'),prompt);

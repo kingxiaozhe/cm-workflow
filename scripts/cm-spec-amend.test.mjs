@@ -252,10 +252,19 @@ test('apply refuses while another live process holds the approval lock; a stale 
 
 // Review r1 #1: the packet holds the exact bytes the review digest covers.
 test('prepare packet matches the classified bytes',()=>fixture(({root,specs,approve,inspect,edit,cli})=>{
+  // A second, untouched feature must stay out of context/ (review: feature filter had no fixture).
+  fs.cpSync(path.join(specs,'1.login'),path.join(specs,'2.signup'),{recursive:true});
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'awaiting_review',features:['1.login','2.signup'],testCases:[]}));
   approve();edit('tasks.md',addTask);
   const out=path.join(root,'packet'),prepared=cli(amend,['prepare','--specs-dir',specs,'--out',out]);
   assert.equal(prepared.json.deltaDigest,inspect().deltaDigest);
   assert.equal(fs.readFileSync(path.join(out,'after/1.login/tasks.md'),'utf8'),fs.readFileSync(path.join(specs,'1.login/tasks.md'),'utf8'));
+  // Dogfood (wue v4): judging "does not change the approved design" needs the unchanged design.
+  for(const name of ['requirements.md','design.md'])
+    assert.equal(fs.readFileSync(path.join(out,'context/1.login',name),'utf8'),fs.readFileSync(path.join(specs,'1.login',name),'utf8'));
+  assert.equal(fs.existsSync(path.join(out,'context/1.login/tasks.md')),false);
+  assert.equal(fs.existsSync(path.join(out,'context/2.signup')),false);
+  assert.match(fs.readFileSync(path.join(out,'review-prompt.md'),'utf8'),/context\/ 是涉及的 feature 里没有改动的规格文件/);
   assert.equal(cli(amend,['prepare','--specs-dir',specs,'--out',path.join(specs,'inside')]).status,1);
 }));
 
