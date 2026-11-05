@@ -56,13 +56,35 @@
 
 - `--approve` 不接受 `--yes`；只读调用的 `--yes` 也不写审批位。
 - 只有 `awaiting_spec_approval` + `explicit` 且 reason 为 `approval_write_required`、`spec_features_changed` 或 `test_cases_changed` 才写；其余返回原准入结果及 `approveRefused`，不得手改 JSON 绕过。
-- `blocked/spec_drift` → 保留原状态，要求用 `$cm-prd --change` 说明变更并重新发布摘要；不得自动改成 `awaiting_review` 或刷新 manifest。manifest 先于测试合同校验，测试合同修改也可能先触发 `spec_drift`。
+- `blocked/spec_drift` → 先按下节「执行中补正分级」运行 `inspect`；0/1 级按该节换绑，2 级保留原状态，要求用 `$cm-prd --change` 说明变更并重新发布摘要。不得手改 `awaiting_review` 或刷新 manifest。manifest 先于测试合同校验，测试合同修改也可能先触发 `spec_drift`。
 
 共享 JS writer 生成 `features`、`specFiles`、`testCases` 和审批记录，原样沿用旧 `summaryDigest`，缺失时写 `null`。
 写完返回重跑准入的结果；只有 `ready` 才进入开发，写成 approved 不代表其他检查已通过。
 只有本次审批写入成功才记录 `spec_lifecycle/approved`；拒绝或只读查询不伪造审批事件。
 需要单独核验批准 manifest 时，可只读运行 `python3 {CM_WORKFLOW_ROOT}/scripts/cm-spec-manifest.py {SPECS_DIR} --status-file {SPECS_DIR}/.cm-specs-status`；失败不授权改写。
 N5/N6 的任务与 AC checkbox 变化仍由现有 manifest 规范化处理，文案、ID、设计和测试合同变化继续受准入保护。
+
+## 执行中补正分级
+
+首次请用户回复“开始”时，摘要卡末尾加一行：「执行中的补漏（不改需求、设计和验收标准）由独立审查者审过后自动生效，你会收到通知。」
+用户要逐次批准时，写入口加 `--no-spec-amend`。批准写入同时保存 `{SPECS_DIR}/.cm-specs-approved.json` 快照，后续补正与它比对。
+
+开发中途改了规格（准入报 `awaiting_spec_approval` 且此前已批准过，或 `blocked/spec_drift`）→ 先只读运行：
+
+```bash
+node "{CM_WORKFLOW_ROOT}/scripts/cm-spec-amend.mjs" inspect --specs-dir "{SPECS_DIR}"
+```
+
+| `tier` | 含义 | 动作 |
+| ---- | ---- | ---- |
+| `0` | tasks.md 只追加了「版本」表格行 | `apply --reason "{原因}"`，不审查、不问用户 |
+| `1` | 需求、设计、已有用例、已完成任务都没变；新任务引用已有 AC | `prepare --out {空目录}` → 把 `review-prompt.md` 交新上下文审查者 → `apply --reason --review-output {审查完整输出} --reviewer "{审查者与模型}"`；生效后下一条消息告诉用户改了什么，不等回复 |
+| `2` | 其余一切，或快照缺失/不符、策略关闭、本次人工批准后已补正 3 次 | 回到上节：展示摘要，请用户回复“开始” |
+
+- 审查者不能是写补正的会话；宿主要求跨工具审查时按宿主规则选审查者。审查判 `changes_requested` 或摘要不符时 `apply` 拒绝，转 2 级。
+- `apply` 只换绑规格批准，保留原 `approval.response`；在途运行仍按 `js-host.md` 的 `spec_rebind` 规则换绑或重做。
+- 不得手改 `.cm-specs-approved.json` 和 `~/.cm-workflow/spec-approvals/` 下的批准台账；被改过即失效，退回 2 级。`apply` 报 `spec_approval_busy` 时等对方批准结束再试，不删锁文件。
+- 机器条件与理由见 `docs/proposals/spec-amendment-tiers.md`。快照与回执只绑定内容，不证明是谁写的，保障级别同 `.cm-specs-status`（实跑教训：wue、aihot-dev 两个会话 17 次“开始”里 16 次是开发中补规格）。
 
 多任务批次的并行组提议规则见 `js-host.md` 第 3.1 条；本兼容流程不自行发明并行判定。
 

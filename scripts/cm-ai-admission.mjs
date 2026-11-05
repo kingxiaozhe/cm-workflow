@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {inspectCmAiAdmission,approveCmAiSpecs,matchesCmAiTaskSelection,explainCmAiTaskSelection} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 
-const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve (--approval-response TEXT | --standing-authorization) (no --yes) [--expect-revision-digest HEX]] [--feature N.slug] [--print-run-definition --scope a,b [--task T-xxx] [--requirements c,d] [--run-id X] [--repository-id Y]]';
+const usage='usage: cm-ai-admission.mjs --specs-dir PATH --code-project PATH [--code-project PATH ...] [--approval-response TEXT | --yes] [--approve (--approval-response TEXT | --standing-authorization) (no --yes) [--expect-revision-digest HEX] [--no-spec-amend]] [--feature N.slug] [--print-run-definition --scope a,b [--task T-xxx] [--requirements c,d] [--run-id X] [--repository-id Y]]';
 
 function parse(argv){
   const result={codeProjects:[]};
@@ -21,6 +21,10 @@ function parse(argv){
     if(flag==='--standing-authorization'){
       if(result.standingAuthorization)throw new Error('invalid arguments');
       result.standingAuthorization=true;continue;
+    }
+    if(flag==='--no-spec-amend'){
+      if(Object.hasOwn(result,'specAmend'))throw new Error('invalid arguments');
+      result.specAmend=false;continue;
     }
     if(flag==='--print-run-definition'){
       if(result.printRunDefinition)throw new Error('invalid arguments');
@@ -42,6 +46,7 @@ function parse(argv){
     throw new Error('--expect-revision-digest requires --approve and a 64-character lowercase hex digest');
   if(result.standingAuthorization&&(!result.approve||!Object.hasOwn(result,'expectRevisionDigest')||result.assumeYes||Object.hasOwn(result,'approvalResponse')))
     throw new Error('--standing-authorization requires --approve and --expect-revision-digest, without --approval-response or --yes');
+  if(Object.hasOwn(result,'specAmend')&&!result.approve)throw new Error('--no-spec-amend requires --approve');
   if(!result.printRunDefinition&&['scope','task','requirements','runId','repositoryId'].some(key=>Object.hasOwn(result,key)))
     throw new Error('run definition options require --print-run-definition');
   return result;
@@ -96,7 +101,8 @@ export function main(argv=process.argv.slice(2)){
   const mismatch=!firstBlocked&&projectResults.some(item=>JSON.stringify({state:item.state,reason:item.reason,features:item.features,nextTask:item.nextTask})!==decision);
   const selected=mismatch?{...reference,state:'blocked',reason:'project_admission_mismatch',nextTask:null}:reference;
   const result={...selected,...(approval?.approveRefused?{approveRefused:approval.approveRefused}:{}),
-    ...(approval?.approveReason?{approveReason:approval.approveReason}:{}),codeProject:input.codeProjects.length===1?selected.codeProject:null,
+    ...(approval?.approveReason?{approveReason:approval.approveReason}:{}),
+    ...(approval?.specAmend?{specAmend:approval.specAmend}:{}),codeProject:input.codeProjects.length===1?selected.codeProject:null,
     codeProjects:projectResults.map(item=>item.codeProject),
     projectAdmissions:projectResults.map(item=>({codeProject:item.codeProject,state:item.state,reason:item.reason}))};
   if(result.state==='awaiting_spec_approval'&&(result.approvalIntent!=='explicit'||input.assumeYes))

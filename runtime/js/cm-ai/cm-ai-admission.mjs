@@ -8,6 +8,7 @@ import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {readAutonomy,standingArchiveProblem} from '../autonomy.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
 import {buildManifest,verifyApprovedManifest} from '../../../scripts/cm-spec-manifest.mjs';
+import {writeApprovalSnapshot,removeApprovalSnapshot,withApprovalLock} from './spec-amendment.mjs';
 import {outstandingFeatureQa,describeOutstandingQa} from './project-qa-gate.mjs';
 import {taskLines,taskDeclarations,approvedTaskGrammar,recordedTaskGrammar,TASK_GRAMMAR,SHARED_TASK_GRAMMAR,LEGACY_TASK_GRAMMAR,TASK_ID_SOURCE,isTaskId} from '../spec-task-line.mjs';
 export {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
@@ -445,7 +446,18 @@ export function approveCmAiSpecs(options){
         throw Object.assign(new Error('revision_changed_during_approval'),{code:'revision_changed_during_approval'});
     }};
   }
-  try{
+  let specAmend;
+  // Runs under the approval lock shared with spec amendment re-binding. The decision
+  // rests on the status bytes validated above; it is void if another approval or
+  // publication replaced them since (inspect is re-run below for the rest).
+  const decidedStatus=status.bytes??null;
+  const write=()=>{
+    let now=null;
+    try{now=fs.readFileSync(path.join(specsDir,'.cm-specs-status'));}catch{}
+    if(!(decidedStatus===null?now===null:now!==null&&decidedStatus.equals(now)))
+      return refuse(bound?'revision_changed_during_approval':'spec_status_changed_during_approval');
+    if(inspect().some(item=>item.state!=='awaiting_spec_approval'||!allowed.has(item.reason)))
+      return refuse('spec_status_changed_during_approval');
     const discovered=discoverFeatures(specsDir);
     if(discovered.error)return refuse(discovered.error);
     // An approval binds a shared grammar (2 or 3) to every feature, including ones this change
@@ -475,13 +487,27 @@ export function approveCmAiSpecs(options){
         +'。此前的批准不把这些行当任务（或反之）；是示例就放进 ``` 围栏或删去，是任务就改用英文冒号「:」写法后再批准。');
     }
     const specFiles=bound?bound.saved:buildManifest(specsDir),at=new Date().toISOString();
+    // Drop the previous round's snapshot first: if writing the new one fails,
+    // no older round or policy can stay in force.
+    removeApprovalSnapshot(specsDir);
     writeSpecsStatus(specsDir,{status:'approved',summaryDigest:status.value?.summaryDigest??null,at,
       features:discovered.names,specFiles,testCases:specFiles.filter(item=>item.path.endsWith('/test-cases.json')),
       approval:{response:approvalResponse,at},taskGrammar:grammar,
       ...(status.value&&Object.hasOwn(status.value,'revisionDigest')?{revisionDigest:status.value.revisionDigest}:{})},
       bound?{beforeRename:()=>bound.check()}:{});
+    // The snapshot only enables later reviewed corrections; failing to write it
+    // never undoes the human approval, it just leaves every change at tier 2.
+    try{specAmend={...writeApprovalSnapshot(specsDir,{features:discovered.names,specFiles,
+      approval:{response:approvalResponse,at},policy:options.specAmend===false?'off':'reviewed'}),snapshot:'written'};}
+    catch(error){specAmend={snapshot:'failed',reason:error.code??'spec_amend_snapshot_failed'};}
+    return null;
+  };
+  try{
+    if(typeof options._beforeApprovalLock==='function')options._beforeApprovalLock(); // test seam
+    const refused=withApprovalLock(specsDir,write);
+    if(refused)return refused;
   }catch(error){return refuse(error.code??error.message);}
-  return {projectResults:inspect()};
+  return {projectResults:inspect(),specAmend};
 }
 
 function admissionFor(options,inProgressBootstrap=null){

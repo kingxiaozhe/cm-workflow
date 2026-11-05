@@ -8,6 +8,12 @@ import {fileURLToPath} from 'node:url';
 import {parseFeatureTaskText,validDependencies,identifyApprovedBootstrapFeature,approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {validateRunDefinition} from './cm-ai-run.mjs';
 import {buildManifest} from './cm-spec-manifest.mjs';
+// Spec approvals write a round ledger under CM_WORKFLOW_HOME; keep it off the real home.
+if(!process.env.CM_WORKFLOW_HOME){
+  const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-approval-home-'));
+  process.env.CM_WORKFLOW_HOME=isolatedHome;
+  process.on('exit',()=>fs.rmSync(isolatedHome,{recursive:true,force:true}));
+}
 
 const entry=fileURLToPath(new URL('./cm-ai-admission.mjs',import.meta.url));
 function fixture(run){
@@ -117,8 +123,15 @@ test('bound approve refuses changes made after its first check, before the appro
   const requirements=path.join(specs,'1.login','requirements.md'),original=fs.readFileSync(requirements);
   const interleavings={
     'spec edited':()=>fs.appendFileSync(requirements,'unreviewed\n'),
-    'another proposal saved':()=>fs.writeFileSync(status,saved('b'.repeat(64))),
-    'duplicate approval landed':()=>assert.equal(approve().approveRefused,undefined)};
+    'another proposal saved':()=>fs.writeFileSync(status,saved('b'.repeat(64)))};
+  // A second approval cannot land here at all: the approval lock refuses it, and the first proceeds.
+  {
+    fs.writeFileSync(requirements,original);fs.writeFileSync(status,saved());
+    let nested;
+    assert.equal(approve(()=>{nested=approve();}).approveRefused,undefined);
+    assert.equal(nested.approveRefused,'spec_approval_busy');
+    assert.equal(JSON.parse(fs.readFileSync(status,'utf8')).status,'approved');
+  }
   for(const [name,interleave] of Object.entries(interleavings)){
     fs.writeFileSync(requirements,original);fs.writeFileSync(status,saved());
     let after;

@@ -283,7 +283,7 @@ for module in \
   cm-ai-run-finalizer.mjs codex-config.mjs codex-review-adapter.mjs contracts.mjs \
   durable-runner-state.mjs effect-contract.mjs execution-store.mjs gate-bridge.mjs \
   host.mjs host-session.mjs diagnostic-reason.mjs index.mjs provider-review-observation.mjs review-package.mjs \
-  review-result.schema.json review-runner.mjs task-commit-codec.mjs task-commit.mjs \
+  review-result.schema.json review-runner.mjs spec-amendment.mjs task-commit-codec.mjs task-commit.mjs \
   task-owner.mjs task-runner.mjs worker-codex.mjs operator-guidance.mjs completion-summary.mjs delivery-evidence.mjs; do
   require_file "runtime/js/cm-ai/$module"
 done
@@ -332,6 +332,8 @@ require_file "scripts/cm-ai-admission.mjs"
 require_file "scripts/cm-ai-run.mjs"
 require_file "scripts/cm-ai-run.test.mjs"
 require_file "scripts/cm-ai-admission.test.mjs"
+require_file "scripts/cm-spec-amend.mjs"
+require_file "scripts/cm-spec-amend.test.mjs"
 require_file "scripts/cm-log-event.mjs"
 require_file "scripts/cm-log-event.test.mjs"
 require_file "scripts/cm-log-event.py"

@@ -15,6 +15,12 @@ import {approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
 import {loadConfig} from './cm-workflow-config.mjs';
 import {TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 import {writeSpecsStatus} from '../runtime/js/specs-status.mjs';
+// Spec approvals write a round ledger under CM_WORKFLOW_HOME; keep it off the real home.
+if(!process.env.CM_WORKFLOW_HOME){
+  const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-approval-home-'));
+  process.env.CM_WORKFLOW_HOME=isolatedHome;
+  process.on('exit',()=>fs.rmSync(isolatedHome,{recursive:true,force:true}));
+}
 const sha=content=>createHash('sha256').update(content).digest('hex');
 function fixture(t,{pendingCorrection=false,mandatory=false}={}){
   const specs=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-summary-marks-')));
