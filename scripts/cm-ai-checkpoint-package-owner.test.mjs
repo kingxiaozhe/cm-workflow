@@ -1,5 +1,6 @@
 // Real owner/driver and local checks; reviewer output is synthetic protocol
 // evidence, never independent review of this implementation. No Codex sandbox.
+import './test-journal-limit-1mib.mjs'; // 第一条 import：这些边界场景按 1 MiB 记录上限构造
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

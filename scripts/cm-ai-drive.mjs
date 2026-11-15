@@ -817,11 +817,16 @@ function load(){
     preview:developPreview({definition,journal:plan.mode==='create'?null:journal,controlPolicy:control?.policy??null,
       exact:!permissions.includes('--bootstrap-config')})});
   const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
+  // A rediagnosis is a new conclusion; never reuse the first diagnosis file (same as cm-fix-drive).
+  const answerFile=kind=>answerPath(answers??'',operation==='fix_action'&&plan.fixOperation==='rediagnose'&&kind==='fix_diagnose'
+    ?'diagnosis-rediagnosis.json':FILES[kind]);
+  // Report every missing answer at once: stopping at the first one made each
+  // advance reveal a single file (Wue specs8 T-001: qa-assess, then
+  // documentation-inspect, one stopped advance each).
+  const missingAnswers=unique.filter(kind=>!answers||!fs.existsSync(answerFile(kind)));
+  if(missingAnswers.length)stop(2,missingAnswers.map(kind=>`步骤 ${operation} 会反问 ${kind}，但答案文件不存在: ${answerFile(kind)}`).join('；'));
   const answer=preflightAnswers(unique,kind=>{
-    // A rediagnosis is a new conclusion; never reuse the first diagnosis file (same as cm-fix-drive).
-    const file=answerPath(answers??'',operation==='fix_action'&&plan.fixOperation==='rediagnose'&&kind==='fix_diagnose'
-      ?'diagnosis-rediagnosis.json':FILES[kind]);
-    if(!answers||!fs.existsSync(file))stop(2,`步骤 ${operation} 会反问 ${kind}，但答案文件不存在: ${file}`);
+    const file=answerFile(kind);
     const value=readJson(file,kind);validateCmAiAnswer(kind,value,answers);return value;
   });
   if(answer.documentation_sync)for(const target of Object.keys(answer.documentation_sync.edits))

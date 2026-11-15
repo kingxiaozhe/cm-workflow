@@ -5,6 +5,14 @@
 
 ## 未发布
 
+- **大代码根下宿主不再因心跳超时被误杀**（Wue specs8 T-001：开发改动已写入后，宿主做同步文件树采集，单次 12–22 秒，连做几次超过 30 秒心跳上限，驾驶员以 `host_heartbeat_timeout` 终止了健康的宿主）：查找被忽略目录里的 `AGENTS.md` 与 `.gitignore` 合并成一次 git 查询（原来两次各走一遍被忽略的目录树，结果逐项比对一致）；驾驶员心跳默认上限从 30 秒提到 120 秒，整步上限 `operationMs` 不变，真卡死的宿主仍会被终止。
+
+- **启动前体检补上两类会让推进白跑一轮的问题，驾驶员一次列全缺的答案文件**（Wue specs8 T-001：体检通过后，推进先后因缺 `qa-assess.json`、缺 `documentation-inspect.json`、缺 `--browser-qa` 各停一次）：`cm-start-check` 新增第 5 项，启用 QA 且 feature 有交互式用例时缺少或误用 `--browser-qa` 报 error `browser_qa_declaration`（与宿主启动时同一判断）；advance 会反问而答案目录里缺的文件报 error `answers_missing`，一次列全。驾驶员缺多个答案文件时也一次列出，不再每次只报第一个。
+
+- **被忽略的大构建目录不再拖垮审查清单，启动体检提前报出**（Wue specs8：代码根下被 Git 忽略的 `.artifacts/` 有 67 GB，列出其中 `AGENTS.md` 的 git 查询要 11 秒，超过原 10 秒限时；查询失败后忽略规则整体作废，整棵构建目录被算进审查清单，超过 1 GiB 上限，运行在开发答案写完后才被拒）：读取忽略规则的 git 查询限时提到 120 秒（`GIT_IGNORE_TIMEOUT_MS`）。`cm-start-check` 新增第 4 项：按运行时同样的规则采一次审查基线，超出清单上限时报 error `review_inventory_limit` 并给出路径，其他采集失败报 warn。
+
+- **单条日志记录上限从 1 MiB 提到 4 MiB**（Wue specs8：收集箱 T-001 改了 33 个文件，审查包要存每个文件改前改后的全文，约 1.17 MB，开发回合在写检查点时就被拒，自动流程走不下去）：`JOURNAL_PAYLOAD_LIMIT` 现为 4 MiB，存储、追加预算、审查包材料归档与旧格式解包同用这一个值。同时修复两处误标：非修复流程的大记录（超过 1 MiB）此前也被打上修复流程专用的存储编码标记，现在只有修复流程才标。测试可用 `CM_JOURNAL_PAYLOAD_LIMIT_TEST` 把上限调低（只允许 64 KiB 到 4 MiB 之间、只能调低），用来在 1 MiB 下复现原来的边界用例。运行器构造记录时（`runnerPayload`/`runnerPayloadV3`/`boundRunnerRecord`）原来沿用通用 JSON 校验的 1 MiB 默认值，超过 1 MiB 的开发检查点在存储操作内被拒，整个运行被记成 `store_failure`；现在与存储同用这个上限；只读发现路径（`readExecutionSnapshot`，驾驶员每次推进先走它）和任务提交时的逐条核对也改用同一上限，原来写死的 1 MiB 让第 2 轮推进直接报 `limit_exceeded`。
+
 - cm-ai 开发中途补规格不再每次都要用户回复「开始」：tasks.md 只追加版本行时直接换绑；只补任务范围、为已有验收标准补任务或新增用例时，由独立审查者审过后生效并通知用户；改需求、设计、已有用例或已完成任务仍要用户本人批准。新入口 `scripts/cm-spec-amend.mjs`，批准时可用 `--no-spec-amend` 关闭。
 
 - **标为 NOT_APPLICABLE 的验收条目不再要求用例覆盖（自检规则 5）**（Wue specs8：AC-012 写明「NOT_APPLICABLE：本期不做（依据）」，规格自检仍报 `acceptance_test_coverage_missing`，规格变更提交不了）：编号后紧跟 `NOT_APPLICABLE`（可隔冒号）的条目仍是已声明编号、可被用例引用，但从规则 5（任务语法 3 的会话）或规则 6（仍按任务语法 2 发布的规格目录开新会话时绑定，即规则 3 加此豁免）起不计入覆盖要求；规则 1–4 的历史报告与已记录的旧会话按原语义重算不变，规则 5 保存的范围记录让后续复查沿用豁免。标记只认严格 Markdown 围栏外的（结束围栏后只许空格或制表符）；同编号另有普通声明时不豁免。必验合同不再从不适用条目的依据推断设备、基线等执行义务。

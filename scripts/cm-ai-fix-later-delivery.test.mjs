@@ -14,7 +14,7 @@ import {createFixReviewHost} from '../runtime/js/cm-fix/host-review.mjs';
 import {qaFixIdentity} from '../runtime/js/cm-fix/qa-source.mjs';
 import {configFingerprint} from '../runtime/js/cm-ai/codex-config.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
-import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {digest,JOURNAL_PAYLOAD_LIMIT} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {readProjectInstructionContext} from '../runtime/js/cm-ai/cm-ai-context-refresh.mjs';
 import {attemptBaseline,readRunnerHistory} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 import {validateAcceptedFix} from '../runtime/js/cm-ai/accepted-fix.mjs';
@@ -371,7 +371,7 @@ test('#18 the accepted-fix size check mirrors the store exactly: a record one by
   let store=openExecutionStore({...options,create:true});
   try{
     const input=(id,n)=>({id,kind:'result',payload:{s:'x'.repeat(n)},expectedRevision:store.snapshot().revision});
-    const limit=1024*1024-Buffer.byteLength(JSON.stringify({s:''}));
+    const limit=JOURNAL_PAYLOAD_LIMIT-Buffer.byteLength(JSON.stringify({s:''}));
     assert.equal(appendFits(store.snapshot(),input('fits',limit)),true);
     store.append(input('fits',limit));
     assert.equal(appendFits(store.snapshot(),input('over',limit+1)),false);

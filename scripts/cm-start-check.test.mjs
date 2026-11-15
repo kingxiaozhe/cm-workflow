@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {CHECK_CALL_LIMIT_MS, MAX_SCOPE_PATHS, startCheck, checkMandatoryTests} from './cm-start-check.mjs';
+import {CHECK_CALL_LIMIT_MS, MAX_SCOPE_PATHS, startCheck, checkMandatoryTests, checkReviewInventory, checkLaunchInputs} from './cm-start-check.mjs';
 import {buildManifest} from './cm-spec-manifest.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -478,4 +478,48 @@ test('B1 legacy empty-spec preflight keeps scope diagnostics without permitting 
   fs.rmSync(path.join(specsDir,'1.demo'),{recursive:true});
   fs.writeFileSync(path.join(specsDir,'.cm-specs-status'),JSON.stringify({status:'approved',features:['1.demo']}));
   assert.equal(check(p).status,2,'an existing approval with missing source remains a hard input error');
+});
+
+// Wue specs8: a git query timed out on a 67 GB ignored build tree, the whole tree
+// entered the review inventory and the run was refused only after the develop
+// answer. The start check captures the same baseline first and reports it.
+test('a code tree over the review inventory limit is an error before the run starts; a normal tree adds nothing', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-start-inventory-'));
+  t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+  const root = path.join(dir, 'code'), specs = path.join(dir, 'specs');
+  fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+  fs.mkdirSync(specs);
+  fs.writeFileSync(path.join(root, 'src/a.js'), 'a\n');
+  const definition = {codeProject: root, specsDir: specs, scope: ['src/a.js'], requirements: ['src/a.js'],
+    identity: {repositoryId: 'r', runId: 'run-1', taskId: 'T-001', attempt: 1}};
+  assert.deepEqual(checkReviewInventory(definition), []);
+  // Sparse: the size check refuses it before any byte is read.
+  const big = path.join(root, 'build.bin');
+  fs.closeSync(fs.openSync(big, 'w'));
+  fs.truncateSync(big, 1024 * 1024 * 1024 + 1);
+  const findings = checkReviewInventory(definition);
+  assert.deepEqual(findings.map(item => [item.level, item.code]), [['error', 'review_inventory_limit']]);
+  assert.match(findings[0].message, /build\.bin/);
+});
+
+// Wue specs8 T-001: each of these stopped one advance after the start check had passed.
+test('answers the advance will ask and an invalid interactive QA declaration are errors before launch', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-start-launch-'));
+  t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+  const planFile = path.join(dir, 'PLAN.json'), answers = path.join(dir, 'answers');
+  fs.mkdirSync(answers);
+  fs.writeFileSync(path.join(dir, 'workflow.json'), JSON.stringify({qa: {commands: [], environment: {kind: 'web', carrier: 'browser'}},
+    documentationPaths: [], applicableAgentFiles: []}));
+  fs.writeFileSync(path.join(dir, 'POLICY.json'), JSON.stringify({version: 2, qa: 'run'}));
+  const definition = {codeProject: dir, specsDir: path.join(dir, 'specs'), feature: '1.f', scope: ['a.js']};
+  const plan = extra => ({config: 'RUN.json', mode: 'create', answers: 'answers', controlConfig: 'POLICY.json',
+    permissions: ['--workflow-config', 'workflow.json', ...extra]});
+  const missing = checkLaunchInputs(plan([]), planFile, definition);
+  assert.deepEqual(missing.map(item => item.code), ['answers_missing']);
+  assert.deepEqual(missing[0].files, ['qa-assess.json', 'documentation-inspect.json', 'develop.json']);
+  for (const name of missing[0].files) fs.writeFileSync(path.join(answers, name), '{}');
+  assert.deepEqual(checkLaunchInputs(plan([]), planFile, definition), []);
+  // No interactive cases in the feature: the host refuses a declaration it cannot use.
+  assert.deepEqual(checkLaunchInputs(plan(['--browser-qa', 'available']), planFile, definition).map(item => item.code),
+    ['browser_qa_declaration']);
 });

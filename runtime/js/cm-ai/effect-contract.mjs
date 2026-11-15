@@ -6,7 +6,14 @@ export const need=(ok,code='invalid_input')=>{
 };
 // One journal record payload (execution-store). Anything a record must carry,
 // such as a review package inside a checkpoint, has to fit this, not only its own limits.
-export const JOURNAL_PAYLOAD_LIMIT=1024*1024;
+// 4 MiB：审查材料允许 2 MiB，审查包又按 base64 存改动前后两份；1 MiB 时一个改 30 来个文件的任务
+// （Wue specs8 T-001，审查包约 1.17 MB）连外置归档也装不下（2026-11-15）。
+// CM_JOURNAL_PAYLOAD_LIMIT_TEST 只许调小（64 KiB 起、低于默认值）：边界测试用它压回 1 MiB 复现原场景；
+// 调大或非法值一律忽略，这个开关不能放宽任何检查。
+const JOURNAL_PAYLOAD_DEFAULT=4*1024*1024;
+const loweredJournalLimit=Number(globalThis.process?.env?.CM_JOURNAL_PAYLOAD_LIMIT_TEST);
+export const JOURNAL_PAYLOAD_LIMIT=Number.isSafeInteger(loweredJournalLimit)&&loweredJournalLimit>=64*1024
+  &&loweredJournalLimit<JOURNAL_PAYLOAD_DEFAULT?loweredJournalLimit:JOURNAL_PAYLOAD_DEFAULT;
 // A develop checkpoint must leave room for the later checkpoints of the same
 // attempt, which carry the same package again. Their growth is bounded:
 // - the reviewer result (verdict, digest, findings, summary; examinedPaths are
