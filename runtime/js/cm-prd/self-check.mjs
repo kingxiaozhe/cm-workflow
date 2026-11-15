@@ -47,7 +47,8 @@ function outsideFences(source){
 function strictOutsideFences(source){
   let fence=null;return source.split(/\r?\n/).map(line=>{
     if(fence===null){const open=line.match(/^ {0,3}(`{3,}|~{3,})/);if(open){fence=open[1];return '';}return line;}
-    const close=line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+    // Only spaces and tabs may follow a closing fence; \s would also accept U+00A0 and other Unicode spaces.
+    const close=line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
     if(close&&close[1][0]===fence[0]&&close[1].length>=fence.length)fence=null;
     return '';
   }).join('\n');
@@ -68,12 +69,18 @@ function inapplicableAcceptanceIds(source){
 // instead of a session's guess. Tasks an approved tasks.md already had may stay
 // without scope (they simply run serially).
 // Rule 4 reads tasks.md as task grammar 3 (`开发: 会话`) and adds the session-task checks.
-// Rule 5 exempts acceptance items marked NOT_APPLICABLE right after their id from case coverage
-// (inapplicableAcceptance below); reports recorded under rules 1–4 recompute exactly as before.
+// Rule 5 = rule 4 plus the NOT_APPLICABLE coverage exemption (inapplicableAcceptanceIds below).
+// Rule 6 = rule 3 plus that exemption, for sessions on specs still published under task grammar 2:
+// they cannot take rule 4's grammar-3 reading, yet need the exemption too (Wue specs8, 2026-11-14).
+// Rules are therefore feature sets, not a ladder: test them with the predicates below.
+// Reports recorded under rules 1–4 recompute exactly as before.
 export const PRD_SELF_CHECK_RULES=5;
+export const PRD_SELF_CHECK_LEGACY_GRAMMAR_RULES=6;
+export const ruleReadsGrammar3=rules=>rules===4||rules===5;
+export const ruleExemptsInapplicable=rules=>rules===5||rules===6;
 // Every rule a session, an operation or a recorded report may carry. Earlier rules
 // stay listed explicitly so raising the current one never drops them.
-export const PRD_SELF_CHECK_RULE_VERSIONS=Object.freeze([...new Set([PRD_SELF_CHECK_RULES,4,3,2,1])]);
+export const PRD_SELF_CHECK_RULE_VERSIONS=Object.freeze([...new Set([PRD_SELF_CHECK_RULES,PRD_SELF_CHECK_LEGACY_GRAMMAR_RULES,4,3,2,1])]);
 // Task- or dependency-looking lines the parser skips: a task written this way
 // would silently drop out of execution.
 const TASK_LIKE=/^\s*-\s*\[[^\]]*\]\s+(?:~~)?T-/,DEPENDENCY_LIKE=/^\s*-\s*T-\S*\s+依赖(?:\s|$)/;
@@ -160,7 +167,7 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
         if(!reported.has(code))add(code);
     }
     const scope=scopes!==null&&Object.hasOwn(scopes,feature.directory)?scopes[feature.directory]:null;
-    const grammar3=rules>=4||sessionTasks?.includes(feature.directory)===true;
+    const grammar3=ruleReadsGrammar3(rules)||sessionTasks?.includes(feature.directory)===true;
     if((rules>=3||scope!==null)&&!parsed.error){
       // Rules 1-3 predate grammar 3: a `开发:` line there stays prose, as it was then.
       const scopes=parseTaskScopes(files.get('tasks.md'),{grammar:grammar3?TASK_GRAMMAR:2});
@@ -192,7 +199,7 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
           if(cases.cases.some(item=>item.taskIds.length===0||item.taskIds.some(id=>!taskIds.has(id))
             ||item.acIds.some(id=>!acIds.has(id))))add('test_reference_invalid');
           const covered=new Set(cases.cases.flatMap(item=>item.acIds));
-          const inapplicable=rules>=5||inapplicableAcceptance?.includes(feature.directory)===true
+          const inapplicable=ruleExemptsInapplicable(rules)||inapplicableAcceptance?.includes(feature.directory)===true
             ?inapplicableAcceptanceIds(files.get('requirements.md')):new Set();
           if([...acIds].some(id=>!covered.has(id)&&!inapplicable.has(id)))add('acceptance_test_coverage_missing');
         }

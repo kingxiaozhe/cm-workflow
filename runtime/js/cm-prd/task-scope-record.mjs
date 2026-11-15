@@ -17,7 +17,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {need} from '../cm-ai/effect-contract.mjs';
 import {parseFeatureTaskText} from '../cm-ai/cm-ai-admission.mjs';
-import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULE_VERSIONS} from './self-check.mjs';
+import {checkPrdDraftMechanics,PRD_SELF_CHECK_RULE_VERSIONS,ruleReadsGrammar3,ruleExemptsInapplicable} from './self-check.mjs';
 import {readPrdSessionFile,replaceSessionFile} from './session.mjs';
 import {normalizeRuntimeMarkBytes} from '../../../scripts/cm-spec-manifest.mjs';
 
@@ -29,11 +29,13 @@ function taskIds(text,grammar){
   const parsed=parseFeatureTaskText(text,{grammar});
   return parsed.error?[]:parsed.tasks.map(task=>task.id).sort();
 }
+// Only rules that add something to re-checks are written: grammar-3 session tasks (4, 5) or the exemption (5, 6).
+const recordedRule=rules=>ruleReadsGrammar3(rules)||ruleExemptsInapplicable(rules);
 function parseRecord(raw){
   let value;try{value=JSON.parse(raw);}catch{value=null;}
   need(value!==null&&typeof value==='object'&&value.version===1&&typeof value.enforced==='boolean'
     &&Array.isArray(value.exempt)&&value.exempt.every(id=>typeof id==='string')
-    &&(!Object.hasOwn(value,'selfCheckRules')||PRD_SELF_CHECK_RULE_VERSIONS.includes(value.selfCheckRules)&&value.selfCheckRules>=4)
+    &&(!Object.hasOwn(value,'selfCheckRules')||PRD_SELF_CHECK_RULE_VERSIONS.includes(value.selfCheckRules)&&recordedRule(value.selfCheckRules))
     &&Object.keys(value).length===(Object.hasOwn(value,'selfCheckRules')?4:3),'prd_task_scope_record_invalid');
   return value;
 }
@@ -65,7 +67,7 @@ export function approvedScopeExemptions(before,directories,grammar){
 // `exemptions` maps a directory to {exempt} (a change) or is empty (a new draft).
 // `selfCheckRules` is the rule of the saving operation (session.mjs); only rule 4
 // and later are written, since earlier rules add nothing beyond the scope record
-// (4: session tasks; 5: also the NOT_APPLICABLE coverage exemption).
+// (4: session tasks; 5: also the NOT_APPLICABLE coverage exemption; 6: the exemption only).
 export function recordPrdTaskScopes(specs,features,exemptions={},{selfCheckRules=1}={}){
   need(PRD_SELF_CHECK_RULE_VERSIONS.includes(selfCheckRules),'prd_self_check_rules_invalid');
   const reviews=path.join(specs,'.reviews');
@@ -78,7 +80,7 @@ export function recordPrdTaskScopes(specs,features,exemptions={},{selfCheckRules
       {scopes:{[feature.directory]:{exempt}}});
     const enforced=!report.findings.some(item=>SCOPE_CODES.has(item.code));
     const relative=recordPath(feature.directory),bytes=JSON.stringify({version:1,enforced,exempt,
-      ...(selfCheckRules>=4?{selfCheckRules}:{})})+'\n';
+      ...(recordedRule(selfCheckRules)?{selfCheckRules}:{})})+'\n';
     const prior=readPrdSessionFile(specs,relative);
     if(prior!==bytes)replaceSessionFile(specs,relative,prior,bytes);
   }
@@ -92,9 +94,9 @@ export function prdTaskScopeOptions(specs,directories){
     if(raw===null)continue;
     const value=parseRecord(raw);
     if(value.enforced)scopes[directory]={exempt:value.exempt};
-    if(Object.hasOwn(value,'selfCheckRules'))sessionTasks.push(directory);
-    // Saved under rule 5: re-checks keep its NOT_APPLICABLE coverage exemption, as rule 4 keeps session tasks.
-    if(value.selfCheckRules>=5)inapplicableAcceptance.push(directory);
+    if(ruleReadsGrammar3(value.selfCheckRules))sessionTasks.push(directory);
+    // Saved under rule 5 or 6: re-checks keep the NOT_APPLICABLE coverage exemption, as rule 4 keeps session tasks.
+    if(ruleExemptsInapplicable(value.selfCheckRules))inapplicableAcceptance.push(directory);
   }
   return {...(Object.keys(scopes).length?{scopes}:{}),...(sessionTasks.length?{sessionTasks}:{}),
     ...(inapplicableAcceptance.length?{inapplicableAcceptance}:{})};

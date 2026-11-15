@@ -108,7 +108,7 @@ test('a session binding outside the known versions is refused',t=>{
   const {dir,entry}=specs(t),sessionId='prd-invalid-fixture',open=()=>openPrdSession({specs:dir,sessionId,identity:{entry,runtime:'codex'}});
   created(open);
   for(const change of [state=>{delete state.taskGrammar;},state=>{state.taskGrammar=1;},state=>{state.taskGrammar=TASK_GRAMMAR+1;},
-    state=>{state.selfCheckRules=PRD_SELF_CHECK_RULES+1;},state=>{state.selfCheckRules='3';}]){
+    state=>{state.selfCheckRules=7;},state=>{state.selfCheckRules='3';},state=>{state.selfCheckRules=6;}]){
     const file=stateFile(dir,sessionId),bytes=fs.readFileSync(file);edit(file,change);
     assert.throws(open,/prd_session_versions_invalid/);fs.writeFileSync(file,bytes,{mode:0o600});
   }
@@ -118,25 +118,26 @@ test('the historical rule set lists rule 3 explicitly, so raising the current ru
   for(const rules of [3,2,1,PRD_SELF_CHECK_RULES])assert.ok(PRD_SELF_CHECK_RULE_VERSIONS.includes(rules));
   assert.equal(new Set(PRD_SELF_CHECK_RULE_VERSIONS).size,PRD_SELF_CHECK_RULE_VERSIONS.length);
   const source=fs.readFileSync(path.join(root,'runtime/js/cm-prd/self-check.mjs'),'utf8');
-  assert.match(source,/new Set\(\[PRD_SELF_CHECK_RULES,4,3,2,1\]\)/);
+  assert.match(source,/new Set\(\[PRD_SELF_CHECK_RULES,PRD_SELF_CHECK_LEGACY_GRAMMAR_RULES,4,3,2,1\]\)/);
   assert.doesNotMatch(source,/\[PRD_SELF_CHECK_RULES,2,1\]|\[1,2,PRD_SELF_CHECK_RULES\]/);
 });
 
-test('a new session binds grammar 3 only where the specs directory has none or grammar 3; earlier grammars keep 2/3',t=>{
+test('a new session binds grammar 3 only where the specs directory has none or grammar 3; earlier grammars keep 2 with rule 6',t=>{
   const write=(dir,status)=>fs.writeFileSync(path.join(dir,'.cm-specs-status'),JSON.stringify({status:'approved',features:[],specFiles:[],approval:{response:'开始',at:'2026-10-27T00:00:00.000Z'},...status})+'\n');
   const fresh=specs(t).dir;
   assert.deepEqual(prdSessionVersions(null,fresh),{taskGrammar:TASK_GRAMMAR,selfCheckRules:PRD_SELF_CHECK_RULES});
   const g3=specs(t).dir;write(g3,{taskGrammar:3});
   assert.deepEqual(prdSessionVersions(null,g3),{taskGrammar:3,selfCheckRules:PRD_SELF_CHECK_RULES});
   const g2=specs(t).dir;write(g2,{taskGrammar:2});
-  assert.deepEqual(prdSessionVersions(null,g2),{taskGrammar:2,selfCheckRules:3});
+  assert.deepEqual(prdSessionVersions(null,g2),{taskGrammar:2,selfCheckRules:6});
   const g1=specs(t).dir;write(g1,{});
-  assert.deepEqual(prdSessionVersions(null,g1),{taskGrammar:2,selfCheckRules:3});
+  assert.deepEqual(prdSessionVersions(null,g1),{taskGrammar:2,selfCheckRules:6});
   const {dir,entry}=specs(t);write(dir,{taskGrammar:2});
   const session=openPrdSession({specs:dir,sessionId:'prd-g2-fixture',identity:{entry,runtime:'codex'}});
   session.checkpoint(null);
   const state=JSON.parse(fs.readFileSync(path.join(dir,'.reviews/prd-sessions/prd-g2-fixture/state.json'),'utf8'));
-  assert.deepEqual([state.taskGrammar,state.selfCheckRules],[2,3]);
+  assert.deepEqual([state.taskGrammar,state.selfCheckRules],[2,6]);
+  // A state recorded before rule 6 keeps rule 3 (no exemption) and still opens.
 });
 test('rule 4 refuses a task that waits for the session task, directly or transitively',()=>{
   const draft=deps=>({draftDigest:'d'.repeat(64),features:[{directory:'1.walk',name:'walk',documents:[
@@ -232,7 +233,7 @@ test('a save records the session rule (4 or later) for the re-checks; an earlier
   // Rule 3 adds nothing beyond the scope record, so its save keeps the old bytes too.
   recordPrdTaskScopes(dir,[feature(tasks)],{},{selfCheckRules:3});
   assert.equal(fs.readFileSync(record,'utf8'),JSON.stringify({version:1,enforced:true,exempt:[]})+'\n');
-  for(const value of [3,6,'4']){
+  for(const value of [3,7,'4']){
     fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:[],selfCheckRules:value})+'\n',{mode:0o600});
     assert.throws(()=>prdTaskScopeOptions(dir,'1.walk'),/prd_task_scope_record_invalid/);
   }

@@ -75,7 +75,7 @@ test('an ordinary draft gets the same report under both rules; records match onl
   assert.ok(matchesPrdDraftMechanics(odd,legacy));
   assert.ok(matchesPrdDraftMechanics(odd,checkPrdDraftMechanics(odd,R2)));
   assert.ok(!matchesPrdDraftMechanics(odd,{...legacy,status:'failed'}));
-  assert.throws(()=>checkPrdDraftMechanics(odd,{rules:PRD_SELF_CHECK_RULES+1}),{code:'prd_self_check_rules_invalid'});
+  assert.throws(()=>checkPrdDraftMechanics(odd,{rules:7}),{code:'prd_self_check_rules_invalid'});
 });
 test('a self-check revision recorded under rule 1 still verifies after rule 2',()=>{
   const sha=value=>createHash('sha256').update(value).digest('hex');
@@ -138,7 +138,10 @@ test('rule 5: an acceptance item marked NOT_APPLICABLE after its id needs no cov
     assert.ok(!codes(base+line).includes('acceptance_test_coverage_missing'),line);
   for(const line of ['- [ ] [AC-002] Later work, not NOT_APPLICABLE','- [ ] [AC-002] NOT_APPLICABLEX','- [ ] [AC-002] Real behavior',
     '- [ ] [AC-002] Real behavior\n- [ ] [AC-002] NOT_APPLICABLE：冲突声明',
-    '- [ ] [AC-002] Actual behavior must work.\n```md\n```not-a-closing-fence\n- [ ] [AC-002] NOT_APPLICABLE：仅为围栏中的示例\n```'])
+    '- [ ] [AC-002] Actual behavior must work.\n```md\n```not-a-closing-fence\n- [ ] [AC-002] NOT_APPLICABLE：仅为围栏中的示例\n```',
+    // Strict fences alone (no plain AC-002 to fall back on): a marker still inside a fence is no declaration.
+    '```md\n```not-a-closing-fence\n- [ ] [AC-002] NOT_APPLICABLE：仅为围栏中的示例\n```',
+    '```md\n```\u00a0\n- [ ] [AC-002] NOT_APPLICABLE：仅为围栏中的示例\n```'])
     assert.ok(codes(base+line).includes('acceptance_test_coverage_missing'),line);
   for(const rules of [1,2,3,4])assert.ok(codes(base+'- [ ] [AC-002] NOT_APPLICABLE：依据',{rules}).includes('acceptance_test_coverage_missing'),`rule ${rules}`);
   // A saved rule-5 record carries the exemption into re-checks that pass no rule.
