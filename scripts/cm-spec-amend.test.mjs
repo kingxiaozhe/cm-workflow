@@ -277,28 +277,28 @@ test('apply refuses while another live process holds the approval lock; a stale 
   assert.equal(fs.existsSync(lock),false);
 }));
 
-// Port review #3: a reclaimer never deletes a live lock that replaced the stale one it judged,
-// and a holder never releases a lock it does not own.
+// Port review #3: only the reclaim-guard holder deletes another process's lock, so a
+// concurrent reclaimer cannot empty the lock path under a live holder; a holder
+// never releases a lock it does not own; a guard left by a crash blocks reclaim.
 test('stale lock reclaim and release never remove another live owner\'s lock',()=>fixture(({specs})=>{
-  const lock=path.join(specs,'.cm-specs-approval.lock');
+  const lock=path.join(specs,'.cm-specs-approval.lock'),guard=`${lock}.reclaim`;
   const live=JSON.stringify({pid:process.pid,nonce:'live-owner',at:new Date().toISOString()});
-  fs.writeFileSync(lock,JSON.stringify({pid:2147483646,nonce:'dead-owner',at:new Date().toISOString()}));
-  const rename=fs.renameSync;let ran=false;
-  // Between the stale check and the move, another reclaimer swaps in a live owner's lock.
-  fs.renameSync=function(from,to,...rest){
-    if(from===lock){fs.renameSync=rename;fs.unlinkSync(lock);fs.writeFileSync(lock,live);}
-    return rename.call(this,from,to,...rest);
-  };
-  try{assert.throws(()=>withApprovalLock(specs,()=>{ran=true;}),{code:'spec_approval_busy'});}
-  finally{fs.renameSync=rename;}
-  assert.equal(ran,false);assert.equal(fs.readFileSync(lock,'utf8'),live);
-  assert.deepEqual(fs.readdirSync(specs).filter(name=>name.includes('.reclaim-')),[]);
+  const dead=JSON.stringify({pid:2147483646,nonce:'dead-owner',at:new Date().toISOString()});
+  // Another reclaimer holds the guard: this one neither deletes nor enters.
+  fs.writeFileSync(lock,dead);fs.writeFileSync(guard,'other reclaimer');let ran=false;
+  assert.throws(()=>withApprovalLock(specs,()=>{ran=true;}),{code:'spec_approval_busy'});
+  assert.equal(ran,false);assert.equal(fs.readFileSync(lock,'utf8'),dead);
+  // That reclaimer finished and a live owner now holds the lock: still busy, lock untouched.
+  fs.unlinkSync(guard);fs.writeFileSync(lock,live);
+  assert.throws(()=>withApprovalLock(specs,()=>{ran=true;}),{code:'spec_approval_busy'});
+  assert.equal(ran,false);assert.equal(fs.readFileSync(lock,'utf8'),live);assert.equal(fs.existsSync(guard),false);
+  // A truly stale lock is reclaimed under the guard; the guard is released.
+  fs.writeFileSync(lock,dead);
+  withApprovalLock(specs,()=>{ran=true;assert.notEqual(fs.readFileSync(lock,'utf8'),dead);});
+  assert.equal(ran,true);assert.equal(fs.existsSync(lock),false);assert.equal(fs.existsSync(guard),false);
   // Release: a lock replaced while held is left in place.
-  fs.unlinkSync(lock);
   withApprovalLock(specs,()=>{fs.writeFileSync(lock,live);});
   assert.equal(fs.readFileSync(lock,'utf8'),live);
-  fs.unlinkSync(lock);
-  withApprovalLock(specs,()=>{});assert.equal(fs.existsSync(lock),false);
 }));
 
 // Review r1 #1: the packet holds the exact bytes the review digest covers.

@@ -130,37 +130,37 @@ function processAlive(pid){
 // Serializes human approval and amendment re-binding in one specs directory.
 // cm-prd does not take this lock; apply also re-checks status bytes before rename.
 export function withApprovalLock(specsDir,run){
-  const target=path.join(specsDir,LOCK_FILE);
-  // A nonce makes every acquisition's bytes unique, so a reclaimer and a releaser
-  // can tell this lock from any other one at the same path.
+  const target=path.join(specsDir,LOCK_FILE),guard=`${target}.reclaim`;
+  // A nonce makes every acquisition's bytes unique, so a releaser can tell its
+  // own lock from any other one at the same path.
   const mine=Buffer.from(JSON.stringify({pid:process.pid,nonce:randomUUID(),at:new Date().toISOString()}));
   for(let attempt=0;attempt<2;attempt++){
     let fd;
     try{fd=fs.openSync(target,'wx',0o600);}
     catch(error){
-      if(error.code!=='EEXIST')throw error;
-      if(attempt>0)fail('spec_approval_busy');
-      let seen,age=0;
-      try{seen=fs.readFileSync(target);age=Date.now()-fs.statSync(target).mtimeMs;}
-      catch(readError){if(readError.code==='ENOENT')continue;throw readError;}
-      let owner=null;
-      try{owner=JSON.parse(seen.toString('utf8'));}catch{}
-      const stale=Number.isInteger(owner?.pid)&&owner.pid>0?!processAlive(owner.pid):age>10000;
-      if(!stale)fail('spec_approval_busy');
-      // Move the lock aside atomically, then confirm it is the very stale lock
-      // judged above. Deleting by path could remove a live owner's newer lock.
-      const aside=`${target}.reclaim-${randomUUID()}`;
-      try{fs.renameSync(target,aside);}
-      catch(renameError){if(renameError.code==='ENOENT')continue;throw renameError;}
-      const moved=fs.readFileSync(aside);
-      if(!moved.equals(seen)){
-        // Another reclaimer got there first and a live owner holds the lock now:
-        // put it back without replacing anything, and do not enter.
-        try{fs.linkSync(aside,target);}catch(linkError){if(linkError.code!=='EEXIST')throw linkError;}
-        fs.unlinkSync(aside);
-        fail('spec_approval_busy');
+      if(error.code!=='EEXIST'||attempt>0)throw error.code==='EEXIST'?Object.assign(new Error('spec_approval_busy'),{code:'spec_approval_busy'}):error;
+      // Only the holder of the reclaim guard may delete another process's lock.
+      // A live owner never has its lock deleted (it is not stale), and a dead
+      // owner cannot release, so the bytes judged stale under the guard are the
+      // bytes unlinked: the lock path is never emptied under a live holder.
+      // A guard left by a crash is never reclaimed automatically.
+      let guardFd;
+      try{guardFd=fs.openSync(guard,'wx',0o600);}
+      catch(guardError){if(guardError.code==='EEXIST')fail('spec_approval_busy');throw guardError;}
+      try{
+        fs.closeSync(guardFd);guardFd=undefined;
+        let seen,age=0;
+        try{seen=fs.readFileSync(target);age=Date.now()-fs.statSync(target).mtimeMs;}
+        catch(readError){if(readError.code==='ENOENT')continue;throw readError;}
+        let owner=null;
+        try{owner=JSON.parse(seen.toString('utf8'));}catch{}
+        const stale=Number.isInteger(owner?.pid)&&owner.pid>0?!processAlive(owner.pid):age>10000;
+        if(!stale)fail('spec_approval_busy');
+        fs.unlinkSync(target);
+      }finally{
+        if(guardFd!==undefined)fs.closeSync(guardFd);
+        try{fs.unlinkSync(guard);}catch{}
       }
-      fs.unlinkSync(aside);
       continue;
     }
     try{
