@@ -252,7 +252,7 @@ function validate(kind,value,ctx){
         // Same rule the host applies: a resumed operation keeps the rule it began
         // under (none recorded = rule 1); a new operation uses the one its session bound.
         const rules=ctx.operation==='resume'?ctx.state.active?.selfCheckRules??1:prdSessionVersions(ctx.state,ctx.specs).selfCheckRules;
-        try{inspectPrdChangeProposal(inspectPrdChangeSnapshot(ctx.specs),value,ctx.state.checkpoint.change.selected,ctx.config,{rules});}
+        try{inspectPrdChangeProposal(inspectPrdChangeSnapshot(ctx.specs),value,ctx.state.checkpoint.change.selected,ctx.config,{rules,parts:ctx.state.checkpoint.change.parts??null});}
         catch(e){fail('generate.json 不符合变更草稿或 scope',e.code??e.message);}
       }else{
         check(value.status==='documents'&&nonempty(value.summary)&&Array.isArray(value.features)&&Array.isArray(value.removed),'generate.json');

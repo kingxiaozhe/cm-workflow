@@ -33,8 +33,11 @@ const SERIAL_VALUES=new Set(['串行','serial']);
 // is one column, and only lines indented deeper than the task line belong to it.
 const indentOf=body=>/^[ \t]*/.exec(body)[0].length;
 
+// 方括号按字面文件名接受：expo-router / Next.js 的动态路由就是 `app/reminder/[id].tsx` 这样的真实文件，
+// 拒掉它们等于这类项目改不了路由文件（Wue specs8，2026-11-14）。范围是精确文件清单，从不做通配匹配；
+// 交给 git 的地方都走 `:(literal)` 或 `--literal-pathspecs`。`*`、`?` 仍拒绝，避免被读成通配。
 export function validScopePath(value){
-  if(typeof value!=='string'||value.endsWith('/')||/[*?[\]]/.test(value))return false;
+  if(typeof value!=='string'||value.endsWith('/')||/[*?]/.test(value))return false;
   try{readReviewScope([value]);}catch{return false;}
   return protectedScopePaths([value]).length===0;
 }

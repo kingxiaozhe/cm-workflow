@@ -216,6 +216,13 @@ function readFeature(specsDir,name){
 export function declaredAcceptanceIds(source){
   return new Set(source.split(/\r?\n/).map(line=>line.match(ACCEPTANCE)).filter(Boolean).map(match=>match[1]||match[2]));
 }
+// 每条验收声明一行：{id, inapplicable}。紧跟编号写明 NOT_APPLICABLE（可隔冒号，如
+// `- [ ] [AC-012] NOT_APPLICABLE：…（依据）`）的条目 inapplicable 为真；正文顺带提到的不算。
+// 调用方自己决定围栏与同编号冲突的处理（Wue specs8 AC-012，2026-11-14）。
+export function acceptanceDeclarations(source){
+  return source.split(/\r?\n/).map(line=>{const match=line.match(ACCEPTANCE);if(!match)return null;
+    return {id:match[1]||match[2],inapplicable:/^\s*[:：]?\s*NOT_APPLICABLE(?=[\s:：]|$)/.test(line.slice(match[0].length))};}).filter(Boolean);
+}
 
 // Shared declaration grammar (spec-task-line.mjs), versioned by the approval.
 export function parseFeatureTaskText(source,{allowDependencyPunctuation=false,grammar=TASK_GRAMMAR}={}){

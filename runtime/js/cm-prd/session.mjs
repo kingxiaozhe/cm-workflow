@@ -8,7 +8,7 @@ import {recoverPrdResponse,readPrdRepairBinding} from './response-recovery.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {TASK_GRAMMAR} from '../spec-task-line.mjs';
 import {readSpecsStatus} from '../specs-status.mjs';
-import {PRD_SELF_CHECK_RULES,PRD_SELF_CHECK_RULE_VERSIONS} from './self-check.mjs';
+import {PRD_SELF_CHECK_RULES,PRD_SELF_CHECK_RULE_VERSIONS,PRD_SELF_CHECK_LEGACY_GRAMMAR_RULES,ruleReadsGrammar3} from './self-check.mjs';
 
 export function readPrdSessionFile(root,relative){
   if(!['state.json','inputs-replaced.json'].includes(relative))return readCmInitSource(root,relative)?.toString('utf8')??null;
@@ -44,7 +44,9 @@ export function prdSessionVersions(state,specs=null){
   if(state==null){
     const status=specs===null?{kind:'missing'}:readSpecsStatus(specs);
     return status.kind==='missing'||status.kind==='valid'&&status.value.taskGrammar===TASK_GRAMMAR
-      ?{taskGrammar:TASK_GRAMMAR,selfCheckRules:PRD_SELF_CHECK_RULES}:{...PRD_SESSION_LEGACY_VERSIONS};
+      ?{taskGrammar:TASK_GRAMMAR,selfCheckRules:PRD_SELF_CHECK_RULES}
+      // Same grammar as before; rule 6 adds only the NOT_APPLICABLE exemption to rule 3, never grammar 3.
+      :{...PRD_SESSION_LEGACY_VERSIONS,selfCheckRules:PRD_SELF_CHECK_LEGACY_GRAMMAR_RULES};
   }
   return Object.hasOwn(state,'selfCheckRules')?{taskGrammar:state.taskGrammar,selfCheckRules:state.selfCheckRules}:{...PRD_SESSION_LEGACY_VERSIONS};
 }
@@ -70,7 +72,10 @@ export function openPrdSession({specs,sessionId,identity,executionPolicy=null}){
   try{need([1,2].includes(state.version)&&digest(state.identity)===digest(identity),'prd_session_identity_changed');
     need(Object.hasOwn(state,'taskGrammar')===Object.hasOwn(state,'selfCheckRules')&&(!Object.hasOwn(state,'taskGrammar')
       ||Number.isSafeInteger(state.taskGrammar)&&state.taskGrammar>=2&&state.taskGrammar<=TASK_GRAMMAR
-      &&PRD_SELF_CHECK_RULE_VERSIONS.includes(state.selfCheckRules)),'prd_session_versions_invalid');
+      &&PRD_SELF_CHECK_RULE_VERSIONS.includes(state.selfCheckRules)
+      // A grammar-3 rule only with grammar 3, and rule 6 (grammar-2 exemption) only with grammar 2.
+      &&(!ruleReadsGrammar3(state.selfCheckRules)||state.taskGrammar===TASK_GRAMMAR)
+      &&(state.selfCheckRules!==PRD_SELF_CHECK_LEGACY_GRAMMAR_RULES||state.taskGrammar===2)),'prd_session_versions_invalid');
     if(state.version===2){readExecutionPolicy(state.executionPolicy);need(Array.isArray(state.responseRepairs),'prd_recovery_binding');}
     else need(executionPolicy===null,'execution_policy_legacy_run');}
   catch(e){fs.unlinkSync(lock);throw e;}

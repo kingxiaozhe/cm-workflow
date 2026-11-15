@@ -75,7 +75,7 @@ test('an ordinary draft gets the same report under both rules; records match onl
   assert.ok(matchesPrdDraftMechanics(odd,legacy));
   assert.ok(matchesPrdDraftMechanics(odd,checkPrdDraftMechanics(odd,R2)));
   assert.ok(!matchesPrdDraftMechanics(odd,{...legacy,status:'failed'}));
-  assert.throws(()=>checkPrdDraftMechanics(odd,{rules:5}),{code:'prd_self_check_rules_invalid'});
+  assert.throws(()=>checkPrdDraftMechanics(odd,{rules:7}),{code:'prd_self_check_rules_invalid'});
 });
 test('a self-check revision recorded under rule 1 still verifies after rule 2',()=>{
   const sha=value=>createHash('sha256').update(value).digest('hex');
@@ -126,4 +126,27 @@ test('a rule-3 report recorded with the earlier missing-scope hint still matches
   assert.ok(matchesPrdDraftMechanics(missing,current));assert.ok(matchesPrdDraftMechanics(missing,earlier));
   const forged={...current,findings:current.findings.map(item=>({...item,reason:{...item.reason,expected:'other'}}))};
   assert.equal(matchesPrdDraftMechanics(missing,forged),false);
+});
+// An acceptance item marked NOT_APPLICABLE right after its id has no executable expectation, so from
+// rule 5 it needs no case. Rules 1-4 keep their exact old reports; a passing mention, a marker inside a
+// strict fence, or another plain declaration of the same id still requires coverage (Wue specs8 AC-012).
+test('rule 5: an acceptance item marked NOT_APPLICABLE after its id needs no covering case',()=>{
+  const withRequirements=content=>{const value=draft();value.features[0].documents[0]={path:'requirements.md',content};return value;};
+  const codes=(content,options={rules:PRD_SELF_CHECK_RULES})=>checkPrdDraftMechanics(withRequirements(content),options).findings.map(x=>x.code);
+  const base='- [ ] [AC-001] Behavior works.\n';
+  for(const line of ['- [ ] [AC-002] NOT_APPLICABLE：本期不做（依据）','- [ ] [AC-002]: NOT_APPLICABLE','- AC-002 NOT_APPLICABLE'])
+    assert.ok(!codes(base+line).includes('acceptance_test_coverage_missing'),line);
+  for(const line of ['- [ ] [AC-002] Later work, not NOT_APPLICABLE','- [ ] [AC-002] NOT_APPLICABLEX','- [ ] [AC-002] Real behavior',
+    '- [ ] [AC-002] Real behavior\n- [ ] [AC-002] NOT_APPLICABLE：冲突声明',
+    '- [ ] [AC-002] Actual behavior must work.\n```md\n```not-a-closing-fence\n- [ ] [AC-002] NOT_APPLICABLE：仅为围栏中的示例\n```',
+    // Strict fences alone (no plain AC-002 to fall back on): a marker still inside a fence is no declaration.
+    '```md\n```not-a-closing-fence\n- [ ] [AC-002] NOT_APPLICABLE：仅为围栏中的示例\n```',
+    '```md\n```\u00a0\n- [ ] [AC-002] NOT_APPLICABLE：仅为围栏中的示例\n```'])
+    assert.ok(codes(base+line).includes('acceptance_test_coverage_missing'),line);
+  for(const rules of [1,2,3,4])assert.ok(codes(base+'- [ ] [AC-002] NOT_APPLICABLE：依据',{rules}).includes('acceptance_test_coverage_missing'),`rule ${rules}`);
+  // A saved rule-5 record carries the exemption into re-checks that pass no rule.
+  assert.ok(!codes(base+'- [ ] [AC-002] NOT_APPLICABLE：依据',{inapplicableAcceptance:['1.sample']}).includes('acceptance_test_coverage_missing'));
+  const referencing=structuredClone(contract);referencing.cases[0].acIds=['AC-001','AC-002'];
+  const value=draft(undefined,referencing);value.features[0].documents[0].content=base+'- [ ] [AC-002] NOT_APPLICABLE：依据';
+  assert.equal(checkPrdDraftMechanics(value,{rules:PRD_SELF_CHECK_RULES}).status,'mechanical_subset_passed');
 });

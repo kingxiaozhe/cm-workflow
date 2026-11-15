@@ -115,7 +115,8 @@ test('rule 4: no task may wait for the session task, directly or through another
 test('only exact relative file paths in backticks are accepted',()=>{
   for(const bad of ['src/*.js','src/','/etc/passwd','../x.js','a/./b.js','a\\b.js','AGENTS.md','.git/config','x?.js'])
     assert.equal(validScopePath(bad),false,bad);
-  for(const good of ['README.md','src/deep/file.test.mjs','docs/中文.md'])assert.equal(validScopePath(good),true,good);
+  // expo-router / Next.js dynamic routes are real files; brackets are literal (git calls use :(literal)).
+  for(const good of ['README.md','src/deep/file.test.mjs','docs/中文.md','app/reminder/[id].tsx','app/[...slug]/page.tsx'])assert.equal(validScopePath(good),true,good);
   const {errors}=parseTaskScopes(tasksText(['- [ ] T-001: a','  - 范围: src/a.js','- [ ] T-002: b','  - 范围: `src/*.js`',
     '- [ ] T-003: c','  - 范围: `a.js`, `a.js`','- [ ] T-004: d','  - 范围: `a.js`','  - 范围: `b.js`']));
   assert.deepEqual(errors.map(item=>item.taskId),['T-001','T-002','T-003','T-004']);
@@ -173,7 +174,7 @@ const draft=(tasks)=>({draftDigest:'d',features:[{directory:'1.sample',name:'sam
 const codes=report=>report.findings.map(item=>item.code);
 
 test('rule 3: every task of a new draft must declare its files; earlier rules do not ask',()=>{
-  assert.equal(PRD_SELF_CHECK_RULES,4,'rule 4 keeps the rule-3 scope check');
+  assert.equal(PRD_SELF_CHECK_RULES,5,'rules 4 and 5 keep the rule-3 scope check');
   const without=draft('- [ ] T-001: a\n- [ ] T-002: b\n  - 范围: `b.js`\n');
   const report=checkPrdDraftMechanics(without,{rules:3});
   assert.deepEqual(codes(report),['task_scope_missing']);
