@@ -132,13 +132,23 @@ function processAlive(pid){
 // empty or without its owner's pid, even while its creator is paused.
 function createComplete(target,bytes){
   const temp=`${target}.${randomUUID()}.tmp`;
+  let linked=false;
   try{
     fs.writeFileSync(temp,bytes,{mode:0o600,flag:'wx'});
-    try{fs.linkSync(temp,target);return true;}
-    catch(error){if(error.code==='EEXIST')return false;throw error;}
+    try{fs.linkSync(temp,target);linked=true;}
+    catch(error){if(error.code!=='EEXIST')throw error;}
   }finally{
-    try{fs.unlinkSync(temp);}catch(error){if(error.code!=='ENOENT')throw error;}
+    try{fs.unlinkSync(temp);}
+    catch(error){
+      if(error.code!=='ENOENT'){
+        // The caller never learns it holds `target`, so withdraw it before failing:
+        // it is this call's own fresh link, which no one else may remove.
+        if(linked)try{fs.unlinkSync(target);}catch{}
+        throw error;
+      }
+    }
   }
+  return linked;
 }
 
 // Serializes human approval and amendment re-binding in one specs directory.

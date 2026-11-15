@@ -321,8 +321,26 @@ test('stale lock reclaim and release never remove another live owner\'s lock',()
     finally{process.kill=kill;}
     assert.equal(ran,false);assert.equal(fs.readFileSync(lock,'utf8'),next);assert.equal(fs.existsSync(guard),false);
   }
+  // Codex r5: a temp-file cleanup failure after publishing must not leave the lock
+  // (or the reclaim guard) behind; once the fault clears the lock is available again.
+  for(const reclaim of [false,true]){
+    if(reclaim)fs.writeFileSync(lock,JSON.stringify({pid:2147483644,nonce:'dead-for-guard',at:new Date().toISOString()}));
+    else if(fs.existsSync(lock))fs.unlinkSync(lock);
+    const unlink=fs.unlinkSync,watched=reclaim?`${guard}.`:`${lock}.`;let failed=false;ran=false;
+    fs.unlinkSync=function(file,...rest){
+      if(!failed&&String(file).startsWith(watched)&&String(file).endsWith('.tmp')&&(reclaim||!String(file).startsWith(`${guard}.`))){
+        failed=true;throw Object.assign(new Error('EACCES'),{code:'EACCES'});}
+      return unlink.call(this,file,...rest);
+    };
+    try{assert.throws(()=>withApprovalLock(specs,()=>{ran=true;}),{code:'EACCES'});}
+    finally{fs.unlinkSync=unlink;}
+    assert.equal(failed,true);assert.equal(ran,false);assert.equal(fs.existsSync(guard),false);
+    if(!reclaim)assert.equal(fs.existsSync(lock),false);
+    for(const name of fs.readdirSync(specs).filter(item=>item.endsWith('.tmp')))fs.unlinkSync(path.join(specs,name));
+    withApprovalLock(specs,()=>{ran=true;});assert.equal(ran,true);assert.equal(fs.existsSync(lock),false);
+  }
   // A lock is visible only with its holder's pid, at its publication: no temp files are left behind.
-  fs.unlinkSync(lock);ran=false;
+  assert.equal(fs.existsSync(lock),false);ran=false;
   const link=fs.linkSync;let published=null;
   fs.linkSync=function(from,to,...rest){const result=link.call(this,from,to,...rest);if(to===lock)published=fs.readFileSync(lock,'utf8');return result;};
   try{withApprovalLock(specs,()=>{ran=true;});}finally{fs.linkSync=link;}
