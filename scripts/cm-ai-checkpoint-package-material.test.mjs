@@ -6,7 +6,10 @@ import {packageMaterialEligible,packageMaterialReference,resolveCheckpointPackag
 const identity={repositoryId:'capacity',runId:'capacity-fixture',taskId:'T-001',attempt:1};
 const invalid={code:'checkpoint_package_material_invalid'};
 const size=value=>Buffer.byteLength(JSON.stringify(value));
-const pkg=(bytes=789000,who=identity)=>{const body={version:1,kind:'cm-review-package',identity:who,material:'x'.repeat(bytes)};
+// 这些夹具原按 1 MiB 记录上限写死字节数；D 把它们平移到当前上限，各测试的相对含义不变
+const D=JOURNAL_PAYLOAD_LIMIT-1024*1024;
+// 默认包刚好越过「记录上限 − 预留」、又装得进一条记录：按上限换算（1 MiB 时即原来的 789000），上限调整后含义不变
+const pkg=(bytes=JOURNAL_PAYLOAD_LIMIT-259576,who=identity)=>{const body={version:1,kind:'cm-review-package',identity:who,material:'x'.repeat(bytes)};
   return {...body,packageDigest:digest(body)};};
 function append(records,payload,kind='result'){
   const body={version:1,seq:records.length+1,id:`runner.${String(records.length+1).padStart(6,'0')}`,kind,payload,
@@ -49,11 +52,11 @@ test('large accepted develop checkpoint archives package and business frame in o
 });
 
 test('inline develop followed by a failed review crossing the future reserve stays inline within the original record limit',()=>{
-  const material=pkg(644000),developId='develop-inline';
+  const material=pkg(644000+D),developId='develop-inline';
   let records=append([],{version:3,protocol:'cm-task-runner',type:'init',config:{identity}});
   records=intent(records,developId);
   const develop=frame(material,developId),developReserve=285101;
-  develop.padding='';develop.padding='d'.repeat(747564-size(payload(developId,develop)));
+  develop.padding='';develop.padding='d'.repeat(747564+D-size(payload(developId,develop)));
   const initial=checkpointStoragePlan({records,effectId:developId,checkpoint:develop,identity,enabled:true,reserve:developReserve});
   assert.deepEqual(initial.payloadFields,{});
   records=append(records,payload(developId,initial.checkpoint,initial.payloadFields));
@@ -67,7 +70,7 @@ test('inline develop followed by a failed review crossing the future reserve sta
         observation:{events:[{event:'process_closed',exit_code:1,timed_out:false}]},
         inspection:{kind:'cm-provider-review-failure',category:'provider',failure:'reviewer_exited'}}};
     }
-    checkpoint.padding='';checkpoint.padding='r'.repeat(764046-size(payload(effectId,checkpoint)));
+    checkpoint.padding='';checkpoint.padding='r'.repeat(764046+D-size(payload(effectId,checkpoint)));
     assert(size(payload(effectId,checkpoint))>JOURNAL_PAYLOAD_LIMIT-reserve);
     assert(size(payload(effectId,checkpoint))<JOURNAL_PAYLOAD_LIMIT);
     const before=JSON.stringify(checkpoint);
@@ -136,7 +139,7 @@ test('a reference cannot replace the current package, erase other frame fields o
   const restored=resolveCheckpointPackage(p,records,identity);
   assert.deepEqual({...restored,reviewPackage:null},p.checkpoint);
   assert.equal(packageMaterialReference(f.archived,pkg(32),identity),null);
-  const secondIdentity={...identity,attempt:2},secondPackage=pkg(789000,secondIdentity);
+  const secondIdentity={...identity,attempt:2},secondPackage=pkg(789000+D,secondIdentity);
   assert.equal(packageMaterialReference(f.archived,secondPackage,secondIdentity),null,'old r1 material must not replace r2');
   const secondRecords=intent(f.archived,'develop-2','develop',secondIdentity),secondCheckpoint=frame(secondPackage,'develop-2','develop','awaiting_review',secondIdentity);
   const second=checkpointStoragePlan({records:secondRecords,effectId:'develop-2',checkpoint:secondCheckpoint,identity:secondIdentity,enabled:true,reserve:272125});
@@ -174,10 +177,10 @@ test('r2 failed develop may retain the r1 package and exact r1 archive without s
 
 test('a package above the original record limit cannot be admitted by material storage and no reserve is changed',()=>{
   const f=fixture(),oversize=frame(pkg(JOURNAL_PAYLOAD_LIMIT));
-  const measured={inlineBytes:815380,packageBytes:789175,reserve:272125};
-  assert.deepEqual(checkpointPackageBudget({...measured,enabled:false}),{fits:false,material:false,bytes:815380,budget:776451});
-  assert.deepEqual(checkpointPackageBudget({...measured,enabled:true}),{fits:true,material:true,bytes:26717,budget:776451});
-  assert.deepEqual(checkpointPackageBudget({...measured,enabled:true,referenced:true}),{fits:true,material:false,bytes:26717,budget:776451});
+  const measured={inlineBytes:815380+D,packageBytes:789175+D,reserve:272125};
+  assert.deepEqual(checkpointPackageBudget({...measured,enabled:false}),{fits:false,material:false,bytes:815380+D,budget:776451+D});
+  assert.deepEqual(checkpointPackageBudget({...measured,enabled:true}),{fits:true,material:true,bytes:26717,budget:776451+D});
+  assert.deepEqual(checkpointPackageBudget({...measured,enabled:true,referenced:true}),{fits:true,material:false,bytes:26717,budget:776451+D});
   assert.equal(checkpointPackageBudget({...measured,inlineBytes:JOURNAL_PAYLOAD_LIMIT-1023,enabled:true}).fits,false);
   assert.equal(checkpointPackageBudget({...measured,packageBytes:16,enabled:true}).fits,false,'future compact frame must leave original reserve');
   assert.throws(()=>checkpointStoragePlan({records:f.records,effectId:'develop-1',checkpoint:oversize,identity,enabled:true,reserve:272125}),invalid);

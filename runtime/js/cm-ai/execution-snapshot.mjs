@@ -2,7 +2,7 @@
 // reconstructed expected fingerprints and acquire its normal ownership lock.
 import fs from 'node:fs';
 import path from 'node:path';
-import {digest,need,shape,id,hex,json} from './effect-contract.mjs';
+import {digest,need,shape,id,hex,json,JOURNAL_PAYLOAD_LIMIT} from './effect-contract.mjs';
 import {fixJournalWorkflow,packFixJournalPayload,unpackFixJournalState} from './review-presentation.mjs';
 export function readExecutionSnapshot({specsRoot,identity}){
   shape(identity,['repositoryId','runId']);Object.values(identity).forEach(id);
@@ -32,7 +32,8 @@ export function readExecutionSnapshot({specsRoot,identity}){
   let previous=null;const ids=new Set();
   for(const [index,r] of v.records.entries()){
     shape(r,['version','seq','id','kind','payload','previousDigest','digest']);id(r.id);hex(r.digest);
-    need(Buffer.byteLength(JSON.stringify(packFixJournalPayload(r.payload,{workflow:fixJournalWorkflow(v)})))<=1024*1024,'limit_exceeded');
+    // Same per-record bound as the store that wrote it (execution-store.mjs).
+    need(Buffer.byteLength(JSON.stringify(packFixJournalPayload(r.payload,{workflow:fixJournalWorkflow(v)})))<=JOURNAL_PAYLOAD_LIMIT,'limit_exceeded');
     const {digest:checksum,...body}=r;
     need(r.version===1&&r.seq===index+1&&r.previousDigest===previous&&!ids.has(r.id)
       &&['intent','result','cancel','commit-intent','commit-result','finalized'].includes(r.kind)

@@ -80,8 +80,13 @@ export function deliberatelyUnanswered(message){
 }
 // Transport-only budgets: no field is added to a run or its configuration hash.
 // The long fallback covers hosts that cannot advertise individual phase budgets.
+// heartbeatMs: the host beats from a timer, which cannot fire while it runs a
+// synchronous tree capture. On a code root with a large ignored build tree one
+// capture took 12-22 s and a develop step runs several, so 30 s killed a healthy
+// host after it had applied the edits (Wue specs8 T-001). operationMs still
+// bounds a host that never finishes.
 export const DRIVE_LIVENESS_DEFAULTS=Object.freeze({startupMs:60000,operationMs:21600000,
-  heartbeatMs:30000,graceMs:30000,closeMs:5000,killMs:1000,pollMs:250});
+  heartbeatMs:120000,graceMs:30000,closeMs:5000,killMs:1000,pollMs:250});
 // rateLimitRetry (cm-ai drivers only, drive-rate-limit.mjs; 'batch' for the batch driver): a review the provider
 // rate limited is redispatched by re-running this same driver command after a
 // wait, without printing the interim result or notifying; the re-run's result is

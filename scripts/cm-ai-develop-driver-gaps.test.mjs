@@ -1,6 +1,7 @@
 // Develop answers and driver gaps found in the pre-release audit. Every test here
 // drives the real driver/host processes; none needs the Codex sandbox, so CI runs them.
 // Protected-mode flows that do reach the sandbox live in cm-ai-host.test.mjs.
+import './test-journal-limit-1mib.mjs'; // 第一条 import：这些边界场景按 1 MiB 记录上限构造
 import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

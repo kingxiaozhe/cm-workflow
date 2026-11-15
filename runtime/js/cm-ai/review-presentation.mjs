@@ -1,6 +1,6 @@
 // Lossless presentation inside the same no-tools prompt. Canonical evidence stays unchanged.
 import {createHash} from 'node:crypto';
-import {json,need,shape,hex,digest,validIdentity} from './effect-contract.mjs';
+import {json,need,shape,hex,digest,validIdentity,JOURNAL_PAYLOAD_LIMIT} from './effect-contract.mjs';
 import {readReviewPackage} from './review-package.mjs';
 export function compactReviewData(raw){
   const input=json(raw,10*1024*1024);
@@ -102,8 +102,9 @@ function packageLocations(value,{validate=true}={}){
 }
 export function packFixJournalPayload(raw,{workflow}={}){
   const value=json(raw,INPUT_LIMIT),logicalBytes=sizeOf(value);
-  if(logicalBytes<=PAYLOAD_LIMIT)return value;
-  need(workflow===FIX_WORKFLOW,'limit_exceeded');
+  // 只有 cm-fix 的审查载荷在超过 1 MiB 时压缩；其他运行原样存，大小由存储层的记录上限
+  // （JOURNAL_PAYLOAD_LIMIT）把关——这里再按 1 MiB 拒绝，会让放大后的记录上限形同虚设
+  if(logicalBytes<=PAYLOAD_LIMIT||workflow!==FIX_WORKFLOW){need(logicalBytes<=JOURNAL_PAYLOAD_LIMIT,'limit_exceeded');return value;}
   const {paths,packages}=packageLocations(value);
   // No duplicated anchor package in the temporary input: the canonical package
   // already inside payload supplies the presentation digest to the same visitor.
@@ -178,7 +179,8 @@ export function packFixJournalState(raw){
   const workflow=fixJournalWorkflow(state),sequences=[];
   const records=state.records.map(record=>{
     const payload=packFixJournalPayload(record.payload,{workflow});
-    if(sizeOf(record.payload)>PAYLOAD_LIMIT)sequences.push(record.seq);
+    // 只标真正被压缩的 cm-fix 记录；普通运行的大记录原样存（与 execution-store 追加时的标记一致）
+    if(workflow===FIX_WORKFLOW&&sizeOf(record.payload)>PAYLOAD_LIMIT)sequences.push(record.seq);
     return {...record,payload};
   });
   return json({...state,records,...(sequences.length?{storageEncoding:{version:1,kind:STORAGE_KIND,records:sequences}}:{})},STATE_LIMIT);
@@ -187,7 +189,7 @@ export function unpackFixJournalState(raw){
   const physical=json(raw,STATE_LIMIT);
   if(!Object.hasOwn(physical,'storageEncoding')){
     need(Array.isArray(physical.records),storageCode);
-    physical.records.forEach(record=>json(record.payload,PAYLOAD_LIMIT));
+    physical.records.forEach(record=>json(record.payload,JOURNAL_PAYLOAD_LIMIT));
     return physical;
   }
   shape(physical,['version','identity','fingerprints','records','revision','storageEncoding']);

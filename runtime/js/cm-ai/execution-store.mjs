@@ -252,7 +252,7 @@ export function openExecutionStore(input) {
       const v=json(input,10*MiB);shape(v,['id','kind','payload','expectedRevision']);
       id(v.id);hex(v.expectedRevision);need(kinds.has(v.kind));
       const current=snapshot(),physicalPayload=packFixJournalPayload(v.payload,{workflow:fixJournalWorkflow(current)});
-      need(Buffer.byteLength(JSON.stringify({...v,payload:physicalPayload}))<=MiB+1024,'limit_exceeded');
+      need(Buffer.byteLength(JSON.stringify({...v,payload:physicalPayload}))<=JOURNAL_PAYLOAD_LIMIT+1024,'limit_exceeded');
       const existing=current.records.find(r=>r.id===v.id);
       if(existing){need(existing.kind===v.kind && digest(existing.payload)===digest(v.payload),'record_conflict');return current;}
       need(v.expectedRevision===current.revision,'revision_mismatch');
@@ -263,7 +263,10 @@ export function openExecutionStore(input) {
       const next=validateState(seal({...data,records:[...current.records,{...record,digest:digest(record)}]}),options);
       const {storageEncoding,...physicalData}=physicalState;
       const encodedSequences=[...(storageEncoding?.records??[]),
-        ...(Buffer.byteLength(JSON.stringify(v.payload))>JOURNAL_PAYLOAD_LIMIT?[record.seq]:[])];
+        // cm-fix 的物理压缩门槛固定 1 MiB（review-presentation PAYLOAD_LIMIT），与记录上限无关：
+        // 记录上限放大后仍按 1 MiB 打标记，否则压缩过的记录读回时不会解码
+        // 只有 cm-fix 运行的载荷会被压缩；普通运行的大记录原样存，打了标记读回时会被当成损坏
+        ...(fixJournalWorkflow(current)&&Buffer.byteLength(JSON.stringify(v.payload))>MiB?[record.seq]:[])];
       const physicalNext={...physicalData,records:[...physicalState.records,{...record,payload:physicalPayload,digest:digest(record)}],
         revision:next.revision,...(encodedSequences.length?{storageEncoding:{version:1,kind:'cm-fix-review-payloads-v1',records:encodedSequences}}:{})};
       try{

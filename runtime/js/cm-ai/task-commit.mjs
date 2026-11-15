@@ -6,7 +6,7 @@ import { types } from 'node:util';
 import {createRequire} from 'node:module';
 import { verifyCompletionReviewPackage,reviewSpecsPath } from './review-package.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
-import { need,shape,json,digest,validIdentity } from './effect-contract.mjs';
+import { need,shape,json,digest,validIdentity,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
 import {planBytes,readCommitIntent,readCommitResult} from './task-commit-codec.mjs';
 import {resolveFixtureCommit} from './task-runner.mjs';
 import {readRunnerHistory} from './durable-runner-state.mjs';
@@ -73,7 +73,9 @@ function ownerMatch(store,owner,initial,revision) {
   need(equal(s.identity,initial.identity) && equal(s.fingerprints,initial.fingerprints),'identity_mismatch');
   need(s.revision===revision,'commit_store_changed');return s;
 }
-function boundedRecord(record) {need(Buffer.byteLength(JSON.stringify(record))<=MiB,'limit_exceeded');}
+// The store's own record bound (payload limit plus the 1 KiB envelope): a fixed 1 MiB
+// refused every commit of a run whose develop checkpoint the store had accepted.
+function boundedRecord(record) {need(Buffer.byteLength(JSON.stringify(record))<=JOURNAL_PAYLOAD_LIMIT+1024,'limit_exceeded');}
 function append(store,current,id,kind,payload) {
   const data={version:1,seq:current.records.length+1,id,kind,payload,previousDigest:current.records.at(-1)?.digest??null};
   const record={...data,digest:digest(data)};boundedRecord(record);

@@ -11,9 +11,12 @@ import {planCheckTimeout} from '../runtime/js/cm-ai/drive-core.mjs';
 import {isXcodebuild, isTestAction, advisoryRunsTest as runsTest, mandatoryCheckCoverage} from '../runtime/js/check-coverage.mjs';
 import {git as safeGit} from '../runtime/js/cm-security/scan.mjs';
 import {captureSpecificationMaterial} from '../runtime/js/cm-ai/specification-material.mjs';
-import {readReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
+import {readReviewBaseline,captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
+import {taskReviewScope} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-projects.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {acceptanceCoverage} from '../runtime/js/cm-ai/acceptance-contract.mjs';
+import {featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 
 // The whole check step of a current-session run is one host call with this deadline
 // (runtime/js/cm-ai/host-conversation-execution.mjs, outerTimeoutMs). The test
@@ -35,6 +38,8 @@ const usage = '用法: cm-start-check.mjs --plan PLAN.json [--json] [--strict]\n
   + '     scope 改到代码根 TESTING.md「## 牵连测试」表里的路径，却没跑表里对应的旧界面测试——warn；\n'
   + '     只跑了部分界面测试（-only-testing）而项目没有这张表——info（没能核对）\n'
   + '  3. scope 内文件在代码根是否已有未提交改动——warn（Git 不可用时是 warn，不是 Git 仓库时是 info）\n'
+  + '  4. 按运行时同样的规则采一次审查基线：代码根文件总量超出审查清单上限（如被忽略的大构建目录没被排除）——error\n'
+  + '  5. 启用 QA 且 feature 有交互式用例时缺 --browser-qa 或声明无效；advance 会反问而 answers 目录里缺的答案文件——error\n'
   + '退出码：0 无 error（warn 只提示）；1 有 error，或加 --strict 时有 warn；2 输入读不了或不支持。\n';
 
 // Modes this check does not model: another check budget (provider), another scope rule
@@ -245,6 +250,60 @@ function checkDirtyScope(definition) {
 
 // requiredTests comes from the caller's frozen approved contract, never from the
 // mutable affected-test table or the developer's PLAN. Other warnings stay advisory.
+// The runner captures this baseline when the run is created and again before
+// each review package; a tree it refuses there stops the run after the develop
+// answer was already written. Capture it here the same way, read-only.
+export function checkReviewInventory(definition){
+  if(!fs.existsSync(definition.codeProject)||typeof definition.specsDir!=='string'||!definition.identity
+    ||!Array.isArray(definition.requirements))return [];
+  try{
+    const codeProject=definition.codeProject;
+    captureReviewBaseline({root:codeProject,specsRoot:definition.specsDir,identity:definition.identity,
+      scope:taskReviewScope(definition.scope),requirements:definition.requirements,
+      ...(typeof definition.feature==='string'?{specification:{specsRoot:definition.specsDir,feature:definition.feature}}:{}),
+      ...(definition.codeProjects?{codeProjectPaths:codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects))}:{})});
+    return [];
+  }catch(error){
+    if(error.code==='limit_exceeded')return [{level:'error',code:'review_inventory_limit',
+      message:`运行时会拒绝这棵代码树：${error.message}；把该路径移出代码根，或确认它被 Git 忽略且 git 能在 ${GIT_TIMEOUT_NOTE} 内列完被忽略的文件`}];
+    return [{level:'warn',code:'review_inventory_unchecked',message:`没能按运行时规则采集审查基线（${error.code??error.message}），开跑后可能在建运行时被拒`}];
+  }
+}
+const GIT_TIMEOUT_NOTE='120 秒';
+
+// Both stopped Wue specs8 T-001 one advance at a time after earlier checks
+// passed: the host refuses a launch without the session's interactive QA
+// declaration, and the driver refuses an advance whose asked answers are missing.
+// Same inputs and rules as cm-ai-host.mjs (readBrowserCapability) and
+// cm-ai-drive.mjs (the advance asks for qa_assess, documentation_sync/inspect).
+export function checkLaunchInputs(plan,planFile,definition){
+  const findings=[],base=path.dirname(path.resolve(planFile)),permissions=plan.permissions??[];
+  const value=flag=>{const at=permissions.indexOf(flag);return at===-1?undefined:permissions[at+1];};
+  const read=file=>{try{return JSON.parse(fs.readFileSync(path.resolve(base,file),'utf8'));}catch{return null;}};
+  const workflow=value('--workflow-config')===undefined?null:read(value('--workflow-config'));
+  const control=typeof plan.controlConfig==='string'?read(plan.controlConfig):null;
+  const qaEnabled=!control||control.qa!=='disabled';
+  if(workflow?.qa&&qaEnabled&&typeof definition.specsDir==='string'&&typeof definition.feature==='string'){
+    let carriers=[];
+    try{carriers=featureHasBrowserCases(definition.specsDir,definition.feature,definition.codeProject)?[workflow.qa.environment?.carrier??'browser']:[];}
+    catch{carriers=[];}
+    try{readBrowserCapability(value('--browser-qa'),carriers);}
+    catch(error){findings.push({level:'error',code:'browser_qa_declaration',
+      message:`宿主会拒绝启动（${error.code}）：${error.reason??''} 在 PLAN.permissions 里加 --browser-qa available（本会话能跑 ${carriers.join('、')||'交互式'} QA 时）`});}
+  }
+  if(typeof plan.answers==='string'){
+    const root=path.resolve(base,plan.answers),need=[];
+    if(control&&control.qa!=='disabled'||!control&&workflow?.qa)need.push('qa-assess.json');
+    if(workflow?.documentationPaths?.length)need.push('documentation-sync.json');
+    if(workflow)need.push('documentation-inspect.json');
+    if(plan.mode==='create')need.push('develop.json');
+    const missing=need.filter(name=>!fs.existsSync(path.join(root,name)));
+    if(missing.length)findings.push({level:'error',code:'answers_missing',files:missing,
+      message:`advance 会反问而答案目录里没有：${missing.join('、')}（${root}）`});
+  }
+  return findings;
+}
+
 export function checkMandatoryTests(plan, requiredTests) {
   const coverage = mandatoryCheckCoverage({requiredTests,
     commands: (Array.isArray(plan.checks) ? plan.checks : []).map(item => item?.command)});
@@ -298,7 +357,7 @@ export function startCheck(planFile, {requiredTests = []} = {}) {
       message:'当前计划未完整包含冻结的必验检查；补齐检查，不能缩减批准的验收范围'});
   }
   return [...checkProtectedScope(definition.scope), ...checkChecks(plan), ...checkAffectedTests(plan, definition),
-    ...checkMandatoryTests(plan, requiredTests), ...mandatory, ...checkDirtyScope(definition)];
+    ...checkMandatoryTests(plan, requiredTests), ...mandatory, ...checkDirtyScope(definition), ...checkReviewInventory(definition), ...checkLaunchInputs(plan, planFile, definition)];
 }
 
 export function main(argv = process.argv.slice(2), out = process.stdout, err = process.stderr) {

@@ -7,7 +7,7 @@ import {readExternalModels} from './external-models.mjs';
 import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-config-revision.mjs';
 import {readCloseoutPolicy} from './knowledge-closeout.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
-import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,validFailureCode,requestFor,JOURNAL_REASON_LIMIT,boundedReason} from './effect-contract.mjs';
+import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,validFailureCode,requestFor,JOURNAL_REASON_LIMIT,boundedReason,JOURNAL_PAYLOAD_LIMIT} from './effect-contract.mjs';
 import {readReviewBaseline,readReviewPackage,reviewSpecsPath,reviewMaterialLimitReason} from './review-package.mjs';
 import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
@@ -725,12 +725,16 @@ export function bootstrapReviewRecoverable(s,pending=null,configuration=null) {
 }
 // limit only widens the builder's own copy check so a caller can measure an
 // oversized record exactly; the store still refuses it (JOURNAL_PAYLOAD_LIMIT).
-export const runnerPayload=(type,fields,version=1,limit=undefined)=>{need([1,2].includes(version),'runner_version');
+// The default is the store's own record limit: json()'s 1 MiB default made the
+// runner refuse a record the store accepts, inside the store operation, which
+// poisons the run as store_failure (Wue specs8 T-001 develop checkpoint).
+export const runnerPayload=(type,fields,version=1,limit=JOURNAL_PAYLOAD_LIMIT)=>{need([1,2].includes(version),'runner_version');
   return json(version===1?{version,protocol:'cm-task-runner',type,...fields}:{...fields,version,protocol:'cm-task-runner',type},limit);};
-export const runnerPayloadV3=(type,fields,limit=undefined)=>json({...fields,version:3,protocol:'cm-task-runner',type},limit);
+export const runnerPayloadV3=(type,fields,limit=JOURNAL_PAYLOAD_LIMIT)=>json({...fields,version:3,protocol:'cm-task-runner',type},limit);
 export function boundRunnerRecord({id,kind,payload},seq) {
   // Exact S3a envelope width. Digest contents do not affect encoded byte count.
-  json({version:1,seq,id,kind,payload,previousDigest:seq>1?'0'.repeat(64):null,digest:'0'.repeat(64)});
+  // The envelope adds at most the 1 KiB the store allows above the payload.
+  json({version:1,seq,id,kind,payload,previousDigest:seq>1?'0'.repeat(64):null,digest:'0'.repeat(64)},JOURNAL_PAYLOAD_LIMIT+1024);
 }
 export function attemptBaseline(original,attempt) {
   const {baselineDigest,...data}=original,next={...data,identity:{...original.identity,attempt}};

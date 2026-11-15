@@ -57,6 +57,11 @@ function trustedGit(root){
   }
   return null;
 }
+// Listing ignored AGENTS.md walks every ignored directory. A large local build
+// tree (Wue specs8: 67 GB under an ignored .artifacts/) took about 11 s; at the
+// old 10 s limit the query timed out, the Git rules were dropped and the whole
+// ignored tree entered the inventory until the 1 GiB limit refused the run.
+export const GIT_IGNORE_TIMEOUT_MS=120000;
 function gitIgnore(root,legacy=false){
   const bin=trustedGit(root);if(!bin)return null;
   const safePath=(process.env.PATH??'').split(path.delimiter).filter(dir=>{
@@ -67,7 +72,7 @@ function gitIgnore(root,legacy=false){
     LANG:'C.UTF-8',LC_ALL:'C.UTF-8',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1',GIT_TERMINAL_PROMPT:'0',
     GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:os.devNull};
   const run=args=>spawnSync(bin,['--no-optional-locks','-c','core.fsmonitor=false','-C',root,...args],
-    {env,timeout:10000,maxBuffer:16*1024*1024});
+    {env,timeout:GIT_IGNORE_TIMEOUT_MS,maxBuffer:16*1024*1024});
   const ruleBytes=file=>{
     let fd;
     try{
@@ -88,9 +93,15 @@ function gitIgnore(root,legacy=false){
     if(!inside(worktree,root))return null;
     const result=run(['ls-files','--others','--ignored','--exclude-standard','--directory','-z']);
     const agents=run(['ls-files','--cached','--others','--exclude-standard','-z','--','AGENTS.md','**/AGENTS.md']);
-    const ignoredAgents=run(['ls-files','--others','--ignored','--exclude-standard','-z','--','AGENTS.md','**/AGENTS.md']);
+    // One walk of the ignored tree for both names: each such query visits every
+    // ignored file, and two of them made a single capture take about 22 s on a
+    // 67 GB ignored build tree (Wue specs8), long enough to miss host heartbeats.
+    const ignoredNamed=run(['ls-files','--others','--ignored','--exclude-standard','-z','--','AGENTS.md','**/AGENTS.md','.gitignore','**/.gitignore']);
+    const ignoredAs=name=>({error:ignoredNamed.error,status:ignoredNamed.status,
+      stdout:Buffer.from((ignoredNamed.stdout??Buffer.alloc(0)).toString('utf8').split('\0').filter(p=>p&&path.posix.basename(p)===name).map(p=>p+'\0').join(''),'utf8')});
+    const ignoredAgents=ignoredAs('AGENTS.md');
     const rules=run(['ls-files','--cached','--others','--exclude-standard','-z','--','.gitignore','**/.gitignore']);
-    const ignoredRules=run(['ls-files','--others','--ignored','--exclude-standard','-z','--','.gitignore','**/.gitignore']);
+    const ignoredRules=ignoredAs('.gitignore');
     const config=run(['config','--local','--list','--null']);
     const excludesFile=run(['config',...(legacy?['--local']:[]),'--path','--get','core.excludesfile']);
     if([result,agents,ignoredAgents,rules,ignoredRules,config].some(row=>row.error||row.status!==0)
