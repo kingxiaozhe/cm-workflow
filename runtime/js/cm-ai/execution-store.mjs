@@ -8,7 +8,7 @@ const sqlite=()=>process.getBuiltinModule('node:sqlite');
 import { need,shape,id,hex,json,digest,freeze,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
 import { isSupportedExecutionPlatform } from './execution-platform.mjs';
 import { MiB,STATE_LIMIT,PHYSICAL_LIMIT } from './execution-store-limits.mjs';
-import {fixJournalWorkflow,packFixJournalPayload,packFixJournalState,unpackFixJournalState} from './review-presentation.mjs';
+import {fixJournalWorkflow,journalPhysicalLimit,packFixJournalPayload,packFixJournalState,unpackFixJournalState} from './review-presentation.mjs';
 
 const APP_ID=0x434d5831;
 const PROTOCOL_SQL='CREATE TABLE protocol(version INTEGER NOT NULL CHECK(version=1))';
@@ -59,7 +59,7 @@ function validateState(raw,options) {
     shape(r,['version','seq','id','kind','payload','previousDigest','digest']);
     need(r.version===1,'store_version');need(r.seq===index+1 && r.previousDigest===previous,'store_corrupt');
     id(r.id);need(!ids.has(r.id) && kinds.has(r.kind),'store_corrupt');ids.add(r.id);
-    need(Buffer.byteLength(JSON.stringify(packFixJournalPayload(r.payload,{workflow:fixJournalWorkflow(v)})))<=JOURNAL_PAYLOAD_LIMIT,'limit_exceeded');
+    need(Buffer.byteLength(JSON.stringify(packFixJournalPayload(r.payload,{workflow:fixJournalWorkflow(v)})))<=journalPhysicalLimit(v),'limit_exceeded');
     const {digest:checksum,...data}=r;hex(checksum);need(digest(data)===checksum,'store_corrupt');previous=checksum;
   }
   const {revision,...data}=v;hex(revision);need(digest(data)===revision,'store_corrupt');return v;
@@ -252,7 +252,7 @@ export function openExecutionStore(input) {
       const v=json(input,10*MiB);shape(v,['id','kind','payload','expectedRevision']);
       id(v.id);hex(v.expectedRevision);need(kinds.has(v.kind));
       const current=snapshot(),physicalPayload=packFixJournalPayload(v.payload,{workflow:fixJournalWorkflow(current)});
-      need(Buffer.byteLength(JSON.stringify({...v,payload:physicalPayload}))<=JOURNAL_PAYLOAD_LIMIT+1024,'limit_exceeded');
+      need(Buffer.byteLength(JSON.stringify({...v,payload:physicalPayload}))<=journalPhysicalLimit(current)+1024,'limit_exceeded');
       const existing=current.records.find(r=>r.id===v.id);
       if(existing){need(existing.kind===v.kind && digest(existing.payload)===digest(v.payload),'record_conflict');return current;}
       need(v.expectedRevision===current.revision,'revision_mismatch');

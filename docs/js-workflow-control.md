@@ -310,7 +310,7 @@ const result = await generateCmInitRules(
   仅 scope、requirements 及 AGENTS.md 保存正文。范围外图片或视频也逐块计算摘要，新增、删除、
   改名、改权限和正文变化仍阻断审查。正文保持每文件 1 MiB、合计 2 MiB、最多 256 文件；
   摘要清单最多 10,000 文件、累计扫描 1 GiB，序列化基线最多 8 MiB，超限明确失败。
-  宿主现有单条持久记录 1 MiB 等门限仍适用；这不是任意规模仓库保证。
+  宿主现有单条持久记录上限（普通流程 4 MiB，cm-fix 未压缩载荷 1 MiB）等门限仍适用；这不是任意规模仓库保证。
   已保存 V1 基线继续按原格式、容量和摘要核验，不迁移或重写历史审查凭据。
 - 不读取凭证，不加载任意 JS 模块，不接受 shell command 或自报审批字段。
 - 已有 tasks.md、Review 和 Learning 文件不被控制入口直接修改；`serve` 会创建运行控制记录与锁。

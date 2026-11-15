@@ -58,6 +58,8 @@ const storageCode='review_storage_invalid';
 const sizeOf=value=>Buffer.byteLength(JSON.stringify(value));
 const sameBytes=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+/** 单条物理载荷上限：修复流程固定 1 MiB（超出须压缩），其他流程为记录上限 */
+export const journalPhysicalLimit=state=>fixJournalWorkflow(state)===FIX_WORKFLOW?PAYLOAD_LIMIT:JOURNAL_PAYLOAD_LIMIT;
 export function fixJournalWorkflow(state){
   const first=state.records?.[0];
   return first?.id==='fix-configuration'&&first.kind==='intent'&&first.payload?.workflow===FIX_WORKFLOW
@@ -189,7 +191,10 @@ export function unpackFixJournalState(raw){
   const physical=json(raw,STATE_LIMIT);
   if(!Object.hasOwn(physical,'storageEncoding')){
     need(Array.isArray(physical.records),storageCode);
-    physical.records.forEach(record=>json(record.payload,JOURNAL_PAYLOAD_LIMIT));
+    // 修复流程的未编码载荷照旧以 1 MiB 为限（超过就必须压缩并打标记）；普通流程用记录上限。
+    // 两者混用会让同一条未标记的修复记录在后来追加压缩记录后变得不可读
+    const limit=fixJournalWorkflow(physical)===FIX_WORKFLOW?PAYLOAD_LIMIT:JOURNAL_PAYLOAD_LIMIT;
+    physical.records.forEach(record=>json(record.payload,limit));
     return physical;
   }
   shape(physical,['version','identity','fingerprints','records','revision','storageEncoding']);

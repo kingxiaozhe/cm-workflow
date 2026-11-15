@@ -8,7 +8,7 @@ import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs'
 import {openFixExecution} from '../runtime/js/cm-fix/execution.mjs';
 import {captureReviewBaseline,createReviewPackage,readReviewPackage} from '../runtime/js/cm-ai/review-package.mjs';
 import * as presentation from '../runtime/js/cm-ai/review-presentation.mjs';
-import {digest,requestFor} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {digest,requestFor,JOURNAL_PAYLOAD_LIMIT} from '../runtime/js/cm-ai/effect-contract.mjs';
 
 const MiB=1024*1024,STATE_LIMIT=16*MiB,workflow='cm-fix-stages-v1';
 const copy=value=>JSON.parse(JSON.stringify(value));
@@ -120,13 +120,23 @@ test('a real CM-fix journal stores a repeated canonical review larger than one M
   assert.deepEqual(JSON.parse(fs.readFileSync(f.stateFile,'utf8')).records[prepared.seq-1],prepared);
 });
 
-test('ordinary large data, non-fix workflows and false workflow fingerprints retain the one MiB limit',t=>{
+test('the fix workflow keeps its one MiB physical limit for data it cannot compress',t=>{
   const f=fixture(t);rejectAppend(f,'large-ordinary',{ordinary:'x'.repeat(MiB)});
   const {reviewPackage}=material(f,64);rejectAppend(f,'small-package-large-ordinary',{reviewPackage,ordinary:'x'.repeat(MiB)});
   rejectAppend(f,'arbitrary-nested-review',{arbitrary:{reviewPackage:material(f).reviewPackage}});
+});
+
+// Ordinary runs store large records as they are, up to the journal record limit
+// (Wue specs8 T-001: a 1.17 MB develop checkpoint). They are never compressed or
+// marked, so the fix workflow's encoding rules above do not apply to them.
+test('non-fix workflows and false workflow fingerprints store large records unencoded up to the journal limit',t=>{
   for(const mode of ['cm-ai-stages-v1','cm-ai-batch-v1','wrong-fingerprint']){
-    const other=fixture(t,{mode}),large=material(other).reviewPackage;
-    rejectAppend(other,'large-review',{reviewPackage:large});
+    const other=fixture(t,{mode}),large=material(other).reviewPackage,input=entry(other,'large-review',{reviewPackage:large});
+    assert.ok(Buffer.byteLength(JSON.stringify(input.payload))>MiB,mode);
+    assert.equal(appendFits(other.store().snapshot(),input),true,mode);
+    const saved=other.store().append(input);assert.deepEqual(saved.records.at(-1).payload,input.payload);
+    assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(other.stateFile,'utf8')),'storageEncoding'),false,mode);
+    rejectAppend(other,'over-journal-limit',{ordinary:'x'.repeat(JOURNAL_PAYLOAD_LIMIT)});
   }
 });
 
