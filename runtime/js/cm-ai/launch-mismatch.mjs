@@ -4,7 +4,7 @@
 // record (the runner configuration it bound) and never widens what opens.
 import {digest} from './effect-contract.mjs';
 
-const UNLISTED='其余启动配置与创建时不同：--workflow-config、--protected-conversation-config、--bootstrap-config、'
+const UNLISTED='其余启动配置与创建时不同：--workflow-config、--protected-conversation-config、--bootstrap-config、--call-timeout-minutes、'
   +'QA/文档设置或创建时的任务选择（journal 只保存它们的指纹）。请用创建时的同一组文件与参数恢复。';
 
 export function explainFingerprintMismatch({snapshot,definition,execution,fingerprints}){
@@ -35,7 +35,10 @@ export function explainFingerprintMismatch({snapshot,definition,execution,finger
         found.push(`审查配置：创建时为 ${was.provider}/${was.requestedModel}，本次为 ${reviewer.provider}/${reviewer.requestedModel}`);
       const host=bound.excludedContexts?.[0],current=execution.excludedContexts?.[0];
       if(host!==current)found.push(`--host-context：创建会话为 ${host}，本次按 ${current} 恢复；换会话恢复请加 --original-host-context ${host}`);
-      if(bound.timeoutMs!==execution.timeoutMs&&!found.length)found.push('开发模式或受保护配置与创建时不同');
+      const currentSession=bound.developer?.requestedModel==='current-session'&&developer.requestedModel==='current-session';
+      if(bound.timeoutMs!==execution.timeoutMs&&currentSession)
+        found.push(`--call-timeout-minutes：创建时为 ${bound.timeoutMs/60000} 分钟，本次为 ${execution.timeoutMs/60000} 分钟；请用创建时的值恢复`);
+      else if(bound.timeoutMs!==execution.timeoutMs&&!found.length)found.push('开发模式或受保护配置与创建时不同');
     }
     return found.length?found.join('；'):UNLISTED;
   }catch{return UNLISTED;}

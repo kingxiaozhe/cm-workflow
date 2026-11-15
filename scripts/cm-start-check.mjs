@@ -13,13 +13,14 @@ import {git as safeGit} from '../runtime/js/cm-security/scan.mjs';
 import {captureSpecificationMaterial} from '../runtime/js/cm-ai/specification-material.mjs';
 import {readReviewBaseline,captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
 import {taskReviewScope} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {callTimeoutFrom} from '../runtime/js/cm-ai/call-timeout.mjs';
 import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-projects.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {acceptanceCoverage} from '../runtime/js/cm-ai/acceptance-contract.mjs';
 import {featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 
 // The whole check step of a current-session run is one host call with this deadline
-// (runtime/js/cm-ai/host-conversation-execution.mjs, outerTimeoutMs). The test
+// (runtime/js/cm-ai/host-conversation-execution.mjs, outerTimeoutMs; default unless --call-timeout-minutes). The test
 // file guards that the literal is still there.
 export const CHECK_CALL_LIMIT_MS = 1800000;
 const MAX_LISTED = 20;
@@ -131,10 +132,15 @@ function checkChecks(plan) {
       message: `检查 ${group.map(entry => entry.item.id).join('、')} 都是同一 scheme／目的地、没有 -only-testing 的 xcodebuild test，很可能各自跑了一遍全量。保留一个，或用 -only-testing 分开`});
   }
   const totalMs = own.reduce((sum, entry) => sum + entry.timeoutMs, 0);
-  if (totalMs > CHECK_CALL_LIMIT_MS)
-    findings.push({level: 'warn', code: 'check_budget_over_call_limit', totalMs, limitMs: CHECK_CALL_LIMIT_MS,
-      message: `各检查超时之和 ${Math.round(totalMs / 60000)} 分钟，超过检查整步的 ${CHECK_CALL_LIMIT_MS / 60000} 分钟期限；这是最坏情况，实际可能更短。`
-        + '按分层缩减（单元测试全跑，界面测试只跑本任务新写的和牵连的，其余留到功能末尾回归任务），或拆成多次运行'});
+  // 运行可用 --call-timeout-minutes（30–60）放宽整步期限；值非法时宿主会拒绝启动，这里提前报出
+  let limitMs = CHECK_CALL_LIMIT_MS;
+  try { limitMs = callTimeoutFrom(plan.permissions) ?? CHECK_CALL_LIMIT_MS; }
+  catch (error) { findings.push({level: 'error', code: 'call_timeout_invalid', message: error.message}); }
+  if (totalMs > limitMs)
+    findings.push({level: 'warn', code: 'check_budget_over_call_limit', totalMs, limitMs,
+      message: `各检查超时之和 ${Math.round(totalMs / 60000)} 分钟，超过检查整步的 ${limitMs / 60000} 分钟期限；这是最坏情况，实际可能更短。`
+        + '按分层缩减（单元测试全跑，界面测试只跑本任务新写的和牵连的，其余留到功能末尾回归任务），或拆成多次运行；'
+        + '设备检查确需更久时，在 PLAN.permissions 加 "--call-timeout-minutes","<30–60>"'});
   return findings;
 }
 

@@ -247,9 +247,23 @@ test('the summed check timeouts warn only above the 30 minute call limit', t => 
   assert.deepEqual(codes(check(tight).report), ['check_budget_over_call_limit']);
 });
 
+test('--call-timeout-minutes 放宽整步期限：45 分钟的检查在 60 分钟期限下不报，非法值报 error', t => {
+  const checks = [cmd('a', ['a'], 1500000), cmd('b', ['b'], 1200000)];
+  assert.deepEqual(codes(check(project(t, {checks})).report), ['check_budget_over_call_limit']);
+  const widened = project(t, {checks, plan: {permissions: ['--allow-development', '--call-timeout-minutes', '60']}});
+  assert.deepEqual(check(widened).report.findings, []);
+  const short = project(t, {checks, plan: {permissions: ['--allow-development', '--call-timeout-minutes', '40']}});
+  const r = check(short);
+  assert.deepEqual(r.report.findings.map(item => [item.code, item.limitMs]), [['check_budget_over_call_limit', 2400000]]);
+  const bad = project(t, {checks: [cmd('a', ['a'])], plan: {permissions: ['--allow-development', '--call-timeout-minutes', '90']}});
+  assert.deepEqual(check(bad).report.findings.map(item => [item.level, item.code]), [['error', 'call_timeout_invalid']]);
+});
+
 test('the call limit constant still matches the host source', () => {
   const source = fs.readFileSync(path.join(here, '..', 'runtime/js/cm-ai/host-conversation-execution.mjs'), 'utf8');
-  assert.match(source, /const outerTimeoutMs=provider\?protection\.timeoutMs:1800000;/);
+  assert.match(source, /const outerTimeoutMs=provider\?protection\.timeoutMs:\(options\.callTimeoutMs\?\?DEFAULT_CALL_TIMEOUT_MS\);/);
+  const limits = fs.readFileSync(path.join(here, '..', 'runtime/js/cm-ai/call-timeout.mjs'), 'utf8');
+  assert.match(limits, /export const DEFAULT_CALL_TIMEOUT_MS=1800000;/);
 });
 
 test('dirty scope files warn (tracked change and new file), files outside scope do not, --strict turns warns into exit 1', t => {

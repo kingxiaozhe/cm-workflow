@@ -1,3 +1,4 @@
+import {DEFAULT_CALL_TIMEOUT_MS} from './call-timeout.mjs';
 import {createNativeUsageLog} from './native-usage-log.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
 import {readControlPolicy} from './control-policy.mjs';
@@ -100,7 +101,8 @@ export const REVIEW_BOUND_MARGIN_MS=60000;
 export const reviewRaceTimeout=(outerTimeoutMs,reviewTimeoutMs)=>Math.max(outerTimeoutMs,reviewTimeoutMs+REVIEW_BOUND_MARGIN_MS);
 export function createConversationExecution(definition,hostContextId,bridge,review=null,reservedReviewAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','soloMember','verificationPrecheck','executionPolicy','controlPolicy','memberDevelopment'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','soloMember','verificationPrecheck','executionPolicy','controlPolicy','memberDevelopment','callTimeoutMs'].filter(key=>Object.hasOwn(options,key))]);
+  need(!Object.hasOwn(options,'callTimeoutMs')||(Number.isInteger(options.callTimeoutMs)&&options.callTimeoutMs>=DEFAULT_CALL_TIMEOUT_MS&&options.callTimeoutMs<=3600000),'invalid_input');
   const controlPolicy=options.controlPolicy?readControlPolicy(options.controlPolicy):null;
   need(!Object.hasOwn(options,'verificationPrecheck')||typeof options.verificationPrecheck==='boolean','invalid_input');
   const executionPolicy=options.executionPolicy?readExecutionPolicy(options.executionPolicy):null;
@@ -180,7 +182,9 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     ...(bootstrap?{bootstrap:bootstrap.configuration}:{}),
     ...(options.batchWorkflowsDigest?{batchWorkflowsDigest:options.batchWorkflowsDigest}:{}),
     ...(review?{review:{version:1,model:review.model,disabledSkills:review.disabledSkills,...(externalModels?{effort:review.effort}:{})}}:{}),
-    ...(workflow?{workflow}: {})};
+    ...(workflow?{workflow}: {}),
+    // 放宽的调用期限进运行指纹：恢复时漏传或改值在开跑前按名字报出。默认值不写，旧运行的配置字节不变
+    ...(options.callTimeoutMs!==undefined&&options.callTimeoutMs!==DEFAULT_CALL_TIMEOUT_MS?{callTimeoutMs:options.callTimeoutMs}:{})};
   const reviewOptions={cwd:definition.codeProject,model:review?.model??'unconfigured',...(externalModels?{effort:review.effort}:{}),preflight:review?.preflight??null,
     disabledSkills:review?.disabledSkills??[],
     ...resolveReviewTimeout(review,protection),
@@ -278,7 +282,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     return verdict.satisfied?{satisfied:true,items:verdict.items,...(facts?{hostRecord:facts}:{}),...(coverage?{coverage}:{})}
       :{satisfied:false,reason:boundedReason('verification_precheck_failed: ',verdict.unsatisfied??['门禁未记录具体缺项'])};
   };
-  const outerTimeoutMs=provider?protection.timeoutMs:1800000;
+  // 当前会话运行默认 30 分钟；创建时 --call-timeout-minutes 可放宽到 60 分钟（设备检查），值随执行配置写进运行指纹
+  const outerTimeoutMs=provider?protection.timeoutMs:(options.callTimeoutMs??DEFAULT_CALL_TIMEOUT_MS);
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,
     identity:request.identity,runtime:selectedRuntime,stage,signal:control.signal},run);
   const execution={configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],applicableAgentFiles:[],
