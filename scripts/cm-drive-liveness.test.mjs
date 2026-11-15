@@ -87,3 +87,11 @@ test('R1 G11 malformed optional completion display does not change the returned 
   assert.equal(out.status,0,out.stderr);assert.equal(JSON.parse(out.stdout).result.state,'fixture_completed');
   assert.match(out.stderr,/完成摘要显示失败/);
 });
+
+// Codex review: a create captures its baseline before host_ready, and the Git ignore
+// query alone may take GIT_IGNORE_TIMEOUT_MS; the startup budget must not kill it first.
+test('default startup budget outlasts the Git ignore query of the baseline capture',async()=>{
+  const {DRIVE_LIVENESS_DEFAULTS}=await import('../runtime/js/cm-ai/drive-core.mjs');
+  const {GIT_IGNORE_TIMEOUT_MS}=await import('../runtime/js/cm-ai/review-package.mjs');
+  assert(DRIVE_LIVENESS_DEFAULTS.startupMs>GIT_IGNORE_TIMEOUT_MS);
+});

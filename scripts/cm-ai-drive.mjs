@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import {packageMaterialEligible,checkpointPackageBudget} from '../runtime/js/cm-ai/checkpoint-package-material.mjs';
+import {packageMaterialEligible,checkpointPackageBudget,INLINE_PACKAGE_LIMIT} from '../runtime/js/cm-ai/checkpoint-package-material.mjs';
 // cm-ai host 的单步驾驶员。PLAN 路径相对 PLAN 文件；命令仅在 codeProject 内执行。
 // 请求表来自 host-session.mjs operationNames（传输允许集）、host-conversation-execution.mjs
 // developer/check/verificationGate、host-workflow-capabilities.mjs QA/文档接线、
@@ -449,7 +449,7 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
         if(!capacity.fits){
           const largest=pkg.changes.filter(change=>change.after).map(change=>change.after).sort((a,b)=>b.size-a.size).slice(0,3)
             .map(file=>`${file.path} ${kib(file.size)}`).join('，');
-          stop(2,`${label}: 交付后的开发检查点约 ${kib(bytes)}（其中审查包 ${kib(packageBytes)}，含 handoff），超过${budget+reserve===JOURNAL_PAYLOAD_LIMIT?'运行存档单条记录上限':'未归档审查包的内联上限'} ${budget+reserve} `
+          stop(2,`${label}: 交付后的开发检查点约 ${kib(bytes)}（其中审查包 ${kib(packageBytes)}，含 handoff），超过${enabled?`运行存档单条记录上限 ${JOURNAL_PAYLOAD_LIMIT}`:`未归档审查包的内联上限 ${Math.min(JOURNAL_PAYLOAD_LIMIT,INLINE_PACKAGE_LIMIT)}`} `
             +`减去为有界审查与完成记录预留的 ${reserve}（即 ${budget}）；最大的改动文件是 ${largest}；请缩小这些文件或移出 scope`);
         }
       }

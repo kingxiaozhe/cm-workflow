@@ -242,6 +242,28 @@ test('reconciled review uses the same backward package reference and validates i
   }
 });
 
+// Codex review r2: a run that stored a large package inline before the fixed archive
+// threshold keeps working: a reconciled review and the completion stay inline instead
+// of being asked for a first archive they may not create.
+test('an old inline large package survives a reconciled review and completion without a first archive',()=>{
+  const material=pkg(3600000),binding={invocationId:'review-invocation',registeredDigest:digest('registered'),
+    startedDigest:digest('started'),resultDigest:digest('result'),receiptDigest:digest('receipt')};
+  let records=append([],{version:3,protocol:'cm-task-runner',type:'init',config:{identity}});
+  records=intent(records,'develop-1');
+  records=append(records,payload('develop-1',frame(material)));
+  records=intent(records,'review-1','review');
+  const review=frame(material,'review-1','review','approved');
+  const reconciled=checkpointStoragePlan({records,effectId:'review-1',checkpoint:review,identity,enabled:true,reserve:272125,
+    type:'review-invocation-reconciled',binding});
+  assert.deepEqual(reconciled.payloadFields,{});assert.deepEqual(reconciled.checkpoint,review);
+  const stored={...payload('review-1',reconciled.checkpoint),type:'review-invocation-reconciled',...binding};
+  assert.deepEqual(resolveCheckpointPackage(stored,records,identity),review);
+  records=append(records,stored);records=intent(records,'complete-1','complete');
+  const done=checkpointStoragePlan({records,effectId:'complete-1',checkpoint:frame(material,'complete-1','complete','fixture_completed'),
+    identity,enabled:true,reserve:272125});
+  assert.deepEqual(done.payloadFields,{});
+});
+
 test('only marked develop checkpoints can source references and the dedicated failure code survives normalization',()=>{
   const f=fixture();
   const unmarked=append(f.records,payload('develop-1',f.checkpoint));

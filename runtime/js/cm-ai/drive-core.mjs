@@ -84,8 +84,10 @@ export function deliberatelyUnanswered(message){
 // synchronous tree capture. On a code root with a large ignored build tree one
 // capture took 12-22 s and a develop step runs several, so 30 s killed a healthy
 // host after it had applied the edits (Wue specs8 T-001). operationMs still
-// bounds a host that never finishes.
-export const DRIVE_LIVENESS_DEFAULTS=Object.freeze({startupMs:60000,operationMs:21600000,
+// bounds a host that never finishes. startupMs covers a create's baseline capture
+// before host_ready, whose Git ignore query may take up to GIT_IGNORE_TIMEOUT_MS
+// (120 s, review-package.mjs) plus the capture itself.
+export const DRIVE_LIVENESS_DEFAULTS=Object.freeze({startupMs:180000,operationMs:21600000,
   heartbeatMs:120000,graceMs:30000,closeMs:5000,killMs:1000,pollMs:250});
 // rateLimitRetry (cm-ai drivers only, drive-rate-limit.mjs; 'batch' for the batch driver): a review the provider
 // rate limited is redispatched by re-running this same driver command after a

@@ -1,4 +1,4 @@
-import {packageMaterialEligible,checkpointStoragePlan,checkpointPackageBudget,packageMaterialReference} from './checkpoint-package-material.mjs';
+import {packageMaterialEligible,checkpointStoragePlan,checkpointPackageBudget,packageMaterialReference,INLINE_PACKAGE_LIMIT} from './checkpoint-package-material.mjs';
 import {taskDeclarations,approvedTaskGrammar} from '../spec-task-line.mjs';
 import {readIntegrationEvidenceFile,validateIntegrationRecord,verifyReviewedIntegration} from './reviewed-integration.mjs';
 import {beginHostStage} from './host-stage-observer.mjs';
@@ -1637,7 +1637,7 @@ export function createTaskRunner(options) {
           const changed=reviewPackage.changes.filter(change=>change.after).map(change=>change.after);
           reviewPackage=packageBefore;
           halt('blocked','develop_package_too_large',boundedReason(`develop_package_too_large: the review checkpoint would be ${bytes} bytes, `
-            +`above ${budget} (${budget+reserve===JOURNAL_PAYLOAD_LIMIT?'journal record limit':'inline package limit for a package without a material archive'} ${budget+reserve} minus ${reserve} kept for the bounded review `
+            +`above ${budget} (${enabled?`journal record limit ${JOURNAL_PAYLOAD_LIMIT}`:`inline package limit ${Math.min(JOURNAL_PAYLOAD_LIMIT,INLINE_PACKAGE_LIMIT)} for a package without a material archive`} minus ${reserve} kept for the bounded review `
             +'and completion records); largest changed files: ',largestFiles(changed),
             '; shrink them or move them out of scope, then resume to redo this attempt'));
           result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});

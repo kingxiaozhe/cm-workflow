@@ -6,7 +6,7 @@ import {digest,json,shape,need,hex,id,validIdentity,freeze,JOURNAL_PAYLOAD_LIMIT
 const INVALID='checkpoint_package_material_invalid',STATE_LIMIT=16*1024*1024;
 const MARKER_ALLOWANCE=1024,REFERENCE_ALLOWANCE=512;
 // The record budget before it was raised to 4 MiB; see checkpointPackageBudget.
-const INLINE_PACKAGE_LIMIT=1024*1024;
+export const INLINE_PACKAGE_LIMIT=1024*1024;
 const must=condition=>need(condition,INVALID);
 const guarded=run=>{try{return run();}catch(error){if(error?.code===INVALID)throw error;throw Object.assign(new Error(INVALID),{code:INVALID});}};
 const size=value=>Buffer.byteLength(JSON.stringify(value));
@@ -154,8 +154,9 @@ export function checkpointStoragePlan({records:rawRecords,effectId,checkpoint:ra
   const ref=findReference(records,pkg,identity);
   // Develop reserved the later checkpoints before accepting its inline package.
   // Those later records enforce their actual limit, not that future reserve again;
-  // a review or completion cannot introduce a first material archive.
-  if(!ref&&type==='effect-checkpoint'&&['review','complete'].includes(effect.kind)){
+  // a review or completion (including a reconciled review invocation) cannot
+  // introduce a first material archive.
+  if(!ref&&['review','complete'].includes(effect.kind)){
     must(size(payload)<=JOURNAL_PAYLOAD_LIMIT);return freeze({checkpoint,payloadFields:{}});
   }
   const budget=checkpointPackageBudget({inlineBytes:size(payload),packageBytes:size(pkg),reserve,enabled,referenced:ref!==null});
