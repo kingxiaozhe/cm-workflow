@@ -113,8 +113,15 @@ test('version row changing an existing task acceptance is tier 2, other acceptan
   });
   fixture(({approve,inspect,edit})=>{
     approve();
-    edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 新任务必须真机验收 |'));
+    edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | AC-002 改为真机验收 |'));
     assert.equal(inspect().tier,1);
+  });
+  // Dogfood (aihot specs7 copy): "范围与验收不变" is how real version rows record an
+  // unchanged scope; without a task, AC or test-case id it stays tier 0.
+  fixture(({approve,inspect,edit})=>{
+    approve();
+    edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 补记沟通，范围与验收不变 |'));
+    assert.equal(inspect().tier,0);
   });
 });
 

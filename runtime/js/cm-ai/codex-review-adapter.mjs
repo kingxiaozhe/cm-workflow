@@ -65,11 +65,27 @@ export function buildCodexReviewPrompt(raw) {
 // Shared package/prompt contract; the trusted adapter selects the provider.
 export function buildReviewPrompt(raw,provider,executionPolicy=null) {
   const {request,reviewPackage}=readReviewerRequest(raw,provider);
-  const data=json({reviewPackage,priorReview:request.payload.priorReview,
-    ...(Object.hasOwn(request.payload,'supersededReview')?{supersededReview:request.payload.supersededReview}:{}),
+  return presentationPrompt(reviewPromptData(reviewPackage,request.payload),INSTRUCTIONS,executionPolicy,provider);
+}
+function reviewPromptData(reviewPackage,payload){
+  return json({reviewPackage,priorReview:payload.priorReview,
+    ...(Object.hasOwn(payload,'supersededReview')?{supersededReview:payload.supersededReview}:{}),
     examinedPaths:reviewPaths(reviewPackage),
     ...(reviewPackage.handoff?{handoffPath:reviewPackage.handoff.path}:{})},REQUEST_LIMIT);
-  return presentationPrompt(data,INSTRUCTIONS,executionPolicy,provider);
+}
+
+// Whether the review prompt for this package (same data and presentation the review
+// will send) fits the reviewer's input limit. Develop asks before it accepts a
+// delivery: a package no reviewer can take must be refused there, not left as an
+// unknown review the run cannot redo (Codex takes at most 1 MiB of input).
+export function reviewInputFit({reviewPackage,payload,provider,executionPolicy=null}){
+  need(['codex','claude'].includes(provider),'review_request_invalid');
+  const limit=provider==='codex'?CODEX_INPUT_LIMIT:PROMPT_LIMIT;
+  try{
+    const prompt=presentationPrompt(reviewPromptData(readReviewPackage(reviewPackage),{priorReview:null,...payload}),
+      INSTRUCTIONS,executionPolicy,provider);
+    return {fits:true,bytes:Buffer.byteLength(prompt,'utf8'),limit};
+  }catch(error){if(error?.code==='limit_exceeded')return {fits:false,bytes:null,limit};throw error;}
 }
 
 export function buildCauseReviewPrompt(raw,provider,executionPolicy=null){

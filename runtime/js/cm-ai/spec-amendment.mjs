@@ -351,11 +351,13 @@ export function inspectSpecAmendment(specsDir){
     else for(const row of appended){
       // Same rule as the standing authorization: a version note that states or
       // weakens acceptance for an existing task is a requirement change (tier 2).
-      // Other acceptance wording is never tier-0 metadata; it goes to review.
+      // One that names an acceptance criterion or test case goes to review (tier 1).
+      // Plain notes such as "范围与验收不变" stay tier-0 metadata (dogfood: real
+      // version tables write that on most rows; escalating every one left tier 0 unused).
       if(!acceptanceLanguage(row)&&!weakensLanguage(row))continue;
       const affected=taskNames(row).find(id=>old.tasks.has(id));
       if(affected)reasons.push(`version_row_changes_acceptance:${name}/${affected}`);
-      else tasksOnlyVersionRows=false;
+      else if(/(?<![A-Za-z0-9])(?:AC|TC)-\d+/.test(row))tasksOnlyVersionRows=false;
     }
     const declared=acceptanceIds(current.get(`${name}/requirements.md`)??'');
     for(const [id,task] of old.tasks){

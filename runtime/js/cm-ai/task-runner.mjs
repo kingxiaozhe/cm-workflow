@@ -1,4 +1,5 @@
 import {packageMaterialEligible,checkpointStoragePlan,checkpointPackageBudget,packageMaterialReference,INLINE_PACKAGE_LIMIT} from './checkpoint-package-material.mjs';
+import {reviewInputFit} from './codex-review-adapter.mjs';
 import {taskDeclarations,approvedTaskGrammar} from '../spec-task-line.mjs';
 import {readIntegrationEvidenceFile,validateIntegrationRecord,verifyReviewedIntegration} from './reviewed-integration.mjs';
 import {beginHostStage} from './host-stage-observer.mjs';
@@ -1633,7 +1634,18 @@ export function createTaskRunner(options) {
         const capacity=checkpointPackageBudget({inlineBytes:bytes,packageBytes:size(reviewPackage),reserve,enabled,
           referenced:enabled&&packageMaterialReference(journal,reviewPackage,{...config.identity,attempt})!==null});
         const budget=capacity.budget;
-        if(!capacity.fits){
+        const reviewer=reviewers.find(candidate=>candidate.allowed&&candidate.available);
+        const input=capacity.fits&&reviewer?reviewInputFit({reviewPackage,payload:{priorReview,...supersededReviewPayload(carriedReview,attempt)},
+          provider:reviewer.provider,executionPolicy:metadata.executionPolicy??null}):null;
+        if(input&&!input.fits){
+          const changed=reviewPackage.changes.filter(change=>change.after).map(change=>change.after);
+          reviewPackage=packageBefore;
+          halt('blocked','develop_package_too_large',boundedReason(`develop_package_too_large: the review input for ${reviewer.provider} would exceed its limit of ${input.limit} bytes, `
+            +'so no review could take this delivery; largest changed files: ',largestFiles(changed),
+            '; shrink them or move them out of scope, then resume to redo this attempt'));
+          result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});
+        }
+        else if(!capacity.fits){
           const changed=reviewPackage.changes.filter(change=>change.after).map(change=>change.after);
           reviewPackage=packageBefore;
           halt('blocked','develop_package_too_large',boundedReason(`develop_package_too_large: the review checkpoint would be ${bytes} bytes, `
