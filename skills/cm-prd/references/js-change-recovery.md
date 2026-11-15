@@ -12,6 +12,7 @@
 2. 用户疑问以`advance {text}`真实回答。`change_requirements`、`change_design`、`change_tasks`
    各用一次advance推进。`prd_generate`执行C5、C6、C7/C7.5：前阶段产物与清单必须原样带入下一阶段。
    问题未解决仍停当前阶段；不要把提示的问题当答案。生成器只返回当前请求列明的正文，不写文件。
+   `change_tasks` 回包里，已有 feature 未改动的文档可以省略：省略的需求/设计按前两阶段已接受的原字节补回，`tasks.md` 与（`testCasesReason` 为 null 时的）`test-cases.json` 按原稿补回；64 KiB 上限只算实际回的文档。新 feature 仍须完整；要删除用例合同照旧写非 null 的 `testCasesReason`。
 3. `change_check`用advance执行原自检。仅失败可修正，最多两次任务稿；不是独立审查或自动批准。
    `change_confirmation`向用户展示proposal的summary、增改删文件/feature、completed保留数、
    `changedUserCases`逐条内容与未决项。确认前不覆盖规格。

@@ -352,3 +352,40 @@ for(const recoveryMode of ['process-loss','mode-mismatch','publication-conflict'
   assert.ok(fs.readFileSync(path.join(dir,'.reviews/prd-new-guide-split-r1.md')).equals(evidence));
   assert.equal(fs.existsSync(path.join(dir,'.reviews/prd-new-guide-split-r2.md')),false);assert.equal(calls,4);await c.close();
 });
+// A feature whose four documents exceed 64 KiB could not take even a format-only
+// change: every change_tasks reply had to resend requirements/design (wue 8.todo-inbox, ~94 KB).
+// Omitted documents of an existing feature mean byte-identical and are restored; the limit counts what is sent.
+test('change_tasks may omit unchanged documents of an existing feature; the 64 KiB limit counts only sent ones',t=>{
+  const dir=fixture(t),config=loadConfig({projectRoot:dir}),pad='\n'+'x'.repeat(40*1024)+'\n';
+  const big=docs().map(doc=>doc.path==='tasks.md'?doc:{...doc,content:doc.content+pad});
+  for(const doc of big)fs.writeFileSync(path.join(dir,'1.guide',doc.path),doc.content,{mode:0o600});
+  const contract={schemaVersion:'1.0',feature:'guide',cases:[{id:'TC-001',origin:'generated',kind:'logic',blocking:true,
+    acIds:['AC-001'],taskIds:['T-002'],title:'Existing case',preconditions:[],steps:['Read guide'],expected:['Guide available'],cleanup:[]}]};
+  fs.writeFileSync(path.join(dir,'1.guide/test-cases.json'),JSON.stringify(contract),{mode:0o600});
+  const before=inspectPrdChangeSnapshot(dir);
+  const tasks=big[2].content.replace('| 2026-09-08 | v1 | original |','| 2026-09-08 | v1 | original |\n| 2026-09-08 | v2 | format |');
+  const full={status:'draft',summary:'Format',removed:[],features:[{directory:'1.guide',testCasesReason:null,
+    documents:[...big.slice(0,2),{path:'tasks.md',content:tasks},{path:'test-cases.json',content:JSON.stringify(contract)}]}]};
+  assert.throws(()=>inspectPrdChangeProposal(before,full,['1.guide'],config),/limit_exceeded/);
+  const sent={...full,features:[{...full.features[0],documents:[{path:'tasks.md',content:tasks}]}]};
+  const proposal=inspectPrdChangeProposal(before,sent,['1.guide'],config);
+  assert.equal(proposal.files['1.guide/requirements.md'],big[0].content);
+  assert.equal(proposal.files['1.guide/design.md'],big[1].content);
+  assert.equal(proposal.files['1.guide/tasks.md'],tasks);
+  assert.equal(proposal.files['1.guide/test-cases.json'],JSON.stringify(contract));
+  // Same proposal whichever unchanged documents the reply carried.
+  const partial={...full,features:[{...full.features[0],documents:[big[0],{path:'tasks.md',content:tasks}]}]};
+  assert.equal(inspectPrdChangeProposal(before,partial,['1.guide'],config).proposalDigest,proposal.proposalDigest);
+  // Requirements/design are restored from the accepted parts, not the disk original, when an earlier phase changed them.
+  const accepted={features:[{directory:'1.guide',documents:[{path:'requirements.md',content:big[0].content.replace('| 2026-09-08 | v1 | original |','| 2026-09-08 | v1 | original |\n| 2026-09-08 | v2 | format |')},big[1]]}],removed:[]};
+  assert.equal(inspectPrdChangeProposal(before,sent,['1.guide'],config,{parts:accepted}).files['1.guide/requirements.md'],accepted.features[0].documents[0].content);
+  // A non-null testCasesReason still removes the contract: omission never resurrects it.
+  const dropped={...full,features:[{directory:'1.guide',testCasesReason:'no_observable_behavior',documents:[{path:'tasks.md',content:tasks}]}]};
+  assert.equal(inspectPrdChangeProposal(before,dropped,['1.guide'],config).files['1.guide/test-cases.json'],undefined);
+  // The reply as sent is still bounded at 64 KiB, and a new feature is never filled in.
+  const oversent={...sent,features:[{...sent.features[0],documents:[{path:'tasks.md',content:tasks+'\n'+'y'.repeat(70*1024)}]}]};
+  assert.throws(()=>inspectPrdChangeProposal(before,oversent,['1.guide'],config),/limit_exceeded/);
+  const fresh={status:'draft',summary:'New',removed:[],features:[...sent.features,{directory:'2.extra',testCasesReason:'no_observable_behavior',
+    documents:[{path:'tasks.md',content:'## 任务版本'+'\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-09-08 | v1 | new |\n- [ ] T-001: [NEW] Extra\n'}]}]};
+  assert.throws(()=>inspectPrdChangeProposal(before,fresh,['1.guide'],config),/prd_draft_triad_missing|prd_change/);
+});

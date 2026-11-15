@@ -15,6 +15,7 @@ import {prdTreeFileDigest} from './tree-digest.mjs';
 import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
 import {need,json,shape,digest} from '../cm-ai/effect-contract.mjs';
 import {inspectPrdDraft} from './draft.mjs';
+import {prdDraftJson,PRD_DRAFT_LIMIT} from './validation-reason.mjs';
 import {checkPrdDraftMechanics,inspectPrdContextCheck,PRD_SELF_CHECK_RULES} from './self-check.mjs';
 import {recordPrdTaskScopes,approvedScopeExemptions,prdTaskScopeRecords} from './task-scope-record.mjs';
 import {replaceSessionFile} from './session.mjs';
@@ -88,7 +89,37 @@ function approvedGrammar(before){
 function sourceLines(source){return specLines(source).map(line=>line.body);}
 function userCases(files){return Object.entries(files).filter(([file])=>file.endsWith('/test-cases.json'))
   .flatMap(([file,content])=>JSON.parse(content).cases.filter(c=>c.origin==='user').map(c=>({feature:file.split('/')[0],value:c})));}
-export function inspectPrdChangeProposal(before,raw,selected,config,{rules=PRD_SELF_CHECK_RULES}={}){
+// change_tasks 回包可以省略未改动的文档：已有 feature 省略的 requirements.md/design.md 等于需求、设计阶段已接受的原字节，
+// 省略的 tasks.md 等于原稿，testCasesReason 为 null 时省略的 test-cases.json 也等于原稿；这里按原稿顺序补回，
+// 64 KiB 上限只算实际回的文档（同 draft.mjs 的 withAcceptedPrdDocuments）。否则四件套超过 64 KiB 的 feature
+// 连只改用例格式的变更都提交不进来（wue 8.todo-inbox 约 94 KB，2026-11-14）。省略过去本就是无效回包
+// （prd_draft_triad_missing / prd_draft_cases_reason_missing），所以这层含义不改变任何原本合法的回包；
+// 要删除用例合同仍须写非 null 的 testCasesReason，不会被补回。新 feature 不补，照旧要求完整。
+export function withUnchangedPrdChangeDocuments(raw,before,parts=null){
+  if(raw?.status!=='draft'||!Array.isArray(raw.features))return {reply:raw,limit:PRD_DRAFT_LIMIT};
+  let restored=0;
+  const features=raw.features.map(feature=>{
+    if(!feature||typeof feature!=='object'||!before.directories.includes(feature.directory)||!Array.isArray(feature.documents)
+      ||new Set(feature.documents.map(doc=>doc?.path)).size!==feature.documents.length)return feature;
+    const accepted=parts?.features?.find(item=>item.directory===feature.directory)?.documents??[];
+    const original=file=>accepted.find(doc=>doc.path===file)?.content??before.files[`${feature.directory}/${file}`];
+    const documents=[];
+    for(const file of ['requirements.md','design.md','tasks.md','test-cases.json']){
+      const given=feature.documents.find(doc=>doc?.path===file);
+      if(given){documents.push(given);continue;}
+      if(file==='test-cases.json'&&feature.testCasesReason!==null)continue;
+      const content=original(file);
+      if(typeof content!=='string')continue;
+      documents.push({path:file,content});restored+=Buffer.byteLength(JSON.stringify({path:file,content}));
+    }
+    documents.push(...feature.documents.filter(doc=>!documents.includes(doc)));
+    return {...feature,documents};
+  });
+  return {reply:{...raw,features},limit:PRD_DRAFT_LIMIT+restored};
+}
+export function inspectPrdChangeProposal(before,sent,selected,config,{rules=PRD_SELF_CHECK_RULES,parts=null}={}){
+  prdDraftJson(sent);
+  const {reply:raw,limit}=withUnchangedPrdChangeDocuments(sent,before,parts);
   const grammar=approvedGrammar(before);
   shape(raw,['status','summary','features','removed']);need(raw.status==='draft'&&text(raw.summary)&&Array.isArray(raw.features)
     &&Array.isArray(raw.removed)&&new Set(raw.removed).size===raw.removed.length,'prd_change_proposal_invalid');
@@ -102,7 +133,7 @@ export function inspectPrdChangeProposal(before,raw,selected,config,{rules=PRD_S
     const inspected=inspectPrdDraft({status:'draft',summary:raw.summary,features:[{name:feature.directory.replace(/^\d+\./,''),
       documents:feature.documents,testCasesReason:feature.testCasesReason}]},
     {nextIndex:Number(feature.directory.split('.')[0]),generateCases:feature.documents.some(doc=>doc.path==='test-cases.json')||config.policies.generate_cases,
-      userCasesProvided:false}).features[0];
+      userCasesProvided:false,limit}).features[0];
     if(!config.policies.generate_cases){
       const contract=inspected.documents.find(doc=>doc.path==='test-cases.json');
       const prior=JSON.parse(before.files[`${feature.directory}/test-cases.json`]??'{"cases":[]}').cases;
@@ -210,13 +241,13 @@ export function createPrdChange({admission,runtime,call,restored=null,selected=[
         messages:state.messages,parts:state.parts,previousProposal:state.proposal,contextCheck:state.contextCheck,text:answer,
         generateCases:config.policies.generate_cases,userCases:state.userCases,
         instructions:phase==='change_tasks'?
-          'C7/C7.5: return {status:draft,summary,features:[{directory,documents:[{path,content}],testCasesReason}],removed:[directory]}. Include complete triads/optional test contracts for the exact selected plus explicitly proposed new features. Preserve previous requirements/design bytes and inventory from parts. Retain completed task lines EXACTLY; preserve task IDs, mark changed pending CHANGED, obsolete DROPPED, added NEW. Append version rows to changed documents. Preserve unaffected/user cases; changes to user cases require separate explicit human consent. No writes, review/provider calls or approval.':
+          'C7/C7.5: return {status:draft,summary,features:[{directory,documents:[{path,content}],testCasesReason}],removed:[directory]}. Include complete triads/optional test contracts for the exact selected plus explicitly proposed new features; for an existing feature you may omit any document left byte-identical (requirements/design as accepted in parts, tasks.md and, with testCasesReason null, test-cases.json as before) and it is restored, so the 64 KiB limit counts only documents you send. Preserve previous requirements/design bytes and inventory from parts. Retain completed task lines EXACTLY; preserve task IDs, mark changed pending CHANGED, obsolete DROPPED, added NEW. Append version rows to changed documents. Preserve unaffected/user cases; changes to user cases require separate explicit human consent. No writes, review/provider calls or approval.':
           `Apply ${phase==='change_requirements'?'C5 requirements changes':'C6 design changes'}. Return {status:documents,summary,features:[{directory,documents:[{path,content}]}],removed:[directory]}, or question/blocked. ${phase==='change_requirements'?'Only requirements.md; include retained selected features and proposed additions/removals.':'Keep exact requirements and feature/removal inventory from parts, add design.md; preserve unaffected modules.'} Preserve version rows and append new version for changed documents. Do not change completed history, call reviewers/providers, write files or infer consent.`},signal,'planner');
       current();
       if(response.status==='question'){need(text(response.question),'prd_change_reply_invalid');state.messages.push({role:'user',text:answer},{role:'assistant',result:response});state.question=response.question;return this.status();}
       if(response.status==='blocked'){state.stage='blocked';state.analysis=response;return this.status();}
       if(phase==='change_tasks'){
-        const proposal=inspectPrdChangeProposal(state.before,response,state.selected,config,{rules:selfCheckRules()});
+        const proposal=inspectPrdChangeProposal(state.before,response,state.selected,config,{rules:selfCheckRules(),parts:state.parts});
         need(state.userCases===null||userCases(proposal.files).length>0,'prd_user_cases_missing');
         this.checkParts(proposal.features,proposal.removed,state.parts,true);
         state.proposal=proposal;state.round++;state.stage='change_check';

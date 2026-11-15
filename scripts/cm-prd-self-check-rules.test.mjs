@@ -67,7 +67,7 @@ test('the host binds both draft entries to the operation rule',()=>{
   assert.match(drive,/ctx\.state\.active\?\.selfCheckRules\?\?1:prdSessionVersions\(ctx\.state,ctx\.specs\)\.selfCheckRules/);
   assert.equal([...host.matchAll(/selfCheckRules:\(\)=>session\.selfCheckRules\(\)/g)].length,2);
   const change=fs.readFileSync(path.join(root,'runtime/js/cm-prd/change.mjs'),'utf8');
-  assert.match(change,/inspectPrdChangeProposal\(state\.before,response,state\.selected,config,\{rules:selfCheckRules\(\)\}\)/);
+  assert.match(change,/inspectPrdChangeProposal\(state\.before,response,state\.selected,config,\{rules:selfCheckRules\(\),parts:state\.parts\}\)/);
 });
 
 // Design 3.7: a session binds the task grammar and self-check rule when it is created;
