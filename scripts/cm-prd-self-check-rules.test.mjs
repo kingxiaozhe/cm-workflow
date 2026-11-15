@@ -238,3 +238,14 @@ test('a save records the session rule (4 or later) for the re-checks; an earlier
     assert.throws(()=>prdTaskScopeOptions(dir,'1.walk'),/prd_task_scope_record_invalid/);
   }
 });
+// Rule 6 is rule 3 plus the NOT_APPLICABLE exemption only: a `开发:` line stays prose, exactly as under rule 3
+// (Codex review a9babbb, minor: a rule-6 grammar-3 reading would otherwise pass every other test).
+test('rule 6 keeps 开发 lines as prose and otherwise reports exactly what rule 3 reports',()=>{
+  const docs=tasks=>({draftDigest:'e'.repeat(64),features:[{directory:'1.walk',name:'walk',documents:[
+    {path:'requirements.md',content:'## 功能需求\n1. [F-001] Walk\n- [ ] [AC-001] Walk it.'},{path:'design.md',content:'## 方案摘要\nx'},{path:'tasks.md',content:tasks}]}]});
+  const misplaced=['- [ ] T-001: Build','  - 范围: `src/a.js`','  - 开发: 会话','- [ ] T-002: Walk','  - 范围: `docs/qa.md`',''].join('\n');
+  const codes=rules=>checkPrdDraftMechanics(docs(misplaced),{rules}).findings.map(item=>item.code).sort();
+  assert.deepEqual(codes(6),codes(3));
+  assert.ok(!codes(6).includes('session_task_not_final'));
+  assert.ok(codes(5).includes('session_task_not_final'));
+});
