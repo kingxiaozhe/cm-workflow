@@ -120,7 +120,11 @@ test('version row changing an existing task acceptance is tier 2, other acceptan
   // notes never stay tier 0.
   for(const [note,tier] of [['Ｔ-００２ 验收改为只测成功路径',2],['T－002 验收改为只测成功路径',2],
     ['ＡＣ－００２ 验收改为可忽略',1],['AC-002：错误密码由阻断改成提示',1],['TC-001 的断言由 401 调整到 200',1],
-    ['验收改为只测成功路径',1],['T-001 文案微调',1]])
+    ['验收改为只测成功路径',1],['T-001 文案微调',1],
+    // Codex review r2: wording outside any weakening list, English, increases and split ids.
+    ['降低验收门槛：错误密码返回 200 也通过',1],['放宽断言：允许任意状态码',1],['只需成功登录',1],['仅测成功路径',1],
+    ['跳过错误密码测试',1],['Skip negative tests; accept any HTTP status',1],['加强验收：新增错误密码检查',1],
+    ['范围不变，跳过错误密码测试',1],['行为与验收不变',0],['检查与断言不放宽',0],['补记沟通，无其他改动',0]])
     fixture(({approve,inspect,edit})=>{
       approve();
       edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |',`| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | ${note} |`));

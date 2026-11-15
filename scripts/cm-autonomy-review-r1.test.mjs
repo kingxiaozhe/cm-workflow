@@ -42,6 +42,14 @@ test('M7 version metadata cannot override the acceptance contract of an older ta
   assert.deepEqual(contract(proposal.files),contract(before.files));
 });
 
+// Codex review (spec amendment tiers): a full-width task id cannot hide a version note
+// from the standing authorization; tiered amendment reads it the same way.
+for(const id of ['Ｔ-００２','T－002'])test(`M7 version metadata with a full-width id ${id} still needs explicit confirmation`,()=>{
+  const {before,proposal}=fixture();
+  proposal.files[taskFile]=tasks.replace('| 2026-10-01 | v1 | 初始任务 |',`| 2026-10-01 | v1 | 初始任务 |\n| 2026-11-01 | v2 | ${id} 验收改为只测成功路径 |`);
+  assert.match(standingProposalProblem(before,proposal),/T-002.*需明确确认/);
+});
+
 test('M8 additive design detail preserves standing approval without changing earlier acceptance',()=>{
   const {before,proposal}=fixture();proposal.files[designFile]+='\n记住我状态写入 storage.js。\n';
   assert.equal(standingProposalProblem(before,proposal),null);

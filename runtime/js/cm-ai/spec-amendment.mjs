@@ -12,7 +12,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {buildManifest,normalizeRuntimeMarkBytes} from '../../../scripts/cm-spec-manifest.mjs';
 import {taskLines,recordedTaskGrammar,LEGACY_TASK_GRAMMAR} from '../spec-task-line.mjs';
-import {taskNames,acceptanceLanguage,weakensLanguage} from '../acceptance-language.mjs';
+import {taskNames,acceptanceLanguage,weakensLanguage,versionNote,plainVersionNote} from '../acceptance-language.mjs';
 
 export const SNAPSHOT_FILE='.cm-specs-approved.json';
 export const LOCK_FILE='.cm-specs-approval.lock';
@@ -349,18 +349,16 @@ export function inspectSpecAmendment(specsDir){
     const appended=appendedVersionRows(resetLines(oldText),resetLines(newText));
     if(appended===null)tasksOnlyVersionRows=false;
     else for(const row of appended){
-      // Full-width letters, digits and dashes read as their ASCII forms (Ｔ-００２, T－002).
-      const note=row.normalize('NFKC');
+      const note=versionNote(row);
       const affected=taskNames(note).find(id=>old.tasks.has(id));
       // Same rule as the standing authorization: a version note that states or
       // weakens acceptance for an existing task is a requirement change (tier 2).
       if(affected&&(acceptanceLanguage(note)||weakensLanguage(note))){
         reasons.push(`version_row_changes_acceptance:${name}/${affected}`);continue;}
-      // Review (tier 1) whenever the target is named (an existing task, an acceptance
-      // criterion or a test case) or the note changes or weakens something it does
-      // not name. Only plain records such as "范围与验收不变" stay tier-0 metadata
-      // (dogfood: real version tables write that on most rows).
-      if(affected||/(?<![A-Za-z0-9])(?:AC|TC)-\d+/i.test(note)||weakensLanguage(note))tasksOnlyVersionRows=false;
+      // Everything else goes to review (tier 1) unless it is a plain record such as
+      // "范围与验收不变" (plainVersionNote): a named task, criterion or case, and any
+      // wording about tests, acceptance or a change, including wording no list foresees.
+      if(affected||!plainVersionNote(note))tasksOnlyVersionRows=false;
     }
     const declared=acceptanceIds(current.get(`${name}/requirements.md`)??'');
     for(const [id,task] of old.tasks){

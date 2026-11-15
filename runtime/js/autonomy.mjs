@@ -11,7 +11,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {taskLines,TASK_GRAMMAR,recordedTaskGrammar,specLines} from './spec-task-line.mjs';
 import {validateTestCases} from '../../scripts/validate-test-cases.mjs';
 import {declaredAcceptanceIds,DEPENDENCY} from './cm-ai/cm-ai-admission.mjs';
-import {taskNames,acceptanceLanguage,weakensLanguage} from './acceptance-language.mjs';
+import {taskNames,acceptanceLanguage,weakensLanguage,versionNote} from './acceptance-language.mjs';
 
 export const AUTONOMY_FILE='autonomy.json',AUTONOMY_OFF_FILE='autonomy.off.json',REOPEN_DIR='autonomy-reopens',AUTO_REOPEN_LIMIT=2;
 // Same directory as notify.json (notify.mjs notifyHome); kept here so notify.mjs can import this module.
@@ -161,8 +161,8 @@ function documentProblem(before,after,file,grammar){
       // A history row is metadata only in an explicitly named history section;
       // a table elsewhere may contain an obligation and is never ignored.
       if(row.history){
-        const affected=taskNames(row.text).find(id=>old.ids.has(id));
-        if(affected&&(acceptanceLanguage(row.text)||weakensLanguage(row.text)))
+        const note=versionNote(row.text),affected=taskNames(note).find(id=>old.ids.has(id));
+        if(affected&&(acceptanceLanguage(note)||weakensLanguage(note)))
           return `${file}（${affected}）的版本说明改变了既有验收，需明确确认规格变更`;
         continue;
       }
