@@ -11,7 +11,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {taskLines,TASK_GRAMMAR,recordedTaskGrammar,specLines} from './spec-task-line.mjs';
 import {validateTestCases} from '../../scripts/validate-test-cases.mjs';
 import {declaredAcceptanceIds,DEPENDENCY} from './cm-ai/cm-ai-admission.mjs';
-import {taskNames,acceptanceLanguage,weakensLanguage,versionNote} from './acceptance-language.mjs';
+import {taskNames,acceptanceLanguage,weakensLanguage,versionNote,plainVersionNote,testingLanguage} from './acceptance-language.mjs';
 
 export const AUTONOMY_FILE='autonomy.json',AUTONOMY_OFF_FILE='autonomy.off.json',REOPEN_DIR='autonomy-reopens',AUTO_REOPEN_LIMIT=2;
 // Same directory as notify.json (notify.mjs notifyHome); kept here so notify.mjs can import this module.
@@ -162,8 +162,12 @@ function documentProblem(before,after,file,grammar){
       // a table elsewhere may contain an obligation and is never ignored.
       if(row.history){
         const note=versionNote(row.text),affected=taskNames(note).find(id=>old.ids.has(id));
-        if(affected&&(acceptanceLanguage(note)||weakensLanguage(note)))
+        if(affected&&(acceptanceLanguage(note)||weakensLanguage(note)||testingLanguage(note)))
           return `${file}（${affected}）的版本说明改变了既有验收，需明确确认规格变更`;
+        // Without a named task, a note about tests or acceptance still cannot be shown
+        // not to weaken an obligation, unless it only states that nothing changed.
+        if(!plainVersionNote(note)&&testingLanguage(note))
+          return `${file} 的版本说明涉及测试或验收，无法证明验收未减弱，需明确确认规格变更`;
         continue;
       }
       if(!tasks&&!row.fenced&&!acceptanceLanguage(row.text)&&!weakensLanguage(row.text))continue;

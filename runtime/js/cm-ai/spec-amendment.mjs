@@ -355,9 +355,8 @@ export function inspectSpecAmendment(specsDir){
       // weakens acceptance for an existing task is a requirement change (tier 2).
       if(affected&&(acceptanceLanguage(note)||weakensLanguage(note))){
         reasons.push(`version_row_changes_acceptance:${name}/${affected}`);continue;}
-      // Everything else goes to review (tier 1) unless it is a plain record such as
-      // "范围与验收不变" (plainVersionNote): a named task, criterion or case, and any
-      // wording about tests, acceptance or a change, including wording no list foresees.
+      // Only a note made entirely of "unchanged" statements stays tier 0
+      // (plainVersionNote); every other note goes to review (tier 1).
       if(affected||!plainVersionNote(note))tasksOnlyVersionRows=false;
     }
     const declared=acceptanceIds(current.get(`${name}/requirements.md`)??'');

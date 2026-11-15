@@ -84,7 +84,7 @@ test('unchanged specs report nothing to re-bind',()=>fixture(({approve,inspect})
 
 test('tier 0: appended version row re-binds without review or a new 开始',()=>fixture(({approve,inspect,apply,admit,edit})=>{
   approve();
-  edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 记录口头同意 |'));
+  edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 范围与验收不变 |'));
   assert.equal(admit().reason,'spec_drift');
   assert.equal(inspect().tier,0);
   const applied=apply([]);assert.equal(applied.status,0,JSON.stringify(applied.json));
@@ -96,7 +96,7 @@ test('tier 0 re-bind keeps the approved task grammar',()=>fixture(({specs,approv
   approve();
   const grammar=()=>JSON.parse(fs.readFileSync(path.join(specs,'.cm-specs-status'),'utf8')).taskGrammar;
   assert.equal(grammar(),2);
-  edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 记录口头同意 |'));
+  edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 范围与验收不变 |'));
   assert.equal(inspect().tier,0);
   assert.equal(apply([]).status,0);
   assert.equal(grammar(),2);
@@ -124,17 +124,27 @@ test('version row changing an existing task acceptance is tier 2, other acceptan
     // Codex review r2: wording outside any weakening list, English, increases and split ids.
     ['降低验收门槛：错误密码返回 200 也通过',1],['放宽断言：允许任意状态码',1],['只需成功登录',1],['仅测成功路径',1],
     ['跳过错误密码测试',1],['Skip negative tests; accept any HTTP status',1],['加强验收：新增错误密码检查',1],
-    ['范围不变，跳过错误密码测试',1],['行为与验收不变',0],['检查与断言不放宽',0],['补记沟通，无其他改动',0]])
+    ['范围不变，跳过错误密码测试',1],['行为与验收不变',0],['检查与断言不放宽',0],['无其他改动',0],
+    // Codex review r3: only a note made entirely of unchanged statements stays tier 0.
+    ['补记沟通，无其他改动',1],['范围与验收不变，但失败场景免跑',1],['验收不变式：错误密码返回 200 也通过',1],
+    ['并非范围与验收不变，失败场景免跑',1],['错误密码由 401 变成 200',1],['Omit negative scenarios; HTTP 200 is sufficient',1],
+    ['范围与验收不变 | 跳过错误密码测试',1]])
     fixture(({approve,inspect,edit})=>{
       approve();
       edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |',`| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | ${note} |`));
       assert.equal(inspect().tier,tier,note);
     });
-  // Dogfood (aihot specs7 copy): "范围与验收不变" is how real version rows record an
-  // unchanged scope; without a task, AC or test-case id it stays tier 0.
+  // Substance written into the date or version cell is not hidden by a plain description.
   fixture(({approve,inspect,edit})=>{
     approve();
-    edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 补记沟通，范围与验收不变 |'));
+    edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 跳过错误密码测试 | v2 | 范围与验收不变 |'));
+    assert.equal(inspect().tier,1);
+  });
+  // Dogfood (aihot specs7 copy): "范围与验收不变" is how real version rows record an
+  // unchanged scope; a note made only of such statements stays tier 0.
+  fixture(({approve,inspect,edit})=>{
+    approve();
+    edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 范围与验收不变 |'));
     assert.equal(inspect().tier,0);
   });
 });

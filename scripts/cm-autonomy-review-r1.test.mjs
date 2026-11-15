@@ -50,6 +50,17 @@ for(const id of ['Ｔ-００２','T－002'])test(`M7 version metadata with a ful
   assert.match(standingProposalProblem(before,proposal),/T-002.*需明确确认/);
 });
 
+// Codex review r3: without a named task, a version note about tests or acceptance still
+// stops the standing authorization unless it only states that nothing changed.
+for(const [note,stops] of [['验收改为只测成功路径',true],['T-002 跳过错误密码测试',true],['Omit negative scenarios; HTTP 200 is sufficient',true],
+  ['范围与验收不变，但失败场景免跑',true],['范围与验收不变',false],['expanded scope',false]])
+  test(`M7 standing authorization on version note: ${note}`,()=>{
+    const {before,proposal}=fixture();
+    proposal.files[taskFile]=tasks.replace('| 2026-10-01 | v1 | 初始任务 |',`| 2026-10-01 | v1 | 初始任务 |\n| 2026-11-01 | v2 | ${note} |`);
+    const problem=standingProposalProblem(before,proposal);
+    if(stops)assert.match(problem??'',/需明确确认/);else assert.equal(problem,null);
+  });
+
 test('M8 additive design detail preserves standing approval without changing earlier acceptance',()=>{
   const {before,proposal}=fixture();proposal.files[designFile]+='\n记住我状态写入 storage.js。\n';
   assert.equal(standingProposalProblem(before,proposal),null);
