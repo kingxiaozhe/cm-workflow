@@ -128,7 +128,9 @@ test('version row changing an existing task acceptance is tier 2, other acceptan
     // Codex review r3: only a note made entirely of unchanged statements stays tier 0.
     ['补记沟通，无其他改动',1],['范围与验收不变，但失败场景免跑',1],['验收不变式：错误密码返回 200 也通过',1],
     ['并非范围与验收不变，失败场景免跑',1],['错误密码由 401 变成 200',1],['Omit negative scenarios; HTTP 200 is sufficient',1],
-    ['范围与验收不变 | 跳过错误密码测试',1]])
+    ['范围与验收不变 | 跳过错误密码测试',1],
+    // Dogfood (aihot copy): a named existing task with test wording is a requirement change, as in the standing authorization.
+    ['T-002 跳过英文断言',2]])
     fixture(({approve,inspect,edit})=>{
       approve();
       edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |',`| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | ${note} |`));

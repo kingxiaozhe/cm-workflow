@@ -12,7 +12,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {buildManifest,normalizeRuntimeMarkBytes} from '../../../scripts/cm-spec-manifest.mjs';
 import {taskLines,recordedTaskGrammar,LEGACY_TASK_GRAMMAR} from '../spec-task-line.mjs';
-import {taskNames,acceptanceLanguage,weakensLanguage,versionNote,plainVersionNote} from '../acceptance-language.mjs';
+import {taskNames,acceptanceLanguage,weakensLanguage,versionNote,plainVersionNote,testingLanguage} from '../acceptance-language.mjs';
 
 export const SNAPSHOT_FILE='.cm-specs-approved.json';
 export const LOCK_FILE='.cm-specs-approval.lock';
@@ -353,7 +353,7 @@ export function inspectSpecAmendment(specsDir){
       const affected=taskNames(note).find(id=>old.tasks.has(id));
       // Same rule as the standing authorization: a version note that states or
       // weakens acceptance for an existing task is a requirement change (tier 2).
-      if(affected&&(acceptanceLanguage(note)||weakensLanguage(note))){
+      if(affected&&(acceptanceLanguage(note)||weakensLanguage(note)||testingLanguage(note))){
         reasons.push(`version_row_changes_acceptance:${name}/${affected}`);continue;}
       // Only a note made entirely of "unchanged" statements stays tier 0
       // (plainVersionNote); every other note goes to review (tier 1).
