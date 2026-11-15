@@ -72,6 +72,7 @@ test('existing observation identity resumes on new evidence and exits again with
     assert.equal(first.observationRunEnded,true);assert.equal(first.completionEligible,false);
     assert.match(path.basename(first.dossier.path),/^\d{8}-obs\.original-identity\.md$/);
     const archived=fs.readFileSync(first.dossier.path);
+    assert.equal(fs.readFileSync(path.join(cwd,'visits'),'utf8'),'1');
     const exitEvent=fs.readFileSync(path.join(specsRoot,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse).find(row=>row.event==='run_done');
     fs.writeFileSync(path.join(specsRoot,'failure.txt'),'BUSY: new observed failure, synthetic fixture');
     owner=openFixExecution({...options,create:false});
@@ -80,6 +81,7 @@ test('existing observation identity resumes on new evidence and exits again with
     assert.equal(prepared.observationResume.eventId,exitEvent.event_id);
     assert.equal(prepared.observationResume.dossier.sha256,exitEvent.dossier_sha256);
     assert.equal(path.posix.basename(prepared.observationResume.dossier.path),path.basename(first.dossier.path));
+    assert.equal(fs.readFileSync(path.join(cwd,'visits'),'utf8'),'1');
     owner.close();owner=openFixExecution({...options,create:false},{prepare:async()=>learning});
     assert.equal((await owner.advance({authorized:true})).stage,'observation_not_reproduced');
     const draft=owner.publishDossier(),continued=fs.readFileSync(draft.dossier.path);
@@ -92,6 +94,9 @@ test('existing observation identity resumes on new evidence and exits again with
     const exits=rows.filter(row=>row.event==='run_done');
     assert.equal(exits.length,2);assert.equal(exits[1].observation_exit_event_id,exitEvent.event_id);
     assert.equal(exits[1].dossier_sha256,draft.dossier.sha256);
+    assert.equal(exits[1].phase,'observation');assert.equal(exits[1].result,'observing');
+    // Resume re-runs the reproduction exactly once; neither exit replays it.
+    assert.equal(fs.readFileSync(path.join(cwd,'visits'),'utf8'),'11');
     assert(!rows.some(row=>row.event==='task_done'));assert(!fs.existsSync(path.join(specsRoot,'METRICS.md')));
     assert.deepEqual(fs.readdirSync(path.dirname(first.dossier.path)).filter(name=>name.endsWith('.md')),[path.basename(first.dossier.path)]);
   }finally{owner.close();fs.rmSync(root,{recursive:true,force:true});}
