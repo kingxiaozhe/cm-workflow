@@ -339,6 +339,23 @@ test('stale lock reclaim and release never remove another live owner\'s lock',()
     for(const name of fs.readdirSync(specs).filter(item=>item.endsWith('.tmp')))fs.unlinkSync(path.join(specs,name));
     withApprovalLock(specs,()=>{ran=true;});assert.equal(ran,true);assert.equal(fs.existsSync(lock),false);
   }
+  // Codex r6: the lock is held by a live owner, so linking fails with EEXIST, and then the
+  // temp-file cleanup fails too. The other owner's lock must stay exactly as it was.
+  {
+    fs.writeFileSync(lock,live);
+    const unlink=fs.unlinkSync;let failed=false;ran=false;
+    fs.unlinkSync=function(file,...rest){
+      if(!failed&&String(file).startsWith(`${lock}.`)&&String(file).endsWith('.tmp')&&!String(file).startsWith(`${guard}.`)){
+        failed=true;throw Object.assign(new Error('EACCES'),{code:'EACCES'});}
+      return unlink.call(this,file,...rest);
+    };
+    try{assert.throws(()=>withApprovalLock(specs,()=>{ran=true;}),{code:'EACCES'});}
+    finally{fs.unlinkSync=unlink;}
+    assert.equal(failed,true);assert.equal(ran,false);
+    assert.equal(fs.readFileSync(lock,'utf8'),live);assert.equal(fs.existsSync(guard),false);
+    for(const name of fs.readdirSync(specs).filter(item=>item.endsWith('.tmp')))fs.unlinkSync(path.join(specs,name));
+    fs.unlinkSync(lock);
+  }
   // A lock is visible only with its holder's pid, at its publication: no temp files are left behind.
   assert.equal(fs.existsSync(lock),false);ran=false;
   const link=fs.linkSync;let published=null;

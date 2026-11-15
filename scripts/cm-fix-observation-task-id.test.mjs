@@ -53,6 +53,50 @@ test(`existing observation identity closes without reproduction replay or comple
   }finally{owner.close();fs.rmSync(root,{recursive:true,force:true});}
 });
 
+// A recorded T-OBS observation keeps its identity and archive across new evidence:
+// resume reads the obs.<slug> archive, the continued dossier appends to it, and a
+// second observation exit is recorded without completion (review follow-up).
+test('existing observation identity resumes on new evidence and exits again without completion',async()=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-obs-resume-')));
+  const cwd=path.join(root,'code'),specsRoot=path.join(root,'specs');fs.mkdirSync(cwd);fs.mkdirSync(specsRoot);
+  const identity={repositoryId:'fixture',runId:'same-run',taskId:'T-OBS-original-identity',attempt:1};
+  const configuration={hostContextId:'fixture-host',defect:'Busy; root unknown',reproduction:{cwd,
+    command:[process.execPath,'-e',"require('node:fs').appendFileSync('visits','1');process.exit(0)"],
+    expectedFailure:{exitCode:1,outputIncludes:'BUSY'},timeoutMs:2000}};
+  const options={specsRoot,identity,configuration,create:true};
+  let owner=openFixExecution(options,{prepare:async()=>learning});
+  try{
+    startFixRun({specsRoot,identity,configuration});
+    assert.equal((await owner.advance({authorized:true})).stage,'observation');
+    const first=owner.finish({authorized:true});
+    assert.equal(first.observationRunEnded,true);assert.equal(first.completionEligible,false);
+    assert.match(path.basename(first.dossier.path),/^\d{8}-obs\.original-identity\.md$/);
+    const archived=fs.readFileSync(first.dossier.path);
+    const exitEvent=fs.readFileSync(path.join(specsRoot,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse).find(row=>row.event==='run_done');
+    fs.writeFileSync(path.join(specsRoot,'failure.txt'),'BUSY: new observed failure, synthetic fixture');
+    owner=openFixExecution({...options,create:false});
+    const prepared=owner.resume({authorized:true,evidenceFiles:['failure.txt']});
+    assert.equal(prepared.stage,'observation_resume_prepared');assert.deepEqual(prepared.identity,identity);
+    assert.equal(prepared.observationResume.eventId,exitEvent.event_id);
+    assert.equal(prepared.observationResume.dossier.sha256,exitEvent.dossier_sha256);
+    assert.equal(path.posix.basename(prepared.observationResume.dossier.path),path.basename(first.dossier.path));
+    owner.close();owner=openFixExecution({...options,create:false},{prepare:async()=>learning});
+    assert.equal((await owner.advance({authorized:true})).stage,'observation_not_reproduced');
+    const draft=owner.publishDossier(),continued=fs.readFileSync(draft.dossier.path);
+    assert.equal(draft.dossier.path,first.dossier.path);
+    assert.deepEqual(continued.subarray(0,archived.length),archived);
+    assert.match(continued.toString(),/恢复观测（仍未完成）/);
+    const again=owner.finish({authorized:true});
+    assert.equal(again.observationRunEnded,true);assert.equal(again.completionEligible,false);assert.deepEqual(again.identity,identity);
+    const rows=fs.readFileSync(path.join(specsRoot,'运行日志.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    const exits=rows.filter(row=>row.event==='run_done');
+    assert.equal(exits.length,2);assert.equal(exits[1].observation_exit_event_id,exitEvent.event_id);
+    assert.equal(exits[1].dossier_sha256,draft.dossier.sha256);
+    assert(!rows.some(row=>row.event==='task_done'));assert(!fs.existsSync(path.join(specsRoot,'METRICS.md')));
+    assert.deepEqual(fs.readdirSync(path.dirname(first.dossier.path)).filter(name=>name.endsWith('.md')),[path.basename(first.dossier.path)]);
+  }finally{owner.close();fs.rmSync(root,{recursive:true,force:true});}
+});
+
 for(const taskId of ['T-OBS-../escape','T-OBS-UPPER','T-OTHER-safe','T-OBS-safe/escape','T-OBS-a--b','T-OBS-','T-OBS-foo.md','T-OBS-café','T-OBS-foo\\escape'])
 test(`observation archive rejects malformed or unsupported id ${taskId}`,()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-obs-invalid-')));
