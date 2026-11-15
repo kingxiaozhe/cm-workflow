@@ -127,47 +127,51 @@ function processAlive(pid){
   try{process.kill(pid,0);return true;}catch(error){return error.code==='EPERM';}
 }
 
+// Creates `target` holding `bytes` only if it does not exist. The bytes are
+// complete before the name appears (temp file + link), so a lock is never seen
+// empty or without its owner's pid, even while its creator is paused.
+function createComplete(target,bytes){
+  const temp=`${target}.${randomUUID()}.tmp`;
+  fs.writeFileSync(temp,bytes,{mode:0o600,flag:'wx'});
+  try{fs.linkSync(temp,target);return true;}
+  catch(error){if(error.code==='EEXIST')return false;throw error;}
+  finally{try{fs.unlinkSync(temp);}catch{}}
+}
+
 // Serializes human approval and amendment re-binding in one specs directory.
 // cm-prd does not take this lock; apply also re-checks status bytes before rename.
 export function withApprovalLock(specsDir,run){
   const target=path.join(specsDir,LOCK_FILE),guard=`${target}.reclaim`;
   // A nonce makes every acquisition's bytes unique, so a releaser can tell its
   // own lock from any other one at the same path.
-  const mine=Buffer.from(JSON.stringify({pid:process.pid,nonce:randomUUID(),at:new Date().toISOString()}));
+  const owner=()=>Buffer.from(JSON.stringify({pid:process.pid,nonce:randomUUID(),at:new Date().toISOString()}));
+  const mine=owner();
   for(let attempt=0;attempt<2;attempt++){
-    let fd;
-    try{fd=fs.openSync(target,'wx',0o600);}
-    catch(error){
-      if(error.code!=='EEXIST'||attempt>0)throw error.code==='EEXIST'?Object.assign(new Error('spec_approval_busy'),{code:'spec_approval_busy'}):error;
-      // Only the holder of the reclaim guard may delete another process's lock.
-      // A live owner never has its lock deleted (it is not stale), and a dead
-      // owner cannot release, so the bytes judged stale under the guard are the
-      // bytes unlinked: the lock path is never emptied under a live holder.
-      // A guard left by a crash is never reclaimed automatically.
-      let guardFd;
-      try{guardFd=fs.openSync(guard,'wx',0o600);}
-      catch(guardError){if(guardError.code==='EEXIST')fail('spec_approval_busy');throw guardError;}
+    if(!createComplete(target,mine)){
+      if(attempt>0)fail('spec_approval_busy');
+      // Only the holder of the reclaim guard may delete another process's lock,
+      // and only when its recorded pid is gone. A live owner is never judged
+      // stale, a dead owner cannot release, and every lock carries its pid from
+      // the moment it exists, so the lock path is never emptied under a live
+      // holder. A lock without a readable pid, or a guard left by a crash, is
+      // never reclaimed automatically (see N1-init「执行中补正分级」).
+      if(!createComplete(guard,owner()))fail('spec_approval_busy');
       try{
-        fs.closeSync(guardFd);guardFd=undefined;
-        let seen,age=0;
-        try{seen=fs.readFileSync(target);age=Date.now()-fs.statSync(target).mtimeMs;}
+        let seen;
+        try{seen=fs.readFileSync(target);}
         catch(readError){if(readError.code==='ENOENT')continue;throw readError;}
-        let owner=null;
-        try{owner=JSON.parse(seen.toString('utf8'));}catch{}
-        const stale=Number.isInteger(owner?.pid)&&owner.pid>0?!processAlive(owner.pid):age>10000;
-        if(!stale)fail('spec_approval_busy');
+        let holder=null;
+        try{holder=JSON.parse(seen.toString('utf8'));}catch{}
+        if(!(Number.isInteger(holder?.pid)&&holder.pid>0&&!processAlive(holder.pid)))fail('spec_approval_busy');
         fs.unlinkSync(target);
       }finally{
-        if(guardFd!==undefined)fs.closeSync(guardFd);
         try{fs.unlinkSync(guard);}catch{}
       }
       continue;
     }
     try{
-      fs.writeFileSync(fd,mine);fs.closeSync(fd);fd=undefined;
       return run();
     }finally{
-      if(fd!==undefined)fs.closeSync(fd);
       // Release only this acquisition's lock, never one that replaced it.
       try{if(fs.readFileSync(target).equals(mine))fs.unlinkSync(target);}catch{}
     }

@@ -299,6 +299,18 @@ test('stale lock reclaim and release never remove another live owner\'s lock',()
   // Release: a lock replaced while held is left in place.
   withApprovalLock(specs,()=>{fs.writeFileSync(lock,live);});
   assert.equal(fs.readFileSync(lock,'utf8'),live);
+  // Codex r3: a lock without a readable pid (e.g. a creator paused before writing it)
+  // is never reclaimed by age, however old.
+  for(const bytes of ['','not json',JSON.stringify({at:'2020-01-01T00:00:00.000Z'})]){
+    fs.writeFileSync(lock,bytes);const old=new Date(Date.now()-3600_000);fs.utimesSync(lock,old,old);
+    assert.throws(()=>withApprovalLock(specs,()=>{ran=true;}),{code:'spec_approval_busy'});
+    assert.equal(fs.readFileSync(lock,'utf8'),bytes);
+  }
+  // A lock is visible only with its holder's pid; no temp files are left behind.
+  fs.unlinkSync(lock);ran=false;
+  withApprovalLock(specs,()=>{ran=true;assert.equal(JSON.parse(fs.readFileSync(lock,'utf8')).pid,process.pid);});
+  assert.equal(ran,true);
+  assert.deepEqual(fs.readdirSync(specs).filter(name=>name.startsWith('.cm-specs-approval.lock')),[]);
 }));
 
 // Review r1 #1: the packet holds the exact bytes the review digest covers.
