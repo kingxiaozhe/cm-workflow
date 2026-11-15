@@ -70,6 +70,15 @@ for(const [note,stops] of [['跳过错误密码测试',true],['范围与验收�
     if(stops)assert.match(problem??'',/需明确确认/);else assert.equal(problem,null);
   });
 
+// Codex review r5: an approved design note about tests does not turn a plain design edit into a stop.
+test('M7 approved design version notes do not block an ordinary design edit',()=>{
+  const {before,proposal}=fixture();
+  const versions='\n## 设计版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-10-01 | v1 | 跳过错误密码测试 |\n';
+  before.files[designFile]+=versions;
+  proposal.files[designFile]=before.files[designFile].replace('登录表单调用 API。','登录表单调用 API，失败时显示提示。');
+  assert.equal(standingProposalProblem(before,proposal),null);
+});
+
 test('M8 additive design detail preserves standing approval without changing earlier acceptance',()=>{
   const {before,proposal}=fixture();proposal.files[designFile]+='\n记住我状态写入 storage.js。\n';
   assert.equal(standingProposalProblem(before,proposal),null);
