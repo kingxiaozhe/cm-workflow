@@ -283,10 +283,14 @@ export function checkLaunchInputs(plan,planFile,definition){
   const workflow=value('--workflow-config')===undefined?null:read(value('--workflow-config'));
   const control=typeof plan.controlConfig==='string'?read(plan.controlConfig):null;
   const qaEnabled=!control||control.qa!=='disabled';
-  if(workflow?.qa&&qaEnabled&&typeof definition.specsDir==='string'&&typeof definition.feature==='string'){
+  // The host always validates the declaration: without interactive QA there are no
+  // carriers, and a stray --browser-qa is refused just the same.
+  if(typeof definition.specsDir==='string'&&typeof definition.feature==='string'){
     let carriers=[];
-    try{carriers=featureHasBrowserCases(definition.specsDir,definition.feature,definition.codeProject)?[workflow.qa.environment?.carrier??'browser']:[];}
-    catch{carriers=[];}
+    if(workflow?.qa&&qaEnabled){
+      try{carriers=featureHasBrowserCases(definition.specsDir,definition.feature,definition.codeProject)?[workflow.qa.environment?.carrier??'browser']:[];}
+      catch{carriers=[];}
+    }
     try{readBrowserCapability(value('--browser-qa'),carriers);}
     catch(error){findings.push({level:'error',code:'browser_qa_declaration',
       message:`宿主会拒绝启动（${error.code}）：${error.reason??''} 在 PLAN.permissions 里加 --browser-qa available（本会话能跑 ${carriers.join('、')||'交互式'} QA 时）`});}
@@ -308,6 +312,11 @@ export function checkLaunchInputs(plan,planFile,definition){
       if(has('develop.json')&&has('develop-a1.json'))findings.push({level:'error',code:'answers_conflict',
         message:`develop.json 与 develop-a1.json 不能同时存在（${root}）`});
       else if(!has('develop.json')&&!has('develop-a1.json'))need.push('develop.json（或 develop-a1.json）');
+    }else if(has('develop.json')&&has('develop-a1.json')){
+      // A resume reads them only while the run is still on attempt 1; the check cannot
+      // know the attempt, so it warns instead of refusing a later-attempt resume.
+      findings.push({level:'warn',code:'answers_conflict',
+        message:`develop.json 与 develop-a1.json 同时存在（${root}）：原运行仍在第 1 轮时驾驶员会拒绝，删掉其中一份`});
     }
     const missing=need.filter(name=>name.includes('（')||!has(name));
     if(missing.length)findings.push({level:'error',code:'answers_missing',files:missing,

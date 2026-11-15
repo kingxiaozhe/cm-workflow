@@ -530,4 +530,15 @@ test('answers the advance will ask and an invalid interactive QA declaration are
   // No interactive cases in the feature: the host refuses a declaration it cannot use.
   assert.deepEqual(checkLaunchInputs(plan(['--browser-qa', 'available']), planFile, definition).map(item => item.code),
     ['browser_qa_declaration']);
+  // Codex review: QA disabled by the policy, or no workflow at all: the host still refuses a stray declaration.
+  fs.writeFileSync(path.join(dir, 'POLICY.json'), JSON.stringify({version: 2, qa: 'disabled'}));
+  assert.deepEqual(checkLaunchInputs(plan(['--browser-qa', 'available']), planFile, definition).map(item => item.code),
+    ['browser_qa_declaration']);
+  assert.deepEqual(checkLaunchInputs({config: 'RUN.json', mode: 'create', permissions: ['--browser-qa', 'available']}, planFile, definition)
+    .map(item => item.code), ['browser_qa_declaration']);
+  assert.deepEqual(checkLaunchInputs({config: 'RUN.json', mode: 'create', permissions: []}, planFile, definition), []);
+  // Codex review: a resume reads the first-round answer only while still on attempt 1, so both files warn.
+  fs.writeFileSync(path.join(answers, 'develop-a1.json'), '{}');
+  const resumed = checkLaunchInputs({...plan([]), mode: 'resume'}, planFile, definition).filter(item => item.code === 'answers_conflict');
+  assert.deepEqual(resumed.map(item => item.level), ['warn']);
 });

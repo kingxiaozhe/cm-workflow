@@ -52,11 +52,11 @@ test('large accepted develop checkpoint archives package and business frame in o
 });
 
 test('inline develop followed by a failed review crossing the future reserve stays inline within the original record limit',()=>{
-  const material=pkg(644000+D),developId='develop-inline';
+  const material=pkg(644000),developId='develop-inline';
   let records=append([],{version:3,protocol:'cm-task-runner',type:'init',config:{identity}});
   records=intent(records,developId);
   const develop=frame(material,developId),developReserve=285101;
-  develop.padding='';develop.padding='d'.repeat(747564+D-size(payload(developId,develop)));
+  develop.padding='';develop.padding='d'.repeat(747564-size(payload(developId,develop)));
   const initial=checkpointStoragePlan({records,effectId:developId,checkpoint:develop,identity,enabled:true,reserve:developReserve});
   assert.deepEqual(initial.payloadFields,{});
   records=append(records,payload(developId,initial.checkpoint,initial.payloadFields));
@@ -177,16 +177,45 @@ test('r2 failed develop may retain the r1 package and exact r1 archive without s
 
 test('a package above the original record limit cannot be admitted by material storage and no reserve is changed',()=>{
   const f=fixture(),oversize=frame(pkg(JOURNAL_PAYLOAD_LIMIT));
-  const measured={inlineBytes:815380+D,packageBytes:789175+D,reserve:272125};
-  assert.deepEqual(checkpointPackageBudget({...measured,enabled:false}),{fits:false,material:false,bytes:815380+D,budget:776451+D});
+  const measured={inlineBytes:815380,packageBytes:789175,reserve:272125};
+  // Without an archive the package keeps the original 1 MiB inline budget (whole-state capacity).
+  assert.deepEqual(checkpointPackageBudget({...measured,enabled:false}),{fits:false,material:false,bytes:815380,budget:776451});
   assert.deepEqual(checkpointPackageBudget({...measured,enabled:true}),{fits:true,material:true,bytes:26717,budget:776451+D});
   assert.deepEqual(checkpointPackageBudget({...measured,enabled:true,referenced:true}),{fits:true,material:false,bytes:26717,budget:776451+D});
   assert.equal(checkpointPackageBudget({...measured,inlineBytes:JOURNAL_PAYLOAD_LIMIT-1023,enabled:true}).fits,false);
-  assert.equal(checkpointPackageBudget({...measured,packageBytes:16,enabled:true}).fits,false,'future compact frame must leave original reserve');
+  assert.equal(checkpointPackageBudget({...measured,inlineBytes:JOURNAL_PAYLOAD_LIMIT-272125+1000,packageBytes:16,enabled:true}).fits,false,'future compact frame must leave original reserve');
   assert.throws(()=>checkpointStoragePlan({records:f.records,effectId:'develop-1',checkpoint:oversize,identity,enabled:true,reserve:272125}),invalid);
   for(const reserve of [-1,JOURNAL_PAYLOAD_LIMIT,1.5])assert.throws(()=>checkpointStoragePlan({records:f.records,effectId:'develop-1',checkpoint:f.checkpoint,identity,enabled:true,reserve}),invalid);
 });
 
+
+// Codex review (journal limit 4 MiB): a package between the original 1 MiB budget and
+// the raised record limit must be archived once, or two review rounds and completion
+// repeat it past the 16 MiB whole state after the task commit.
+test('a 3.6 MB package archives once and two review rounds plus completion stay within the whole state',()=>{
+  const STATE=16*1024*1024,reserve=272125;
+  const material1=pkg(3600000);
+  assert.equal(checkpointPackageBudget({inlineBytes:size(payload('develop-1',frame(material1))),packageBytes:size(material1),reserve,enabled:false}).fits,false,
+    'without an archive the package is refused before develop is accepted');
+  let records=append([],{version:3,protocol:'cm-task-runner',type:'init',config:{identity}});
+  const step=(effectId,kind,state,material,who)=>{
+    records=intent(records,effectId,kind,who);
+    const checkpoint=frame(material,effectId,kind,state,who);
+    const plan=checkpointStoragePlan({records,effectId,checkpoint,identity:who,enabled:true,reserve});
+    const stored=payload(effectId,plan.checkpoint,plan.payloadFields);
+    assert(size(stored)<=JOURNAL_PAYLOAD_LIMIT);
+    records=append(records,stored);
+    assert(size(records)<STATE,`${effectId}: whole state ${size(records)} bytes`);
+    return plan.payloadFields;
+  };
+  const second={...identity,attempt:2},material2=pkg(3600001,second);
+  assert.deepEqual(step('develop-1','develop','awaiting_review',material1,identity),{packageMaterial:true});
+  assert(Object.hasOwn(step('review-1','review','changes_requested',material1,identity),'packageRef'));
+  assert.deepEqual(step('develop-2','develop','awaiting_review',material2,second),{packageMaterial:true});
+  assert(Object.hasOwn(step('review-2','review','approved',material2,second),'packageRef'));
+  assert(Object.hasOwn(step('complete-2','complete','fixture_completed',material2,second),'packageRef'));
+  assert(size(records)<2*size(material1)+1024*1024,'each package is stored once');
+});
 
 test('eligibility is limited to durable v3 single-project conversation v2 without bootstrap or parallel/batch metadata',()=>{
   const config={root:'/fixture',identity,controlPolicy:{version:2,development:'conversation',bootstrap:'disabled',qa:'disabled',qaFix:'disabled'}};

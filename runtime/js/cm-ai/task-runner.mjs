@@ -1627,15 +1627,17 @@ export function createTaskRunner(options) {
         const size=value=>Buffer.byteLength(JSON.stringify(value??null));
         const reserve=developCheckpointReserve({examinedPathsBytes:size(reviewPaths(reviewPackage)),
           receiptsBytes:size(receipts),callsBytes:size(calls),writebackBytes:size(learningResult?.writeback)});
-        const budget=JOURNAL_PAYLOAD_LIMIT-reserve;
         const enabled=packageMaterialEnabled();
-        const capacity=enabled?checkpointPackageBudget({inlineBytes:bytes,packageBytes:size(reviewPackage),reserve,enabled,
-          referenced:packageMaterialReference(journal,reviewPackage,{...config.identity,attempt})!==null}):{fits:bytes<=budget};
+        // One budget for both: without a material archive the package repeats in
+        // every later checkpoint, so it keeps the original inline budget.
+        const capacity=checkpointPackageBudget({inlineBytes:bytes,packageBytes:size(reviewPackage),reserve,enabled,
+          referenced:enabled&&packageMaterialReference(journal,reviewPackage,{...config.identity,attempt})!==null});
+        const budget=capacity.budget;
         if(!capacity.fits){
           const changed=reviewPackage.changes.filter(change=>change.after).map(change=>change.after);
           reviewPackage=packageBefore;
           halt('blocked','develop_package_too_large',boundedReason(`develop_package_too_large: the review checkpoint would be ${bytes} bytes, `
-            +`above ${budget} (journal record limit ${JOURNAL_PAYLOAD_LIMIT} minus ${reserve} kept for the bounded review `
+            +`above ${budget} (${budget+reserve===JOURNAL_PAYLOAD_LIMIT?'journal record limit':'inline package limit for a package without a material archive'} ${budget+reserve} minus ${reserve} kept for the bounded review `
             +'and completion records); largest changed files: ',largestFiles(changed),
             '; shrink them or move them out of scope, then resume to redo this attempt'));
           result=privateStatus();cache.set(v.id,{effect:v,digest:digest(v),result});

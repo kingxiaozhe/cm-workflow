@@ -5,6 +5,8 @@ import {digest,json,shape,need,hex,id,validIdentity,freeze,JOURNAL_PAYLOAD_LIMIT
 
 const INVALID='checkpoint_package_material_invalid',STATE_LIMIT=16*1024*1024;
 const MARKER_ALLOWANCE=1024,REFERENCE_ALLOWANCE=512;
+// The record budget before it was raised to 4 MiB; see checkpointPackageBudget.
+const INLINE_PACKAGE_LIMIT=1024*1024;
 const must=condition=>need(condition,INVALID);
 const guarded=run=>{try{return run();}catch(error){if(error?.code===INVALID)throw error;throw Object.assign(new Error(INVALID),{code:INVALID});}};
 const size=value=>Buffer.byteLength(JSON.stringify(value));
@@ -129,7 +131,14 @@ export function checkpointPackageBudget({inlineBytes,packageBytes,reserve,enable
   must([inlineBytes,packageBytes,reserve].every(v=>Number.isSafeInteger(v)&&v>=0)
     &&packageBytes<=inlineBytes&&reserve<JOURNAL_PAYLOAD_LIMIT&&typeof enabled==='boolean'&&typeof referenced==='boolean');
   const budget=JOURNAL_PAYLOAD_LIMIT-reserve;
-  if(!enabled||!referenced&&inlineBytes<=budget)return freeze({fits:inlineBytes<=budget,material:false,bytes:inlineBytes,budget});
+  // A package repeats in every later checkpoint unless archived once. The whole
+  // state stays 16 MiB, so packages above the original 1 MiB record budget go to
+  // a material archive however large the record limit is (a 3.6 MB package
+  // repeated through two review rounds overflows the state after the task
+  // commit). Runs without archives keep that original inline budget and are
+  // refused before develop is accepted, as before the record limit was raised.
+  const inline=Math.max(0,Math.min(JOURNAL_PAYLOAD_LIMIT,INLINE_PACKAGE_LIMIT)-reserve);
+  if(!enabled||!referenced&&inlineBytes<=inline)return freeze({fits:inlineBytes<=inline,material:false,bytes:inlineBytes,budget:inline});
   const bytes=inlineBytes-packageBytes+REFERENCE_ALLOWANCE,material=!referenced;
   return freeze({fits:bytes<=budget&&(!material||inlineBytes+MARKER_ALLOWANCE<=JOURNAL_PAYLOAD_LIMIT),material,bytes,budget});
 });}
