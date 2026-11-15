@@ -5,6 +5,8 @@
 
 ## 未发布
 
+- **标为 NOT_APPLICABLE 的验收条目不再要求用例覆盖**（Wue specs8：AC-012 写明「NOT_APPLICABLE：本期不做（依据）」，规格自检仍报 `acceptance_test_coverage_missing`，规格变更提交不了）：编号后紧跟 `NOT_APPLICABLE`（可隔冒号）的条目仍是已声明编号、可被用例引用，但不计入覆盖要求；正文顺带提到的不算。
+
 - **任务范围接受带方括号的文件名**（Wue specs8：expo-router 动态路由 `app/reminder/[id].tsx` 被当成通配符拒绝，相关任务生成不了运行定义）：范围是精确文件清单，交给 git 的地方都按字面路径处理，所以方括号现在按字面文件名接受；`*`、`?` 仍拒绝。
 
 - **修复大 feature 无法做规格变更**（Wue specs8：收集箱四件套约 94 KB，连只改用例格式的变更都在 `change_tasks` 报 `limit_exceeded`）：变更任务阶段的回包现在可以省略已有 feature 未改动的文档，需求/设计按前两阶段已接受的原字节补回，`tasks.md` 与 `testCasesReason` 为 null 时的 `test-cases.json` 按原稿补回；64 KiB 上限只算实际回的文档，回包本身仍封顶 64 KiB。省略过去本就是无效回包，原本合法的回包含义不变；新 feature 仍须完整，删除用例合同仍须写非 null 的 `testCasesReason`。主机与驾驶员预检走同一补回逻辑。

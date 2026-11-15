@@ -127,3 +127,18 @@ test('a rule-3 report recorded with the earlier missing-scope hint still matches
   const forged={...current,findings:current.findings.map(item=>({...item,reason:{...item.reason,expected:'other'}}))};
   assert.equal(matchesPrdDraftMechanics(missing,forged),false);
 });
+// An acceptance item marked NOT_APPLICABLE right after its id has no executable expectation,
+// so it needs no case; a passing mention elsewhere on the line, or an unmarked item, still does
+// (Wue specs8 AC-012, 2026-11-14).
+test('an acceptance item marked NOT_APPLICABLE after its id needs no covering case',()=>{
+  const withRequirements=content=>{const value=draft();value.features[0].documents[0]={path:'requirements.md',content};return value;};
+  const codes=content=>checkPrdDraftMechanics(withRequirements(content)).findings.map(x=>x.code);
+  for(const line of ['- [ ] [AC-002] NOT_APPLICABLE：本期不做（依据）','- [ ] [AC-002]: NOT_APPLICABLE','- AC-002 NOT_APPLICABLE'])
+    assert.ok(!codes(`- [ ] [AC-001] Behavior works.\n${line}`).includes('acceptance_test_coverage_missing'),line);
+  for(const line of ['- [ ] [AC-002] Later work, not NOT_APPLICABLE','- [ ] [AC-002] NOT_APPLICABLEX','- [ ] [AC-002] Real behavior'])
+    assert.ok(codes(`- [ ] [AC-001] Behavior works.\n${line}`).includes('acceptance_test_coverage_missing'),line);
+  // A case may still reference the inapplicable id.
+  const referencing=structuredClone(contract);referencing.cases[0].acIds=['AC-001','AC-002'];
+  const value=draft(undefined,referencing);value.features[0].documents[0].content='- [ ] [AC-001] Behavior works.\n- [ ] [AC-002] NOT_APPLICABLE：依据';
+  assert.equal(checkPrdDraftMechanics(value).status,'mechanical_subset_passed');
+});

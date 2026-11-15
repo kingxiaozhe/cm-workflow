@@ -1,5 +1,5 @@
 // Mechanical subset of the existing Step 10.5 checklist. No semantic approval.
-import {parseFeatureTaskText,validDependencies,declaredAcceptanceIds,DEPENDENCY} from '../cm-ai/cm-ai-admission.mjs';
+import {parseFeatureTaskText,validDependencies,declaredAcceptanceIds,inapplicableAcceptanceIds,DEPENDENCY} from '../cm-ai/cm-ai-admission.mjs';
 import {specLines,taskLines,TASK_GRAMMAR} from '../spec-task-line.mjs';
 import {parseTaskScopes,BOOTSTRAP_FEATURE,sessionTaskProblem,sessionTaskReason} from '../task-scope.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
@@ -171,7 +171,8 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
           if(cases.cases.some(item=>item.taskIds.length===0||item.taskIds.some(id=>!taskIds.has(id))
             ||item.acIds.some(id=>!acIds.has(id))))add('test_reference_invalid');
           const covered=new Set(cases.cases.flatMap(item=>item.acIds));
-          if([...acIds].some(id=>!covered.has(id)))add('acceptance_test_coverage_missing');
+          const inapplicable=inapplicableAcceptanceIds(outsideFences(files.get('requirements.md')));
+          if([...acIds].some(id=>!covered.has(id)&&!inapplicable.has(id)))add('acceptance_test_coverage_missing');
         }
       }
     }

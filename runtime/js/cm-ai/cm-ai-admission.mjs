@@ -216,6 +216,13 @@ function readFeature(specsDir,name){
 export function declaredAcceptanceIds(source){
   return new Set(source.split(/\r?\n/).map(line=>line.match(ACCEPTANCE)).filter(Boolean).map(match=>match[1]||match[2]));
 }
+// 紧跟编号写明 NOT_APPLICABLE 的验收条目（如 `- [ ] [AC-012] NOT_APPLICABLE：…（依据）`）仍是已声明的编号，
+// 用例可以引用它，但不要求有用例覆盖：不适用的验收没有可执行的预期。只认紧跟编号（可隔冒号）的标记，
+// 正文里顺带提到的 NOT_APPLICABLE 不算（Wue specs8 的 AC-012 被判 acceptance_test_coverage_missing，2026-11-14）。
+export function inapplicableAcceptanceIds(source){
+  return new Set(source.split(/\r?\n/).map(line=>{const match=line.match(ACCEPTANCE);
+    return match&&/^\s*[:：]?\s*NOT_APPLICABLE(?=[\s:：]|$)/.test(line.slice(match[0].length))?match[1]||match[2]:null;}).filter(Boolean));
+}
 
 // Shared declaration grammar (spec-task-line.mjs), versioned by the approval.
 export function parseFeatureTaskText(source,{allowDependencyPunctuation=false,grammar=TASK_GRAMMAR}={}){
