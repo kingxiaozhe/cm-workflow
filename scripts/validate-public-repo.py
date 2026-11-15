@@ -108,6 +108,7 @@ REQUIRED = (
     "scripts/cm-autonomy.mjs",
     "scripts/cm-autonomy.test.mjs",
     "runtime/js/autonomy.mjs",
+    "runtime/js/acceptance-language.mjs",
     "runtime/js/notify-send.mjs",
     "scripts/cm-workflow-config.mjs",
     "scripts/cm-workflow-config.test.mjs",

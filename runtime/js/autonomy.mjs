@@ -11,6 +11,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {taskLines,TASK_GRAMMAR,recordedTaskGrammar,specLines} from './spec-task-line.mjs';
 import {validateTestCases} from '../../scripts/validate-test-cases.mjs';
 import {declaredAcceptanceIds,DEPENDENCY} from './cm-ai/cm-ai-admission.mjs';
+import {taskNames,acceptanceLanguage,weakensLanguage} from './acceptance-language.mjs';
 
 export const AUTONOMY_FILE='autonomy.json',AUTONOMY_OFF_FILE='autonomy.off.json',REOPEN_DIR='autonomy-reopens',AUTO_REOPEN_LIMIT=2;
 // Same directory as notify.json (notify.mjs notifyHome); kept here so notify.mjs can import this module.
@@ -107,9 +108,6 @@ const includesAll=(after,before)=>before.every(value=>after.includes(value));
 const versionHeading=/^(?:任务版本|设计版本|版本历史|版本记录|变更记录|Version history)$/i;
 const versionRow=/^\|[^\r\n]*\bv\d+\b[^\r\n]*\|\s*$/;
 const indent=body=>/^[ \t]*/.exec(body)[0].length;
-const taskNames=body=>body.match(/(?<![A-Za-z0-9])T-[A-Za-z0-9][A-Za-z0-9._-]*/g)??[];
-const acceptanceLanguage=body=>/验收|必验|必跑|必须|要求|真机|物理设备|physical[- ]device|\b(?:must|required|shall|acceptance)\b/i.test(body);
-const weakensLanguage=body=>/取消|无需|不再|改为|可忽略|即可|延期|\b(?:optional|instead|waiv(?:e|ed)|no longer|not required|previous)\b/i.test(body);
 
 function protectedRows(source,{grammar=TASK_GRAMMAR,priorIds=null,tasks=false}={}){
   const rows=[],ids=new Set(),declarations=[];let owner=null,ownerIndent=0,historyLevel=null;

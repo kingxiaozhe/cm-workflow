@@ -11,7 +11,8 @@ import os from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {readSpecsStatus,writeSpecsStatus} from '../specs-status.mjs';
 import {buildManifest,normalizeRuntimeMarkBytes} from '../../../scripts/cm-spec-manifest.mjs';
-import {taskLines,TASK_GRAMMAR} from '../spec-task-line.mjs';
+import {taskLines,recordedTaskGrammar,LEGACY_TASK_GRAMMAR} from '../spec-task-line.mjs';
+import {taskNames,acceptanceLanguage,weakensLanguage} from '../acceptance-language.mjs';
 
 export const SNAPSHOT_FILE='.cm-specs-approved.json';
 export const LOCK_FILE='.cm-specs-approval.lock';
@@ -130,25 +131,45 @@ function processAlive(pid){
 // cm-prd does not take this lock; apply also re-checks status bytes before rename.
 export function withApprovalLock(specsDir,run){
   const target=path.join(specsDir,LOCK_FILE);
+  // A nonce makes every acquisition's bytes unique, so a reclaimer and a releaser
+  // can tell this lock from any other one at the same path.
+  const mine=Buffer.from(JSON.stringify({pid:process.pid,nonce:randomUUID(),at:new Date().toISOString()}));
   for(let attempt=0;attempt<2;attempt++){
     let fd;
     try{fd=fs.openSync(target,'wx',0o600);}
     catch(error){
       if(error.code!=='EEXIST')throw error;
-      let owner=null,age=0;
-      try{owner=JSON.parse(fs.readFileSync(target,'utf8'));}catch{}
-      try{age=Date.now()-fs.statSync(target).mtimeMs;}catch{}
-      const stale=Number.isInteger(owner?.pid)?!processAlive(owner.pid):age>10000;
-      if(!stale||attempt>0)fail('spec_approval_busy');
-      try{fs.unlinkSync(target);}catch(unlinkError){if(unlinkError.code!=='ENOENT')throw unlinkError;}
+      if(attempt>0)fail('spec_approval_busy');
+      let seen,age=0;
+      try{seen=fs.readFileSync(target);age=Date.now()-fs.statSync(target).mtimeMs;}
+      catch(readError){if(readError.code==='ENOENT')continue;throw readError;}
+      let owner=null;
+      try{owner=JSON.parse(seen.toString('utf8'));}catch{}
+      const stale=Number.isInteger(owner?.pid)&&owner.pid>0?!processAlive(owner.pid):age>10000;
+      if(!stale)fail('spec_approval_busy');
+      // Move the lock aside atomically, then confirm it is the very stale lock
+      // judged above. Deleting by path could remove a live owner's newer lock.
+      const aside=`${target}.reclaim-${randomUUID()}`;
+      try{fs.renameSync(target,aside);}
+      catch(renameError){if(renameError.code==='ENOENT')continue;throw renameError;}
+      const moved=fs.readFileSync(aside);
+      if(!moved.equals(seen)){
+        // Another reclaimer got there first and a live owner holds the lock now:
+        // put it back without replacing anything, and do not enter.
+        try{fs.linkSync(aside,target);}catch(linkError){if(linkError.code!=='EEXIST')throw linkError;}
+        fs.unlinkSync(aside);
+        fail('spec_approval_busy');
+      }
+      fs.unlinkSync(aside);
       continue;
     }
     try{
-      fs.writeFileSync(fd,JSON.stringify({pid:process.pid,at:new Date().toISOString()}));fs.closeSync(fd);fd=undefined;
+      fs.writeFileSync(fd,mine);fs.closeSync(fd);fd=undefined;
       return run();
     }finally{
       if(fd!==undefined)fs.closeSync(fd);
-      try{fs.unlinkSync(target);}catch{}
+      // Release only this acquisition's lock, never one that replaced it.
+      try{if(fs.readFileSync(target).equals(mine))fs.unlinkSync(target);}catch{}
     }
   }
   fail('spec_approval_busy');
@@ -183,9 +204,9 @@ function acceptanceIds(text){
 // A task block runs from its declaration to the next declaration, heading,
 // dependency line or non-indented text; blank lines and fenced lines inside stay
 // in the block (a blank line must not split off a finished task's verification).
-function taskStructure(text){
+function taskStructure(text,grammar){
   const tasks=new Map(),dependencies=new Map(),prose=[];let current=null;
-  for(const line of taskLines(text,{grammar:TASK_GRAMMAR})){
+  for(const line of taskLines(text,{grammar})){
     const body=line.body.replace(/\s+$/,'');
     if(!line.fenced&&line.declaration){
       current={id:line.declaration.id,completed:line.declaration.completed,
@@ -220,10 +241,12 @@ function splitVersionRows(lines){
   }
   return {body,rows};
 }
-function onlyAppendedVersionRows(oldLines,newLines){
+// Returns the appended version rows, or null when anything else changed.
+function appendedVersionRows(oldLines,newLines){
   const old=splitVersionRows(oldLines),next=splitVersionRows(newLines);
-  if(JSON.stringify(old.body)!==JSON.stringify(next.body))return false;
-  return JSON.stringify(next.rows.slice(0,old.rows.length))===JSON.stringify(old.rows);
+  if(JSON.stringify(old.body)!==JSON.stringify(next.body))return null;
+  if(JSON.stringify(next.rows.slice(0,old.rows.length))!==JSON.stringify(old.rows))return null;
+  return next.rows.slice(old.rows.length);
 }
 
 function compareTestCases(before,after,reasons,name){
@@ -277,6 +300,10 @@ export function inspectSpecAmendment(specsDir){
   let currentFiles;
   try{currentFiles=captureFiles(specsDir,features);}catch(error){return human(error.code??'spec_files_invalid');}
   if(rowsDigest(snapshotRows(currentFiles))!==rowsDigest(currentRows))return human('spec_changed_during_inspect');
+  // Parse and re-bind with the grammar this approval round bound (2 or 3), never
+  // the newest constant: a grammar-2 「开发: 会话」 line must stay prose.
+  const grammar=recordedTaskGrammar(status.value.taskGrammar);
+  if(grammar===LEGACY_TASK_GRAMMAR)return {...human('task_grammar_legacy'),changedFiles};
   const outcome=(tier,extra={})=>({tier,reasons,changedFiles,changedTasks:[],newTasks:[],deltaDigest,
     currentRows,currentFiles,baseRows,snapshot:bound,status:status.value,statusBytes,snapshotBytes,roundBytes,...extra});
   if(!changedFiles.length)return outcome(status.value.status==='approved'?null:0);
@@ -293,9 +320,19 @@ export function inspectSpecAmendment(specsDir){
     if(!changedFiles.includes(`${name}/tasks.md`))continue;
     const oldText=before.get(`${name}/tasks.md`),newText=current.get(`${name}/tasks.md`);
     let old,next;
-    try{old=taskStructure(oldText);next=taskStructure(newText);}catch{reasons.push(`tasks_invalid:${name}`);continue;}
+    try{old=taskStructure(oldText,grammar);next=taskStructure(newText,grammar);}catch{reasons.push(`tasks_invalid:${name}`);continue;}
     const resetLines=text=>text.split(/\r?\n/).map(line=>line.replace(/^(\s*-\s*(?:~~)?)\[[xX]\]/,'$1[ ]').replace(/\s+$/,''));
-    if(!onlyAppendedVersionRows(resetLines(oldText),resetLines(newText)))tasksOnlyVersionRows=false;
+    const appended=appendedVersionRows(resetLines(oldText),resetLines(newText));
+    if(appended===null)tasksOnlyVersionRows=false;
+    else for(const row of appended){
+      // Same rule as the standing authorization: a version note that states or
+      // weakens acceptance for an existing task is a requirement change (tier 2).
+      // Other acceptance wording is never tier-0 metadata; it goes to review.
+      if(!acceptanceLanguage(row)&&!weakensLanguage(row))continue;
+      const affected=taskNames(row).find(id=>old.tasks.has(id));
+      if(affected)reasons.push(`version_row_changes_acceptance:${name}/${affected}`);
+      else tasksOnlyVersionRows=false;
+    }
     const declared=acceptanceIds(current.get(`${name}/requirements.md`)??'');
     for(const [id,task] of old.tasks){
       const now=next.tasks.get(id);
@@ -447,7 +484,7 @@ function applyLocked(specsDir,{reason,reviewOutput,reviewer}){
   try{
     writeSpecsStatus(specsDir,{status:'approved',summaryDigest:status.summaryDigest??null,at,features,
       specFiles:result.currentRows,testCases:result.currentRows.filter(item=>item.path.endsWith('/test-cases.json')),
-      approval:result.snapshot.approval,taskGrammar:TASK_GRAMMAR,
+      approval:result.snapshot.approval,taskGrammar:recordedTaskGrammar(status.taskGrammar),
       ...(Object.hasOwn(status,'revisionDigest')?{revisionDigest:status.revisionDigest}:{})},
     {beforeRename:()=>{
       if(!unchanged())fail('spec_changed_during_apply');

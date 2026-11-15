@@ -9,7 +9,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
-import {applySpecAmendment} from '../runtime/js/cm-ai/spec-amendment.mjs';
+import {applySpecAmendment,withApprovalLock} from '../runtime/js/cm-ai/spec-amendment.mjs';
 
 // The round ledger lives under CM_WORKFLOW_HOME; never touch the real home.
 const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-spec-amend-home-'));
@@ -90,6 +90,33 @@ test('tier 0: appended version row re-binds without review or a new 开始',()=>
   const applied=apply([]);assert.equal(applied.status,0,JSON.stringify(applied.json));
   assert.equal(admit().state,'ready');
 }));
+
+// Port review #2: re-binding keeps the grammar the approval bound (2 here), never the newest constant.
+test('tier 0 re-bind keeps the approved task grammar',()=>fixture(({specs,approve,inspect,apply,edit})=>{
+  approve();
+  const grammar=()=>JSON.parse(fs.readFileSync(path.join(specs,'.cm-specs-status'),'utf8')).taskGrammar;
+  assert.equal(grammar(),2);
+  edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 记录口头同意 |'));
+  assert.equal(inspect().tier,0);
+  assert.equal(apply([]).status,0);
+  assert.equal(grammar(),2);
+}));
+
+// Port review #1: a version note that weakens an existing task's acceptance is a requirement change.
+test('version row changing an existing task acceptance is tier 2, other acceptance wording goes to review',()=>{
+  fixture(({approve,inspect,apply,edit})=>{
+    approve();
+    edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | T-002 验收要求变更：TC-001 可忽略 |'));
+    const result=inspect();
+    assert.equal(result.tier,2);assert(result.reasons.includes('version_row_changes_acceptance:1.login/T-002'),JSON.stringify(result.reasons));
+    assert.equal(apply([]).status,1);
+  });
+  fixture(({approve,inspect,edit})=>{
+    approve();
+    edit('tasks.md',text=>text.replace('| 2026-11-01 | v1 | 初始 |','| 2026-11-01 | v1 | 初始 |\n| 2026-11-04 | v2 | 新任务必须真机验收 |'));
+    assert.equal(inspect().tier,1);
+  });
+});
 
 test('tier 0 does not cover edits to an existing version row',()=>fixture(({approve,inspect,edit})=>{
   approve();edit('tasks.md',text=>text.replace('| 初始 |','| 初始（改写） |'));
@@ -248,6 +275,30 @@ test('apply refuses while another live process holds the approval lock; a stale 
   fs.writeFileSync(lock,JSON.stringify({pid:2147483646,at:new Date().toISOString()}));
   assert.equal(apply(['--review-output',review(digest),'--reviewer','codex']).status,0);
   assert.equal(fs.existsSync(lock),false);
+}));
+
+// Port review #3: a reclaimer never deletes a live lock that replaced the stale one it judged,
+// and a holder never releases a lock it does not own.
+test('stale lock reclaim and release never remove another live owner\'s lock',()=>fixture(({specs})=>{
+  const lock=path.join(specs,'.cm-specs-approval.lock');
+  const live=JSON.stringify({pid:process.pid,nonce:'live-owner',at:new Date().toISOString()});
+  fs.writeFileSync(lock,JSON.stringify({pid:2147483646,nonce:'dead-owner',at:new Date().toISOString()}));
+  const rename=fs.renameSync;let ran=false;
+  // Between the stale check and the move, another reclaimer swaps in a live owner's lock.
+  fs.renameSync=function(from,to,...rest){
+    if(from===lock){fs.renameSync=rename;fs.unlinkSync(lock);fs.writeFileSync(lock,live);}
+    return rename.call(this,from,to,...rest);
+  };
+  try{assert.throws(()=>withApprovalLock(specs,()=>{ran=true;}),{code:'spec_approval_busy'});}
+  finally{fs.renameSync=rename;}
+  assert.equal(ran,false);assert.equal(fs.readFileSync(lock,'utf8'),live);
+  assert.deepEqual(fs.readdirSync(specs).filter(name=>name.includes('.reclaim-')),[]);
+  // Release: a lock replaced while held is left in place.
+  fs.unlinkSync(lock);
+  withApprovalLock(specs,()=>{fs.writeFileSync(lock,live);});
+  assert.equal(fs.readFileSync(lock,'utf8'),live);
+  fs.unlinkSync(lock);
+  withApprovalLock(specs,()=>{});assert.equal(fs.existsSync(lock),false);
 }));
 
 // Review r1 #1: the packet holds the exact bytes the review digest covers.
