@@ -64,7 +64,8 @@ export function approvedScopeExemptions(before,directories,grammar){
 
 // `exemptions` maps a directory to {exempt} (a change) or is empty (a new draft).
 // `selfCheckRules` is the rule of the saving operation (session.mjs); only rule 4
-// and later are written, since earlier rules add nothing beyond the scope record.
+// and later are written, since earlier rules add nothing beyond the scope record
+// (4: session tasks; 5: also the NOT_APPLICABLE coverage exemption).
 export function recordPrdTaskScopes(specs,features,exemptions={},{selfCheckRules=1}={}){
   need(PRD_SELF_CHECK_RULE_VERSIONS.includes(selfCheckRules),'prd_self_check_rules_invalid');
   const reviews=path.join(specs,'.reviews');
@@ -85,13 +86,16 @@ export function recordPrdTaskScopes(specs,features,exemptions={},{selfCheckRules
 
 // The checkPrdDraftMechanics options a re-check of saved features must use.
 export function prdTaskScopeOptions(specs,directories){
-  const scopes={},sessionTasks=[];
+  const scopes={},sessionTasks=[],inapplicableAcceptance=[];
   for(const directory of typeof directories==='string'?[directories]:directories){
     const raw=readPrdSessionFile(specs,recordPath(directory));
     if(raw===null)continue;
     const value=parseRecord(raw);
     if(value.enforced)scopes[directory]={exempt:value.exempt};
     if(Object.hasOwn(value,'selfCheckRules'))sessionTasks.push(directory);
+    // Saved under rule 5: re-checks keep its NOT_APPLICABLE coverage exemption, as rule 4 keeps session tasks.
+    if(value.selfCheckRules>=5)inapplicableAcceptance.push(directory);
   }
-  return {...(Object.keys(scopes).length?{scopes}:{}),...(sessionTasks.length?{sessionTasks}:{})};
+  return {...(Object.keys(scopes).length?{scopes}:{}),...(sessionTasks.length?{sessionTasks}:{}),
+    ...(inapplicableAcceptance.length?{inapplicableAcceptance}:{})};
 }

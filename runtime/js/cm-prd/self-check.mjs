@@ -1,5 +1,5 @@
 // Mechanical subset of the existing Step 10.5 checklist. No semantic approval.
-import {parseFeatureTaskText,validDependencies,declaredAcceptanceIds,inapplicableAcceptanceIds,DEPENDENCY} from '../cm-ai/cm-ai-admission.mjs';
+import {parseFeatureTaskText,validDependencies,declaredAcceptanceIds,acceptanceDeclarations,DEPENDENCY} from '../cm-ai/cm-ai-admission.mjs';
 import {specLines,taskLines,TASK_GRAMMAR} from '../spec-task-line.mjs';
 import {parseTaskScopes,BOOTSTRAP_FEATURE,sessionTaskProblem,sessionTaskReason} from '../task-scope.mjs';
 import {validateTestCases} from '../../../scripts/validate-test-cases.mjs';
@@ -41,6 +41,23 @@ function outsideFences(source){
     return fence===null?line:'';
   }).join('\n');
 }
+// Fences for the rule-5 exemption follow CommonMark strictly: a closing fence is the same
+// character, at least as long, with nothing but spaces after it. The looser outsideFences
+// above would end a fence at "```not-a-closing-fence" and expose an example marker.
+function strictOutsideFences(source){
+  let fence=null;return source.split(/\r?\n/).map(line=>{
+    if(fence===null){const open=line.match(/^ {0,3}(`{3,}|~{3,})/);if(open){fence=open[1];return '';}return line;}
+    const close=line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+    if(close&&close[1][0]===fence[0]&&close[1].length>=fence.length)fence=null;
+    return '';
+  }).join('\n');
+}
+// Rule 5: ids whose only declarations say NOT_APPLICABLE. A marker counts only outside strict
+// fences, and any plain declaration of the same id anywhere (fenced or not) keeps it required.
+function inapplicableAcceptanceIds(source){
+  const plain=new Set(acceptanceDeclarations(source).filter(item=>!item.inapplicable).map(item=>item.id));
+  return new Set(acceptanceDeclarations(strictOutsideFences(source)).filter(item=>item.inapplicable&&!plain.has(item.id)).map(item=>item.id));
+}
 // Rule 2 adds checks the parser alone cannot make; rule 1 is the original subset.
 // Only a fresh draft round and a change proposal opt into rule 2. Every re-check
 // of material that may predate it (corrections, dispositions, summary) stays on
@@ -51,10 +68,12 @@ function outsideFences(source){
 // instead of a session's guess. Tasks an approved tasks.md already had may stay
 // without scope (they simply run serially).
 // Rule 4 reads tasks.md as task grammar 3 (`开发: 会话`) and adds the session-task checks.
-export const PRD_SELF_CHECK_RULES=4;
+// Rule 5 exempts acceptance items marked NOT_APPLICABLE right after their id from case coverage
+// (inapplicableAcceptance below); reports recorded under rules 1–4 recompute exactly as before.
+export const PRD_SELF_CHECK_RULES=5;
 // Every rule a session, an operation or a recorded report may carry. Earlier rules
 // stay listed explicitly so raising the current one never drops them.
-export const PRD_SELF_CHECK_RULE_VERSIONS=Object.freeze([...new Set([PRD_SELF_CHECK_RULES,3,2,1])]);
+export const PRD_SELF_CHECK_RULE_VERSIONS=Object.freeze([...new Set([PRD_SELF_CHECK_RULES,4,3,2,1])]);
 // Task- or dependency-looking lines the parser skips: a task written this way
 // would silently drop out of execution.
 const TASK_LIKE=/^\s*-\s*\[[^\]]*\]\s+(?:~~)?T-/,DEPENDENCY_LIKE=/^\s*-\s*T-\S*\s+依赖(?:\s|$)/;
@@ -110,9 +129,11 @@ export function matchesPrdDraftMechanics(draft,recorded,options={}){
 // `sessionTasks` ([directory...]) likewise applies only what rule 4 adds (tasks.md
 // read as grammar 3, with the session-task checks) to the features whose save
 // recorded rule 4, so a correction cannot move or add a `开发: 会话` mark unnoticed.
-export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1,scopes=null,sessionTasks=null}={}){
+export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1,scopes=null,sessionTasks=null,inapplicableAcceptance=null}={}){
   need(PRD_SELF_CHECK_RULE_VERSIONS.includes(rules),'prd_self_check_rules_invalid');
   need(sessionTasks===null||Array.isArray(sessionTasks)&&sessionTasks.every(item=>typeof item==='string'),
+    'prd_self_check_rules_invalid');
+  need(inapplicableAcceptance===null||Array.isArray(inapplicableAcceptance)&&inapplicableAcceptance.every(item=>typeof item==='string'),
     'prd_self_check_rules_invalid');
   const findings=[],features=[];
   for(const feature of draft.features){
@@ -171,7 +192,8 @@ export function checkPrdDraftMechanics(draft,{change=false,previous=null,rules=1
           if(cases.cases.some(item=>item.taskIds.length===0||item.taskIds.some(id=>!taskIds.has(id))
             ||item.acIds.some(id=>!acIds.has(id))))add('test_reference_invalid');
           const covered=new Set(cases.cases.flatMap(item=>item.acIds));
-          const inapplicable=inapplicableAcceptanceIds(outsideFences(files.get('requirements.md')));
+          const inapplicable=rules>=5||inapplicableAcceptance?.includes(feature.directory)===true
+            ?inapplicableAcceptanceIds(files.get('requirements.md')):new Set();
           if([...acIds].some(id=>!covered.has(id)&&!inapplicable.has(id)))add('acceptance_test_coverage_missing');
         }
       }

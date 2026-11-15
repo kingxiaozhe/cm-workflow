@@ -118,7 +118,7 @@ test('the historical rule set lists rule 3 explicitly, so raising the current ru
   for(const rules of [3,2,1,PRD_SELF_CHECK_RULES])assert.ok(PRD_SELF_CHECK_RULE_VERSIONS.includes(rules));
   assert.equal(new Set(PRD_SELF_CHECK_RULE_VERSIONS).size,PRD_SELF_CHECK_RULE_VERSIONS.length);
   const source=fs.readFileSync(path.join(root,'runtime/js/cm-prd/self-check.mjs'),'utf8');
-  assert.match(source,/new Set\(\[PRD_SELF_CHECK_RULES,3,2,1\]\)/);
+  assert.match(source,/new Set\(\[PRD_SELF_CHECK_RULES,4,3,2,1\]\)/);
   assert.doesNotMatch(source,/\[PRD_SELF_CHECK_RULES,2,1\]|\[1,2,PRD_SELF_CHECK_RULES\]/);
 });
 
@@ -200,7 +200,7 @@ test('a sessionTasks-only re-check reports a bad, repeated or stray developer li
 
 // R1-03: re-checks of saved files (correction, disposition, summary, driver) run
 // outside the saving operation; the task-scope record carries a rule-4 save's rule.
-test('a save records rule 4 for the re-checks; an earlier rule or an operation without a rule keeps the old record',t=>{
+test('a save records the session rule (4 or later) for the re-checks; an earlier rule or an operation without a rule keeps the old record',t=>{
   const {dir,entry}=specs(t),sessionId='prd-record-fixture',open=()=>openPrdSession({specs:dir,sessionId,identity:{entry,runtime:'codex'}});
   const tasks=['- [ ] T-001: Build','  - 范围: `src/a.js`','- [ ] T-002: Walk','  - 范围: `docs/qa.md`','  - 开发: 会话',''].join('\n');
   const feature=content=>({directory:'1.walk',name:'walk',documents:[
@@ -215,8 +215,8 @@ test('a save records rule 4 for the re-checks; an earlier rule or an operation w
   let session=open();
   try{session.begin({requestId:'r1',operation:'save_draft'},null,{selfCheckRules:session.versions().selfCheckRules});}finally{session.close();}
   save();
-  assert.deepEqual(JSON.parse(fs.readFileSync(record,'utf8')),{version:1,enforced:true,exempt:[],selfCheckRules:4});
-  assert.deepEqual(prdTaskScopeOptions(dir,'1.walk'),{scopes:{'1.walk':{exempt:[]}},sessionTasks:['1.walk']});
+  assert.deepEqual(JSON.parse(fs.readFileSync(record,'utf8')),{version:1,enforced:true,exempt:[],selfCheckRules:PRD_SELF_CHECK_RULES});
+  assert.deepEqual(prdTaskScopeOptions(dir,'1.walk'),{scopes:{'1.walk':{exempt:[]}},sessionTasks:['1.walk'],inapplicableAcceptance:['1.walk']});
   assert.deepEqual(recheck(tasks),[]);
   assert.deepEqual(recheck(moved),['session_task_not_final']);
   assert.deepEqual(recheck(second),['session_task_multiple']);
@@ -232,7 +232,7 @@ test('a save records rule 4 for the re-checks; an earlier rule or an operation w
   // Rule 3 adds nothing beyond the scope record, so its save keeps the old bytes too.
   recordPrdTaskScopes(dir,[feature(tasks)],{},{selfCheckRules:3});
   assert.equal(fs.readFileSync(record,'utf8'),JSON.stringify({version:1,enforced:true,exempt:[]})+'\n');
-  for(const value of [3,5,'4']){
+  for(const value of [3,6,'4']){
     fs.writeFileSync(record,JSON.stringify({version:1,enforced:true,exempt:[],selfCheckRules:value})+'\n',{mode:0o600});
     assert.throws(()=>prdTaskScopeOptions(dir,'1.walk'),/prd_task_scope_record_invalid/);
   }

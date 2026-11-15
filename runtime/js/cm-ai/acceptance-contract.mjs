@@ -2,7 +2,7 @@
 // Free text remains verbatim for independent review; the machine proves set and
 // evidence-kind agreement, not that arbitrary prose or test assertions are true.
 import {digest,need,shape,freeze} from './effect-contract.mjs';
-import {declaredAcceptanceIds} from './cm-ai-admission.mjs';
+import {declaredAcceptanceIds,acceptanceDeclarations} from './cm-ai-admission.mjs';
 import {taskLines} from '../spec-task-line.mjs';
 import {mandatoryCheckCoverage} from '../check-coverage.mjs';
 import {selectedNodeTestFiles} from '../node-test-selection.mjs';
@@ -146,11 +146,16 @@ export function buildAcceptanceContract({taskId,taskText,requirementsText,testCa
   for(const {body,fenced} of taskLines(taskText))add(`task:${taskId}`,body,null,fenced);
   const linked=new Set(taskText.match(/\bAC-\d{3,}\b/g)??[]);
   for(const item of testCases)for(const id of item.acIds??[])linked.add(id);
-  const declared=new Set();let owner=null,ownerIndent=0;
+  const declared=new Set();let owner=null,ownerIndent=0,ownerInapplicable=false;
   for(const {body:line,fenced} of taskLines(requirementsText)){
     const match=fenced?[]:[...declaredAcceptanceIds(line)],indent=/^[ \t]*/.exec(line)[0].length;
-    if(match.length){owner=match[0];ownerIndent=indent;declared.add(owner);}
+    // An item marked NOT_APPLICABLE right after its id stays declared (cases may link it) but its
+    // block states why it is excluded, not a duty: inferring "真机"/baseline evidence from the
+    // reason would turn the exclusion back into an execution obligation.
+    if(match.length){owner=match[0];ownerIndent=indent;declared.add(owner);
+      ownerInapplicable=acceptanceDeclarations(line).some(item=>item.id===owner&&item.inapplicable);}
     else if(line.trim()&&indent<=ownerIndent)owner=null;
+    if(owner!==null&&ownerInapplicable)continue;
     // Only explicitly linked AC blocks and explicit shared directives are duties.
     // An indented heading never cuts off an AC's environment/expected subclauses.
     if(owner!==null&&linked.has(owner)||owner===null&&/^\s*(?:Shared|共用必验)[:：]/i.test(line))add(owner??'requirements:shared',line,null,fenced);

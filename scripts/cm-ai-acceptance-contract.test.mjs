@@ -183,3 +183,13 @@ test('legacy frozen material keeps verifying without retroactive contract or inv
   const old=captureSpecificationMaterial({...selection,acceptance:false});assert.equal(Object.hasOwn(old,'acceptanceContract'),false);
   assert.deepEqual(verifySpecificationMaterial({specification:old,specificationRoot:f.specsDir,identity}),old);
 });
+// A linked NOT_APPLICABLE item stays declared, but its reason ("真机…") is not an execution duty (Wue specs8).
+test('a NOT_APPLICABLE acceptance block infers no execution obligation from its reason',()=>{
+  const c=buildAcceptanceContract({taskId:'T-001',taskText:'- [ ] T-001: implement AC-001, AC-002',
+    requirementsText:'- [ ] [AC-001] complete\n- [ ] [AC-002] NOT_APPLICABLE：本期不做真机验收（依据）\n  - 必须在真机完成保存回读'});
+  assert.ok(!c.unresolved.some(item=>item.includes('AC-002')));
+  assert.ok(!c.obligations.some(item=>item.id.startsWith('AC-002')||item.environment==='device'));
+  const plain=buildAcceptanceContract({taskId:'T-001',taskText:'- [ ] T-001: implement AC-001, AC-002',
+    requirementsText:'- [ ] [AC-001] complete\n- [ ] [AC-002] 必须在真机完成保存回读'});
+  assert.ok(plain.obligations.some(item=>item.environment==='device'));
+});
