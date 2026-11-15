@@ -152,7 +152,9 @@ function documentProblem(before,after,file,grammar){
       const protectedDesign=old.rows.some(row=>row.fenced||acceptanceLanguage(row.text));
       // No task/AC contract is built from design-only implementation details.
       // Keep explicit legacy acceptance statements and examples protected.
-      if(!protectedDesign&&!next.rows.some(row=>acceptanceLanguage(row.text)||weakensLanguage(row.text)))return null;
+      // A design version note about tests or acceptance still reaches the history check below.
+      if(!protectedDesign&&!next.rows.some(row=>acceptanceLanguage(row.text)||weakensLanguage(row.text)
+        ||row.history&&!plainVersionNote(row.text)&&testingLanguage(row.text)))return null;
     }
     let position=0;
     for(const row of next.rows){

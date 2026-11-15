@@ -61,6 +61,15 @@ for(const [note,stops] of [['验收改为只测成功路径',true],['T-002 跳�
     if(stops)assert.match(problem??'',/需明确确认/);else assert.equal(problem,null);
   });
 
+// Codex review r4: a design without protected wording cannot skip the version-note check.
+for(const [note,stops] of [['跳过错误密码测试',true],['范围与验收不变',false]])
+  test(`M7 standing authorization on a design version note: ${note}`,()=>{
+    const {before,proposal}=fixture();
+    proposal.files[designFile]+=`\n## 设计版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-11-01 | v2 | ${note} |\n`;
+    const problem=standingProposalProblem(before,proposal);
+    if(stops)assert.match(problem??'',/需明确确认/);else assert.equal(problem,null);
+  });
+
 test('M8 additive design detail preserves standing approval without changing earlier acceptance',()=>{
   const {before,proposal}=fixture();proposal.files[designFile]+='\n记住我状态写入 storage.js。\n';
   assert.equal(standingProposalProblem(before,proposal),null);
