@@ -79,6 +79,18 @@ test('M7 approved design version notes do not block an ordinary design edit',()=
   assert.equal(standingProposalProblem(before,proposal),null);
 });
 
+// Codex review r6: a duplicated approved note, or one copied over another, counts as new.
+for(const [label,edit] of [['duplicated',versions=>versions+'| 2026-10-01 | v1 | 跳过错误密码测试 |\n'],
+  ['copied over another',versions=>versions.replace('| 2026-10-02 | v1.1 | 补记沟通 |','| 2026-10-01 | v1 | 跳过错误密码测试 |')]])
+  test(`M7 an approved design note that is ${label} still stops`,()=>{
+    const {before,proposal}=fixture();
+    const versions='\n## 设计版本\n| 日期 | 版本 | 说明 |\n| --- | --- | --- |\n| 2026-10-01 | v1 | 跳过错误密码测试 |\n| 2026-10-02 | v1.1 | 补记沟通 |\n';
+    before.files[designFile]+=versions;
+    proposal.files[designFile]=before.files[designFile].replace(versions,edit(versions));
+    assert.notEqual(proposal.files[designFile],before.files[designFile]);
+    assert.match(standingProposalProblem(before,proposal)??'',/需明确确认/);
+  });
+
 test('M8 additive design detail preserves standing approval without changing earlier acceptance',()=>{
   const {before,proposal}=fixture();proposal.files[designFile]+='\n记住我状态写入 storage.js。\n';
   assert.equal(standingProposalProblem(before,proposal),null);

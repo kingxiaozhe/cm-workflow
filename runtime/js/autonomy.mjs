@@ -154,9 +154,12 @@ function documentProblem(before,after,file,grammar){
       // Keep explicit legacy acceptance statements and examples protected.
       // A newly added design version note about tests or acceptance still reaches the
       // history check below; notes already in the approved design do not.
-      const approvedNotes=new Set(old.rows.filter(row=>row.history).map(row=>row.text));
+      // Matched by count, so a duplicated or copied-over approved note counts as new.
+      const approvedNotes=new Map();
+      for(const row of old.rows)if(row.history)approvedNotes.set(row.text,(approvedNotes.get(row.text)??0)+1);
+      const newNote=row=>{const left=approvedNotes.get(row.text)??0;if(left>0){approvedNotes.set(row.text,left-1);return false;}return true;};
       if(!protectedDesign&&!next.rows.some(row=>acceptanceLanguage(row.text)||weakensLanguage(row.text)
-        ||row.history&&!approvedNotes.has(row.text)&&!plainVersionNote(row.text)&&testingLanguage(row.text)))return null;
+        ||row.history&&newNote(row)&&!plainVersionNote(row.text)&&testingLanguage(row.text)))return null;
     }
     let position=0;
     for(const row of next.rows){
