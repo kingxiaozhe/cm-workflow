@@ -115,7 +115,8 @@ test('rule 4: no task may wait for the session task, directly or through another
 test('only exact relative file paths in backticks are accepted',()=>{
   for(const bad of ['src/*.js','src/','/etc/passwd','../x.js','a/./b.js','a\\b.js','AGENTS.md','.git/config','x?.js'])
     assert.equal(validScopePath(bad),false,bad);
-  for(const good of ['README.md','src/deep/file.test.mjs','docs/中文.md'])assert.equal(validScopePath(good),true,good);
+  // expo-router / Next.js dynamic routes are real files; brackets are literal (git calls use :(literal)).
+  for(const good of ['README.md','src/deep/file.test.mjs','docs/中文.md','app/reminder/[id].tsx','app/[...slug]/page.tsx'])assert.equal(validScopePath(good),true,good);
   const {errors}=parseTaskScopes(tasksText(['- [ ] T-001: a','  - 范围: src/a.js','- [ ] T-002: b','  - 范围: `src/*.js`',
     '- [ ] T-003: c','  - 范围: `a.js`, `a.js`','- [ ] T-004: d','  - 范围: `a.js`','  - 范围: `b.js`']));
   assert.deepEqual(errors.map(item=>item.taskId),['T-001','T-002','T-003','T-004']);
