@@ -40,7 +40,7 @@ function scenario(fileBytes,check){
     fs.writeFileSync(path.join(bin,'codex'),fake,{mode:0o700});
     fs.writeFileSync(path.join(root,'review.json'),JSON.stringify({model:'fixture',preflight:{passed:true,cli_model:'fixture',prompt_transport:'stdin',config_fingerprint:configFingerprint({cwd:codeProject,model:'fixture'})}}));};
   reviewer('changes_requested');
-  const develop=(seed,name)=>{fs.writeFileSync(path.join(answers,seed+'-t.mjs'),big(seed+'t',fileBytes));fs.writeFileSync(path.join(answers,seed+'-d.mjs'),big(seed+'d',fileBytes));fs.writeFileSync(path.join(answers,name),JSON.stringify({status:'succeeded',value:developValue,edits:{'target.mjs':seed+'-t.mjs','data.mjs':seed+'-d.mjs'}}));};
+  const develop=(seed,name,bytes=fileBytes)=>{fs.writeFileSync(path.join(answers,seed+'-t.mjs'),big(seed+'t',bytes));fs.writeFileSync(path.join(answers,seed+'-d.mjs'),big(seed+'d',bytes));fs.writeFileSync(path.join(answers,name),JSON.stringify({status:'succeeded',value:developValue,edits:{'target.mjs':seed+'-t.mjs','data.mjs':seed+'-d.mjs'}}));};
   const checks=[{id:'syntax',command:[process.execPath,'--check',path.join(codeProject,'target.mjs')]},{id:'syntax-data',command:[process.execPath,'--check',path.join(codeProject,'data.mjs')]}];
   const plan=extra=>{const file=path.join(root,'plan-'+Math.random().toString(36).slice(2)+'.json');
     fs.writeFileSync(file,JSON.stringify({config:'run.json',mode:'create',hostContext:'review-input-host',controlConfig:'control.json',
@@ -51,16 +51,29 @@ function scenario(fileBytes,check){
   const rows=()=>JSON.parse(fs.readFileSync(store,'utf8')).records;
   try{
     develop('a1','develop.json');develop('a2','develop-a2.json');
-    check({drive,plan,out,rows,specsDir,feature});
+    check({drive,plan,out,rows,specsDir,feature,develop,reviewer,answers});
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 }
 
-test('a delivery whose review input exceeds the Codex limit is refused at develop, not left as an unknown review',()=>scenario(900000,({drive,plan,rows})=>{
+test('a delivery whose review input exceeds the Codex limit is refused at develop, then redone smaller in the same run',()=>scenario(900000,({drive,plan,out,rows,develop,reviewer})=>{
   const run=drive(plan({}),'advance');assert.equal(run.status,0,run.stderr.slice(-2000));
   const result=JSON.parse(run.stdout).result;
   assert.equal(result.state,'blocked');assert.equal(result.code,'develop_package_too_large');
   assert.match(result.reason,/review input for codex would exceed its limit of 1048576 bytes/);
   assert(rows().every(row=>!String(row.payload.type).startsWith('review-invocation')),'no review was dispatched');
+  // Shrink the delivery and resume the same run: develop is redone at the same attempt
+  // with a new effect, the blocked record stays in history, and the task completes.
+  const blockedRows=rows();
+  reviewer('approved');develop('small','develop.json',2000);
+  let state=out(drive(plan({mode:'resume'}),'advance'));
+  for(let i=0;i<3&&!['approved','fixture_completed'].includes(state.state);i++)
+    state=out(drive(plan({mode:'resume',...(state.packageDigest?{packageDigest:state.packageDigest}:{})}),state.state==='awaiting_review'?'decision':'advance'));
+  assert.equal(state.identity.attempt,1);
+  if(state.state!=='fixture_completed')state=out(drive(plan({mode:'resume',packageDigest:state.packageDigest}),'complete'));
+  assert.equal(state.state,'fixture_completed');
+  const finalRows=rows();
+  assert.deepEqual(finalRows.slice(0,blockedRows.length),blockedRows,'the refused delivery stays in history');
+  assert(finalRows.some(row=>row.payload.checkpoint?.code==='develop_package_too_large'));
 }));
 
 test('a package above the original 1 MiB inline budget that the review can take is archived and completes after two rounds',()=>scenario(400000,({drive,plan,out,rows,specsDir,feature})=>{

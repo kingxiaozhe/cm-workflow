@@ -349,15 +349,18 @@ export function inspectSpecAmendment(specsDir){
     const appended=appendedVersionRows(resetLines(oldText),resetLines(newText));
     if(appended===null)tasksOnlyVersionRows=false;
     else for(const row of appended){
+      // Full-width letters, digits and dashes read as their ASCII forms (Ｔ-００２, T－002).
+      const note=row.normalize('NFKC');
+      const affected=taskNames(note).find(id=>old.tasks.has(id));
       // Same rule as the standing authorization: a version note that states or
       // weakens acceptance for an existing task is a requirement change (tier 2).
-      // One that names an acceptance criterion or test case goes to review (tier 1).
-      // Plain notes such as "范围与验收不变" stay tier-0 metadata (dogfood: real
-      // version tables write that on most rows; escalating every one left tier 0 unused).
-      if(!acceptanceLanguage(row)&&!weakensLanguage(row))continue;
-      const affected=taskNames(row).find(id=>old.tasks.has(id));
-      if(affected)reasons.push(`version_row_changes_acceptance:${name}/${affected}`);
-      else if(/(?<![A-Za-z0-9])(?:AC|TC)-\d+/.test(row))tasksOnlyVersionRows=false;
+      if(affected&&(acceptanceLanguage(note)||weakensLanguage(note))){
+        reasons.push(`version_row_changes_acceptance:${name}/${affected}`);continue;}
+      // Review (tier 1) whenever the target is named (an existing task, an acceptance
+      // criterion or a test case) or the note changes or weakens something it does
+      // not name. Only plain records such as "范围与验收不变" stay tier-0 metadata
+      // (dogfood: real version tables write that on most rows).
+      if(affected||/(?<![A-Za-z0-9])(?:AC|TC)-\d+/i.test(note)||weakensLanguage(note))tasksOnlyVersionRows=false;
     }
     const declared=acceptanceIds(current.get(`${name}/requirements.md`)??'');
     for(const [id,task] of old.tasks){

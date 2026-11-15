@@ -257,9 +257,10 @@ function diskScopeEntry(codeProject,target){
     sha256:stat.size<=REVIEW_MATERIAL_LIMITS.file?sha256(fs.readFileSync(file)):null};
 }
 const kib=bytes=>`${bytes} 字节`;
-// Everything the runner would refuse only after the answer is written and the
+// Most of what the runner would refuse only after the answer is written and the
 // checks have run is refused here instead, with the path and the limit. The
-// runner stays the authority; this is the same rule applied earlier.
+// runner stays the authority: the reviewer's input limit, for one, is checked
+// only by the runner, on the exact review prompt.
 // What the next develop starts from, read the way the runner will read it: the
 // baseline (the one the host is about to capture for a new run, or the run's own
 // journaled one), the material the review package snapshot selects from the
