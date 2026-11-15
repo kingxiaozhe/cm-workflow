@@ -5,6 +5,8 @@
 
 ## 未发布
 
+- **启动体检提前报出缺少重开目标**（Wue specs8 T-003 重开：带了 `--supersede-reviewed-evidence` 却没有 `--supersede-target`，推进白跑一轮才被驾驶员拒绝）：新版控制策略下重开缺目标文件时，`cm-start-check` 报 error `supersede_target_missing`，并提示先用 `cm-ai-run.mjs inspect-history` 取旧运行的 `supersedeTarget`。
+
 - **大代码根下宿主不再因心跳超时被误杀**（Wue specs8 T-001：开发改动已写入后，宿主做同步文件树采集，单次 12–22 秒，连做几次超过 30 秒心跳上限，驾驶员以 `host_heartbeat_timeout` 终止了健康的宿主）：查找被忽略目录里的 `AGENTS.md` 与 `.gitignore` 合并成一次 git 查询（原来两次各走一遍被忽略的目录树，结果逐项比对一致）；驾驶员心跳默认上限从 30 秒提到 120 秒，整步上限 `operationMs` 不变，真卡死的宿主仍会被终止。
 
 - **启动前体检补上两类会让推进白跑一轮的问题，驾驶员一次列全缺的答案文件**（Wue specs8 T-001：体检通过后，推进先后因缺 `qa-assess.json`、缺 `documentation-inspect.json`、缺 `--browser-qa` 各停一次）：`cm-start-check` 新增第 5 项，启用 QA 且 feature 有交互式用例时缺少或误用 `--browser-qa` 报 error `browser_qa_declaration`（与宿主启动时同一判断）；advance 会反问而答案目录里缺的文件报 error `answers_missing`，一次列全。驾驶员缺多个答案文件时也一次列出，不再每次只报第一个。

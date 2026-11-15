@@ -291,6 +291,12 @@ export function checkLaunchInputs(plan,planFile,definition){
     catch(error){findings.push({level:'error',code:'browser_qa_declaration',
       message:`宿主会拒绝启动（${error.code}）：${error.reason??''} 在 PLAN.permissions 里加 --browser-qa available（本会话能跑 ${carriers.join('、')||'交互式'} QA 时）`});}
   }
+  // 新版控制策略的重开必须带旧运行 inspect-history 给出的 supersedeTarget 文件（Wue specs8 T-003 重开白跑一轮）
+  if(control&&permissions.includes('--supersede-reviewed-evidence')){
+    const target=value('--supersede-target');
+    if(target===undefined||!fs.existsSync(path.resolve(base,target)))findings.push({level:'error',code:'supersede_target_missing',
+      message:'重开（--supersede-reviewed-evidence）需要 --supersede-target 文件：先对旧运行执行 cm-ai-run.mjs inspect-history --config 旧RUN.json，保存其中的 supersedeTarget'});
+  }
   if(typeof plan.answers==='string'){
     const root=path.resolve(base,plan.answers),need=[];
     if(control&&control.qa!=='disabled'||!control&&workflow?.qa)need.push('qa-assess.json');

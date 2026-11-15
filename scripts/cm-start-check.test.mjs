@@ -523,6 +523,10 @@ test('answers the advance will ask and an invalid interactive QA declaration are
   assert.deepEqual(checkLaunchInputs(plan([]), planFile, definition).map(item => item.code), ['answers_conflict']);
   fs.rmSync(path.join(answers, 'develop-a1.json'));
   assert.deepEqual(checkLaunchInputs(plan([]), planFile, definition), []);
+  // A v2 reopen without the old run's supersedeTarget file is refused by the driver: report it first.
+  assert.deepEqual(checkLaunchInputs(plan(['--supersede-reviewed-evidence', '--supersede-reason', 'r']), planFile, definition).map(item => item.code), ['supersede_target_missing']);
+  fs.writeFileSync(path.join(dir, 'target.json'), '{}');
+  assert.deepEqual(checkLaunchInputs(plan(['--supersede-reviewed-evidence', '--supersede-reason', 'r', '--supersede-target', 'target.json']), planFile, definition), []);
   // No interactive cases in the feature: the host refuses a declaration it cannot use.
   assert.deepEqual(checkLaunchInputs(plan(['--browser-qa', 'available']), planFile, definition).map(item => item.code),
     ['browser_qa_declaration']);
