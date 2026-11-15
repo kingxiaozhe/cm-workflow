@@ -132,10 +132,13 @@ function processAlive(pid){
 // empty or without its owner's pid, even while its creator is paused.
 function createComplete(target,bytes){
   const temp=`${target}.${randomUUID()}.tmp`;
-  fs.writeFileSync(temp,bytes,{mode:0o600,flag:'wx'});
-  try{fs.linkSync(temp,target);return true;}
-  catch(error){if(error.code==='EEXIST')return false;throw error;}
-  finally{try{fs.unlinkSync(temp);}catch{}}
+  try{
+    fs.writeFileSync(temp,bytes,{mode:0o600,flag:'wx'});
+    try{fs.linkSync(temp,target);return true;}
+    catch(error){if(error.code==='EEXIST')return false;throw error;}
+  }finally{
+    try{fs.unlinkSync(temp);}catch(error){if(error.code!=='ENOENT')throw error;}
+  }
 }
 
 // Serializes human approval and amendment re-binding in one specs directory.
@@ -163,6 +166,13 @@ export function withApprovalLock(specsDir,run){
         let holder=null;
         try{holder=JSON.parse(seen.toString('utf8'));}catch{}
         if(!(Number.isInteger(holder?.pid)&&holder.pid>0&&!processAlive(holder.pid)))fail('spec_approval_busy');
+        // The holder may have released, and a new holder taken the lock, between
+        // the read and the pid check. Only the very bytes judged dead are removed:
+        // a dead holder cannot release any more, and other reclaimers wait on the guard.
+        let current=null;
+        try{current=fs.readFileSync(target);}catch(readError){if(readError.code!=='ENOENT')throw readError;}
+        if(current===null)continue;
+        if(!current.equals(seen))fail('spec_approval_busy');
         fs.unlinkSync(target);
       }finally{
         try{fs.unlinkSync(guard);}catch{}

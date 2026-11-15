@@ -306,10 +306,27 @@ test('stale lock reclaim and release never remove another live owner\'s lock',()
     assert.throws(()=>withApprovalLock(specs,()=>{ran=true;}),{code:'spec_approval_busy'});
     assert.equal(fs.readFileSync(lock,'utf8'),bytes);
   }
-  // A lock is visible only with its holder's pid; no temp files are left behind.
+  // Codex r4: between reading the lock and finding its pid dead, the holder released
+  // and a new live holder took the lock. The reclaimer must not delete it or enter.
+  {
+    const deadPid=2147483645,next=JSON.stringify({pid:process.pid,nonce:'next-owner',at:new Date().toISOString()});
+    fs.writeFileSync(lock,JSON.stringify({pid:deadPid,nonce:'released-owner',at:new Date().toISOString()}));
+    const kill=process.kill;ran=false;
+    process.kill=function(pid,signal){
+      if(pid===deadPid){process.kill=kill;fs.unlinkSync(lock);fs.writeFileSync(lock,next);
+        throw Object.assign(new Error('ESRCH'),{code:'ESRCH'});}
+      return kill.call(this,pid,signal);
+    };
+    try{assert.throws(()=>withApprovalLock(specs,()=>{ran=true;}),{code:'spec_approval_busy'});}
+    finally{process.kill=kill;}
+    assert.equal(ran,false);assert.equal(fs.readFileSync(lock,'utf8'),next);assert.equal(fs.existsSync(guard),false);
+  }
+  // A lock is visible only with its holder's pid, at its publication: no temp files are left behind.
   fs.unlinkSync(lock);ran=false;
-  withApprovalLock(specs,()=>{ran=true;assert.equal(JSON.parse(fs.readFileSync(lock,'utf8')).pid,process.pid);});
-  assert.equal(ran,true);
+  const link=fs.linkSync;let published=null;
+  fs.linkSync=function(from,to,...rest){const result=link.call(this,from,to,...rest);if(to===lock)published=fs.readFileSync(lock,'utf8');return result;};
+  try{withApprovalLock(specs,()=>{ran=true;});}finally{fs.linkSync=link;}
+  assert.equal(ran,true);assert.equal(JSON.parse(published).pid,process.pid);
   assert.deepEqual(fs.readdirSync(specs).filter(name=>name.startsWith('.cm-specs-approval.lock')),[]);
 }));
 
