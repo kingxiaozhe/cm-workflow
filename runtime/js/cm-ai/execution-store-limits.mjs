@@ -1,7 +1,7 @@
 // Size and count limits of the local durable record store, without the store
 // itself (no node:sqlite import), so owners can check an append before making it.
 import { digest,json,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
-import {fixJournalWorkflow,packFixJournalPayload,packFixJournalState} from './review-presentation.mjs';
+import {fixJournalWorkflow,journalPhysicalLimit,packFixJournalPayload,packFixJournalState} from './review-presentation.mjs';
 
 export const MiB=1024*1024,STATE_LIMIT=16*MiB,PHYSICAL_LIMIT=32*MiB,RECORD_LIMIT=1024;
 
@@ -13,7 +13,7 @@ export function appendFits(current,input){
   try{
     const bytes=value=>Buffer.byteLength(JSON.stringify(value));
     const entry=json(input,10*MiB),physicalPayload=packFixJournalPayload(entry.payload,{workflow:fixJournalWorkflow(current)});
-    if(bytes({...entry,payload:physicalPayload})>JOURNAL_PAYLOAD_LIMIT+1024||current.records.length>=RECORD_LIMIT)return false;
+    if(bytes({...entry,payload:physicalPayload})>journalPhysicalLimit(current)+1024||current.records.length>=RECORD_LIMIT)return false;
     const record={version:1,seq:current.records.length+1,id:entry.id,kind:entry.kind,payload:entry.payload,
       previousDigest:current.records.at(-1)?.digest??null};
     const {revision,...data}=current,next={...data,records:[...current.records,{...record,digest:digest(record)}]};

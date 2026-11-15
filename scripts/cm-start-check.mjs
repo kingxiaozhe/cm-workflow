@@ -296,8 +296,14 @@ export function checkLaunchInputs(plan,planFile,definition){
     if(control&&control.qa!=='disabled'||!control&&workflow?.qa)need.push('qa-assess.json');
     if(workflow?.documentationPaths?.length)need.push('documentation-sync.json');
     if(workflow)need.push('documentation-inspect.json');
-    if(plan.mode==='create')need.push('develop.json');
-    const missing=need.filter(name=>!fs.existsSync(path.join(root,name)));
+    const has=name=>fs.existsSync(path.join(root,name));
+    // 首轮开发答案与驾驶员同一命名规则（drive-bootstrap.mjs attemptAnswerName）：develop.json 或 develop-a1.json，二者不能并存
+    if(plan.mode==='create'){
+      if(has('develop.json')&&has('develop-a1.json'))findings.push({level:'error',code:'answers_conflict',
+        message:`develop.json 与 develop-a1.json 不能同时存在（${root}）`});
+      else if(!has('develop.json')&&!has('develop-a1.json'))need.push('develop.json（或 develop-a1.json）');
+    }
+    const missing=need.filter(name=>name.includes('（')||!has(name));
     if(missing.length)findings.push({level:'error',code:'answers_missing',files:missing,
       message:`advance 会反问而答案目录里没有：${missing.join('、')}（${root}）`});
   }

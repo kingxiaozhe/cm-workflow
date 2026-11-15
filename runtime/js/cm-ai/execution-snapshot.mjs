@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {digest,need,shape,id,hex,json,JOURNAL_PAYLOAD_LIMIT} from './effect-contract.mjs';
-import {fixJournalWorkflow,packFixJournalPayload,unpackFixJournalState} from './review-presentation.mjs';
+import {fixJournalWorkflow,journalPhysicalLimit,packFixJournalPayload,unpackFixJournalState} from './review-presentation.mjs';
 export function readExecutionSnapshot({specsRoot,identity}){
   shape(identity,['repositoryId','runId']);Object.values(identity).forEach(id);
   need(path.isAbsolute(specsRoot)&&fs.realpathSync(specsRoot)===specsRoot,'unsupported_path');
@@ -33,7 +33,7 @@ export function readExecutionSnapshot({specsRoot,identity}){
   for(const [index,r] of v.records.entries()){
     shape(r,['version','seq','id','kind','payload','previousDigest','digest']);id(r.id);hex(r.digest);
     // Same per-record bound as the store that wrote it (execution-store.mjs).
-    need(Buffer.byteLength(JSON.stringify(packFixJournalPayload(r.payload,{workflow:fixJournalWorkflow(v)})))<=JOURNAL_PAYLOAD_LIMIT,'limit_exceeded');
+    need(Buffer.byteLength(JSON.stringify(packFixJournalPayload(r.payload,{workflow:fixJournalWorkflow(v)})))<=journalPhysicalLimit(v),'limit_exceeded');
     const {digest:checksum,...body}=r;
     need(r.version===1&&r.seq===index+1&&r.previousDigest===previous&&!ids.has(r.id)
       &&['intent','result','cancel','commit-intent','commit-result','finalized'].includes(r.kind)

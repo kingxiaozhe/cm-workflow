@@ -516,8 +516,12 @@ test('answers the advance will ask and an invalid interactive QA declaration are
     permissions: ['--workflow-config', 'workflow.json', ...extra]});
   const missing = checkLaunchInputs(plan([]), planFile, definition);
   assert.deepEqual(missing.map(item => item.code), ['answers_missing']);
-  assert.deepEqual(missing[0].files, ['qa-assess.json', 'documentation-inspect.json', 'develop.json']);
-  for (const name of missing[0].files) fs.writeFileSync(path.join(answers, name), '{}');
+  assert.deepEqual(missing[0].files, ['qa-assess.json', 'documentation-inspect.json', 'develop.json（或 develop-a1.json）']);
+  for (const name of ['qa-assess.json', 'documentation-inspect.json', 'develop-a1.json']) fs.writeFileSync(path.join(answers, name), '{}');
+  assert.deepEqual(checkLaunchInputs(plan([]), planFile, definition), [], 'develop-a1.json is a valid first-round answer');
+  fs.writeFileSync(path.join(answers, 'develop.json'), '{}');
+  assert.deepEqual(checkLaunchInputs(plan([]), planFile, definition).map(item => item.code), ['answers_conflict']);
+  fs.rmSync(path.join(answers, 'develop-a1.json'));
   assert.deepEqual(checkLaunchInputs(plan([]), planFile, definition), []);
   // No interactive cases in the feature: the host refuses a declaration it cannot use.
   assert.deepEqual(checkLaunchInputs(plan(['--browser-qa', 'available']), planFile, definition).map(item => item.code),
