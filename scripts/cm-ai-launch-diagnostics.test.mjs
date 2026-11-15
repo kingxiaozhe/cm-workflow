@@ -76,6 +76,23 @@ test('fingerprint_mismatch names the launch input that differs',t=>{
     '--runtime','claude','--review-config',f.review]}).status,0);
 });
 
+test('--call-timeout-minutes 进运行指纹：同值恢复成功，漏传或改值按名字报出；显式 30 与缺省等价',t=>{
+  const f=fixture(t),base=['--runtime','claude','--review-config',f.review];
+  assert.equal(f.host('create',{extra:[...base,'--call-timeout-minutes','60']}).status,0);
+  assert.equal(f.host('resume',{extra:[...base,'--call-timeout-minutes','60']}).status,0,'same value reopens');
+  for(const [label,extra,pattern] of [
+    ['omitted',base,/--call-timeout-minutes：创建时为 60 分钟，本次为 30 分钟/],
+    ['changed',[...base,'--call-timeout-minutes','45'],/--call-timeout-minutes：创建时为 60 分钟，本次为 45 分钟/],
+  ]){
+    const result=f.host('resume',{extra});
+    assert.equal(result.status,1,label);assert.equal(result.error.code,'fingerprint_mismatch',label);
+    assert.match(result.error.reason,pattern,label);
+  }
+  const g=fixture(t);
+  assert.equal(g.host('create',{extra:['--runtime','claude','--review-config',g.review]}).status,0);
+  assert.equal(g.host('resume',{extra:['--runtime','claude','--review-config',g.review,'--call-timeout-minutes','30']}).status,0,'explicit default equals omitted');
+});
+
 test('a legacy run created without review config explains why the config cannot be added on resume',async t=>{
   const f=fixture(t),bridge=createHostToolBridge();
   try{

@@ -92,7 +92,7 @@ const FILES={develop:'develop.json',qa_assess:'qa-assess.json',documentation_ins
   documentation_sync:'documentation-sync.json',fix_learning:'learning.json',fix_diagnose:'diagnosis.json',
   fix_test_author:'test-edits.json',fix_repair:'repair-edits.json',fix_retrospective:'retrospective.json'};
 const PAIR_FLAGS=new Set(['--integration-evidence','--accept-integration-digest','--expected-control','--revise-scope','--scope-revision-reason','--development-rework-reason','--external-models-config','--review-config','--workflow-config',
-  '--input-limit',
+  '--input-limit','--call-timeout-minutes',
   '--protected-conversation-config','--protected-config','--revise-qa-config','--qa-config-revision-reason','--qa-environment-failure',
   '--qa-fix-owner-config','--qa-fix-template-config','--qa-fix-review-config','--browser-qa',
   '--bootstrap-config','--allow-provider-development-attempt','--supersede-reason','--supersede-target','--spec-rebind-reason',
@@ -710,7 +710,7 @@ function load(){
   for(let i=0;i<permissions.length;i++)if(PAIR_FLAGS.has(permissions[i])
     &&permissions[i]!=='--browser-qa'&&permissions[i]!=='--accept-integration-digest'
     &&permissions[i]!=='--scope-revision-reason'&&permissions[i]!=='--development-rework-reason'&&permissions[i]!=='--qa-config-revision-reason'&&permissions[i]!=='--qa-environment-failure'&&permissions[i]!=='--allow-provider-development-attempt'
-    &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--spec-rebind-reason'&&permissions[i]!=='--input-limit'
+    &&permissions[i]!=='--supersede-reason'&&permissions[i]!=='--spec-rebind-reason'&&permissions[i]!=='--input-limit'&&permissions[i]!=='--call-timeout-minutes'
     &&permissions[i]!=='--review-runtime'&&permissions[i]!=='--feature'&&permissions[i]!=='--qa-fix-final-review-recovery-invocation'){
     const file=path.resolve(base,permissions[i+1]);if(!fs.existsSync(file))stop(2,`${permissions[i]} 文件不存在: ${file}`);
     permissions[i+1]=file;permissionFiles.push(file);i++;
