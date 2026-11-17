@@ -734,6 +734,10 @@ export const runnerPayloadV3=(type,fields,limit=JOURNAL_PAYLOAD_LIMIT)=>json({..
 export function boundRunnerRecord({id,kind,payload},seq) {
   // Exact S3a envelope width. Digest contents do not affect encoded byte count.
   // The envelope adds at most the 1 KiB the store allows above the payload.
+  // The payload itself is bounded like the store bounds it (S3a): the 1 KiB is
+  // envelope room only, so a payload above the record limit is refused on read
+  // as on write, not only when the envelope also overflows.
+  json(payload,JOURNAL_PAYLOAD_LIMIT);
   json({version:1,seq,id,kind,payload,previousDigest:seq>1?'0'.repeat(64):null,digest:'0'.repeat(64)},JOURNAL_PAYLOAD_LIMIT+1024);
 }
 export function attemptBaseline(original,attempt) {

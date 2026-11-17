@@ -8,7 +8,7 @@ import childProcess from 'node:child_process';
 import { captureReviewBaseline } from './review-package.mjs';
 import { createTaskRunner } from './task-runner.mjs';
 import { openTaskExecutionStore } from './task-owner.mjs';
-import { digest } from './effect-contract.mjs';
+import { digest,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
 import { commitFixtureTask,observeFixtureCommit } from './task-commit.mjs';
 import * as commits from './task-commit.mjs';
 import {implementationSha256} from '../../scripts/cm-task-gate.mjs';
@@ -467,15 +467,17 @@ function rewriteHistory(f,mutate) {
     const sealed={...next,digest:digest(next)};previousDigest=sealed.digest;return sealed;});
   const {revision:old,...data}=s;fs.writeFileSync(p,JSON.stringify({...data,revision:digest(data)})+'\n');
 }
-for(const size of [1024*1024,1024*1024+1])test(`C2b complete record envelope cap ${size}`,()=>fixture(f=>{
+// 提交意图的边界跟随存档单条上限（5fd83cc 起 4 MiB，原写死 1 MiB）：恰好等于上限的意图可读回，
+// 多 1 字节由存档读取时拒绝（载荷超限，1 KiB 只是信封余量）
+for(const size of [JOURNAL_PAYLOAD_LIMIT,JOURNAL_PAYLOAD_LIMIT+1])test(`C2b complete record envelope cap ${size}`,()=>fixture(f=>{
   interrupted(f);const store=f.reopen();
   rewriteHistory(f,s=>{
     const r=s.records[0];r.payload.proof.root='/source/';
-    const remaining=size-Buffer.byteLength(JSON.stringify(r));assert(remaining>0);
-    r.payload.proof.root+='a'.repeat(remaining);assert.equal(Buffer.byteLength(JSON.stringify(r)),size);
+    const remaining=size-Buffer.byteLength(JSON.stringify(r.payload));assert(remaining>0);
+    r.payload.proof.root+='a'.repeat(remaining);assert.equal(Buffer.byteLength(JSON.stringify(r.payload)),size);
   });
-  if(size===1024*1024)assert.equal(observeFixtureCommit(store).observation,'observed_after');
-  else assert.throws(()=>observeFixtureCommit(store),{code:'commit_history_invalid'});
+  if(size===JOURNAL_PAYLOAD_LIMIT)assert.equal(observeFixtureCommit(store).observation,'observed_after');
+  else assert.throws(()=>observeFixtureCommit(store),{code:'limit_exceeded'});
 }));
 
 for(const bad of ['version','protocol','owner','fingerprints','attempt','plan-digest','duplicate-evidence','temporary','parent','result-digest','third-record'])

@@ -1,3 +1,7 @@
+// 必须是第一条 import：把存档单条上限压回 1 MiB（5fd83cc 起默认 4 MiB）。本文件的超限场景
+// （S3b2b init/checkpoint 超限、R1 整条记录边界）按 1 MiB 构造，而初始化记录受材料 2 MiB 总上限所限，
+// 在 4 MiB 默认值下无法触达记录上限；开关只许调小，默认 4 MiB 由 scripts/cm-journal-limit.test.mjs 覆盖。
+import '../../scripts/test-journal-limit-1mib.mjs';
 import {writeHandoff,writeReview} from './native-gate-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +12,7 @@ import os from 'node:os';
 import { spawnSync,spawn } from 'node:child_process';
 import {registerHooks} from 'node:module';
 import { checkCompletion } from './gate-bridge.mjs';
-import { digest,json } from './effect-contract.mjs';
+import { digest,json,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
 import { openTaskExecutionStore } from './task-owner.mjs';
 import { readRunnerHistory } from './durable-runner-state.mjs';
 import { createCmAiTaskLearningApplication,createCmAiTaskLearningRetrospective } from './cm-ai-context-refresh.mjs';
@@ -1279,14 +1283,17 @@ test('S3b2b R1 full record UTF8 byte limit includes envelope, exact limit passes
     try{make(memoryStore());low=mid;}catch(e){assert.equal(e.code,'limit_exceeded');high=mid-1;}
   }
   fs.writeFileSync(path.join(f.root,'requirements.md'),'x'.repeat(low));
-  const probe=memoryStore();make(probe);let bytes=Buffer.byteLength(JSON.stringify(probe.snapshot().records[0]));
-  assert(bytes<=1024*1024,'accepted full record above limit');
-  f.options.developer.contextId+='p'.repeat(1024*1024-bytes);
-  const exact=memoryStore();make(exact);assert.equal(Buffer.byteLength(JSON.stringify(exact.snapshot().records[0])),1024*1024);
+  // 5fd83cc 起记录按存档同一规则计：载荷 ≤ 单条上限，1 KiB 只是信封余量，所以可达边界在载荷上
+  assert.equal(JOURNAL_PAYLOAD_LIMIT,1024*1024,'1 MiB test switch is active');
+  const probe=memoryStore();make(probe);let bytes=Buffer.byteLength(JSON.stringify(probe.snapshot().records[0].payload));
+  assert(bytes<=JOURNAL_PAYLOAD_LIMIT,'accepted payload above limit');
+  f.options.developer.contextId+='p'.repeat(JOURNAL_PAYLOAD_LIMIT-bytes);
+  const exact=memoryStore();make(exact);assert.equal(Buffer.byteLength(JSON.stringify(exact.snapshot().records[0].payload)),JOURNAL_PAYLOAD_LIMIT);
+  assert(Buffer.byteLength(JSON.stringify(exact.snapshot().records[0]))<=JOURNAL_PAYLOAD_LIMIT+1024,'envelope stays within its 1 KiB room');
   f.options.developer.contextId+='p';const overflow=memoryStore();assert.throws(()=>make(overflow),{code:'limit_exceeded'});
   assert.equal(overflow.snapshot().records.length,0);f.options.developer.contextId=f.options.developer.contextId.slice(0,-1);
   make(f.getStore());const saved=f.getStore().snapshot().records;
-  assert.equal(Buffer.byteLength(JSON.stringify(saved[0])),1024*1024);assert.equal(f.calls.length,0);
+  assert.equal(Buffer.byteLength(JSON.stringify(saved[0].payload)),JOURNAL_PAYLOAD_LIMIT);assert.equal(f.calls.length,0);
   const oversized=structuredClone(saved);oversized[0].payload.config.developer.requestedModel+='字';
   assert.throws(()=>readRunnerHistory(oversized,oversized[0].payload.config),{code:'limit_exceeded'});
 }));

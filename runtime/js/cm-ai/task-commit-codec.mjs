@@ -1,7 +1,7 @@
 // Internal pure C2b payload validation. No filesystem or approval authority.
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {need,shape,hex,json,digest,validIdentity} from './effect-contract.mjs';
+import {need,shape,hex,json,digest,validIdentity,JOURNAL_PAYLOAD_LIMIT} from './effect-contract.mjs';
 import {reviewSpecsPath} from './review-package.mjs';
 const FILE_LIMIT=256*1024,sha=b=>createHash('sha256').update(b).digest('hex');
 const same=(a,b)=>need(digest(a)===digest(b),'commit_history_invalid');
@@ -31,7 +31,9 @@ export function planBytes(raw){
   need(changes===1,'invalid_plan');return {before,after};
 }
 export function readCommitIntent(raw,{owner,identity,fingerprints}){
-  const p=json(raw);
+  // 与写入侧同一上限：提交意图按存档单条上限写入（task-commit boundedRecord），
+  // 读取若仍写死 1 MiB，计划接近 1 MiB 时写得进的意图读不回，整次提交记录变成不可读
+  const p=json(raw,JOURNAL_PAYLOAD_LIMIT);
   shape(p,['version','protocol','type','identity','owner','fingerprints','plan','proof','parent','temporaryName']);
   need(p.version===1&&p.protocol==='cm-task-commit'&&p.type==='intent','commit_history_invalid');
   validIdentity(p.identity);same(p.identity,identity);same(p.owner,owner);same(p.fingerprints,fingerprints);

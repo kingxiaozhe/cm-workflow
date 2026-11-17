@@ -6,7 +6,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {createTaskRunner} from './task-runner.mjs';
 import {readRunnerHistory,runnerPayload} from './durable-runner-state.mjs';
-import {digest} from './effect-contract.mjs';
+import {digest,JOURNAL_PAYLOAD_LIMIT} from './effect-contract.mjs';
 
 // Pure grammar fixtures; this fake storage deliberately makes NO durability claim.
 async function history(fn,{twoAttempts=false}={}) {
@@ -270,11 +270,15 @@ for(const state of ['blocked','cancelled'])test(`C3a V2 result cannot checkpoint
   assert.throws(()=>v.read(ended(v,{result:true,state})),{code:'runner_commit'});
 }));
 
-for(const size of [1024*1024,1024*1024+1])test(`C3a V2 complete nested envelope boundary ${size}`,()=>v2History(v=>{
-  const rows=structuredClone(v.records.slice(0,v.intentIndex+1)),record=rows.at(-1),baseSize=Buffer.byteLength(JSON.stringify(record));
-  record.payload.commit.parent.dev='1'.repeat(size-baseSize+1);
-  const all=chain(rows);assert.equal(Buffer.byteLength(JSON.stringify(all.at(-1))),size);
-  if(size===1024*1024)assert.equal(v.read(all).state.state,'unknown');
+// 边界跟随存档单条上限（5fd83cc 起 4 MiB）：载荷按存档同一规则计字节，1 KiB 只是信封余量，
+// 所以可达边界在载荷上，恰好等于上限可读、多 1 字节拒绝（原写死 1 MiB 整条记录）
+for(const size of [JOURNAL_PAYLOAD_LIMIT,JOURNAL_PAYLOAD_LIMIT+1])test(`C3a V2 complete nested envelope boundary ${size}`,()=>v2History(v=>{
+  const rows=structuredClone(v.records.slice(0,v.intentIndex+1)),record=rows.at(-1);
+  record.payload.commit.parent.dev='';const baseSize=Buffer.byteLength(JSON.stringify(record.payload));
+  record.payload.commit.parent.dev='1'.repeat(size-baseSize);
+  const all=chain(rows);assert.equal(Buffer.byteLength(JSON.stringify(all.at(-1).payload)),size);
+  assert(Buffer.byteLength(JSON.stringify(all.at(-1)))<=JOURNAL_PAYLOAD_LIMIT+1024,'envelope stays within its 1 KiB room');
+  if(size===JOURNAL_PAYLOAD_LIMIT)assert.equal(v.read(all).state.state,'unknown');
   else assert.throws(()=>v.read(all),{code:'limit_exceeded'});
 }));
 

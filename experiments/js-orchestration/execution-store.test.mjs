@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { openExecutionStore } from './execution-store.mjs';
-import { digest } from './effect-contract.mjs';
+import { digest,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
 
 const identity={repositoryId:'synthetic',runId:'store-run'};
 const fingerprints={workflow:digest('workflow'),config:digest('config'),inputs:digest('inputs')};
@@ -275,7 +275,10 @@ test('S3a closed, non-JSON and oversized appends cannot mutate disk',()=>fixture
   const store=openExecutionStore(options),bytes=fs.readFileSync(stateFile);let touched=0;
   const invalid=entry(store);Object.defineProperty(invalid,'payload',{enumerable:true,get(){touched++;return {};}});
   assert.throws(()=>store.append(invalid));assert.equal(touched,0);
-  for(const payload of [()=>{},NaN,{value:'😀'.repeat(300000)}])assert.throws(()=>store.append({...entry(store),payload}));
+  // 超限载荷按 UTF-8 字节超出存档单条上限（含 1 KiB 信封），字符串长度却低于上限：上限随 5fd83cc 改为 4 MiB
+  const oversized='😀'.repeat(JOURNAL_PAYLOAD_LIMIT/4+300);
+  assert(Buffer.byteLength(oversized)>JOURNAL_PAYLOAD_LIMIT+1024&&oversized.length<JOURNAL_PAYLOAD_LIMIT);
+  for(const payload of [()=>{},NaN,{value:oversized}])assert.throws(()=>store.append({...entry(store),payload}));
   assert.deepEqual(fs.readFileSync(stateFile),bytes);store.close();
   assert.throws(()=>store.append({}),{code:'store_closed'});
 }));
