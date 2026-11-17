@@ -829,3 +829,99 @@ test('the shipped table marks only handoff direct and the two heavy skills ask',
   assert.deepEqual(Object.fromEntries(rules.filter(rule=>rule.invoke).map(rule=>[rule.skill,rule.invoke.mode])),
     {handoff:'direct',wayfinder:'ask','improve-codebase-architecture':'ask'});
 });
+
+// ---- keyword-fallback guards (方案-否定句 2026-11-16) ----
+// Real misfire: "不要换个会话，继续当前任务" told the model to start handoff (Jev off).
+function guarded(t,rules=readJson(defaultRulesPath()).value){
+  const f=fixture(t,{rules,local:{judge:false},authorNames:['handoff','wayfinder','improve-codebase-architecture'],
+    authorSkills:[['.claude/skills','handoff'],['.claude/skills','wayfinder'],['.claude/skills','improve-codebase-architecture']]});
+  let session=0;
+  const run=async prompt=>{
+    const out=await hook({prompt,session_id:`g${session++}`},{env:f.env,host:'claude',rulesFile:f.rulesFile,now:NOW,
+      loadAuthor:async()=>({...(await loadAuthorCheck()),skills:f.authorOptions.skills,license:f.authorOptions.license})});
+    const parsed=out?JSON.parse(out):null;
+    if(!parsed?.hookSpecificOutput)return null;
+    const line=parsed.systemMessage.split('\n')[0];
+    const ask=/先问你要不要用 \/(\S+)$/.exec(line);
+    return ask?`ask:${ask[1]}`:`direct:${/已让模型用 \/(\S+)$/.exec(line)[1]}`;
+  };
+  return {...f,run};
+}
+
+test('guards: negation, quotes and bare keywords decide direct, ask or nothing for the shipped handoff rule',async t=>{
+  const f=guarded(t);
+  const cases=[
+    ['不要换个会话，继续当前任务',null],
+    ['不要继续当前任务，换个会话交接一下','direct:handoff'],
+    ['上下文快满了，帮我写个交接','direct:handoff'],
+    ['上下文快满了','ask:handoff'],
+    ['不用交接，换个会话就行','ask:handoff'],
+    ['我们讨论 “换个会话” 这个关键词',null],
+    ['`换个会话` 是个关键词',null],
+    ['别忘了换个会话前先交接','direct:handoff'],
+    ['先别管测试，换个会话交接吧','direct:handoff'],
+    ["don't start a new session, keep going",null],
+    ['/handoff 下个会话接着做',null],
+    ['帮我把这个大改造拆成多个会话','ask:wayfinder'],
+    // "handoff" counts as 交接, and English session phrases count as 会话 (user decision 2026-11-17).
+    ['上下文快满了，写个 handoff 吧','direct:handoff'],
+    ['context window is almost full, write a handoff doc for a fresh session','direct:handoff'],
+    ['hand off to a new session','direct:handoff'],
+    ["don't hand off, start a new session",'ask:handoff'],
+    ['我们讨论 handoff 这个技能',null],
+  ];
+  const got=[];
+  for(const [prompt] of cases)got.push([prompt,await f.run(prompt)]);
+  assert.deepEqual(got,cases);
+});
+
+test('guards: window edges, case, everyday words with 别, and guards never add a match (review r1)',async t=>{
+  const f=guarded(t);
+  const cases=[
+    ['跟别人换个会话交接','direct:handoff'],
+    ['特别是上下文快满了，帮我写交接','direct:handoff'],
+    ['你别换个会话，继续',null],
+    // Chinese: a hit starting within 4 characters of the negation is masked, from the 5th it is not.
+    ['不要啊啊啊上下文快满了',null],
+    ['不要啊啊啊啊上下文快满了','ask:handoff'],
+    // English: up to 3 words after the negation.
+    ["don't a b start a new session",null],
+    ["don't a b c start a new session",'ask:handoff'],
+    ['no need to start a new session',null],
+    ['START A NEW SESSION','ask:handoff'],
+    // Masking a pattern's exclusion words must not create a new trigger.
+    // A-not-A questions and "why not" are not negations (review r2); plain "not"/"do not" are.
+    ['要不要换个会话交接','direct:handoff'],
+    ['用不用换个会话交接','direct:handoff'],
+    ['想不想换个会话交接','direct:handoff'],
+    ['why not start a new session','ask:handoff'],
+    ["why don't we start a new session",'ask:handoff'],
+    ['只要不要换个会话交接就行',null],
+    ['i will not start a new session',null],
+    ['do not start a new session',null],
+    ['用别名换个会话交接','direct:handoff'],
+    ['道别前换个会话交接','direct:handoff'],
+    ['不要重构一下，架构太乱了',null],
+    ['架构太乱了，我说的不是`重构一下`',null],
+  ];
+  const got=[];
+  for(const [prompt] of cases)got.push([prompt,await f.run(prompt)]);
+  assert.deepEqual(got,cases);
+});
+
+test('guards: what they hold back is logged with rule and reason only, never the text',async t=>{
+  const f=guarded(t);
+  await f.run('不要换个会话，继续当前任务');
+  await f.run('我们讨论 “换个会话” 这个关键词');
+  assert.deepEqual(f.log().filter(entry=>entry.event==='suppressed').map(({rule,skill,reason})=>({rule,skill,reason})),[
+    {rule:'long-session',skill:'handoff',reason:'negated'},
+    {rule:'long-session',skill:'handoff',reason:'quoted'}]);
+  assert.doesNotMatch(fs.readFileSync(logFile(f.env),'utf8'),/换个会话|继续当前任务/);
+});
+
+test('guards: masking a pattern\'s exclusion words never upgrades ask to direct (review r2)',async t=>{
+  const f=guarded(t,{version:1,rules:[{id:'long-session',skill:'handoff',author:true,keywords:['换个会话'],
+    patterns:['^(?![\\s\\S]*只是问问)[\\s\\S]*会话'],reason:'写交接',invoke:{mode:'direct',when:'写交接'}}]});
+  assert.equal(await f.run('换个会话，不要只是问问'),'ask:handoff');
+  assert.equal(await f.run('换个会话吧'),'direct:handoff');
+});
