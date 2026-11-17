@@ -531,7 +531,11 @@ export async function batchFixture(mode,options={}){
       if(options.redoCode==='developer_rate_limited'){
         assert.equal(result.developFailure,'developer_rate_limited',JSON.stringify(result));
         const {driveNotice,buildNotifyMessage}=await import('../runtime/js/notify.mjs');
-        const notice=driveNotice({host:'/x/scripts/cm-ai-batch-host.mjs',cwd:codeProject,args:['--host-context','s1'],operation:'advance',row:{requestId:'drive',result}});
+        // An empty CM home: the delivery under test must not follow the developer's own standing
+        // authorization (~/.cm-workflow/autonomy.json turns every stop into a 'later' notice).
+        const noticeHome=fs.mkdtempSync(path.join(root,'notify-home-'));
+        const notice=driveNotice({host:'/x/scripts/cm-ai-batch-host.mjs',cwd:codeProject,args:['--host-context','s1'],operation:'advance',row:{requestId:'drive',result},
+          env:{...process.env,CM_WORKFLOW_HOME:noticeHome}});
         assert.equal(notice.delivery,'now');
         assert.match(buildNotifyMessage(notice,{now:Date.now(),layout:'compact'}).body,/开发进程被限流（429）：过一刻钟后回到会话「s1」，授权它重做这一轮开发/);
       }else assert.equal(Object.hasOwn(result,'developFailure'),false);
