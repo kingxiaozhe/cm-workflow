@@ -9,10 +9,12 @@ import {notify,notifyLater,cancelPendingNotice,clearAttention,sessionTitle,sched
 
 // driveNotice and spawned drivers read the standing authorization from the default
 // home: point it at an empty directory, never the tester's own ~/.cm-workflow.
-if(!process.env.CM_WORKFLOW_HOME){
-  process.env.CM_WORKFLOW_HOME=fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-default-home-'));
-  process.on('exit',()=>fs.rmSync(process.env.CM_WORKFLOW_HOME,{recursive:true,force:true}));
-}
+// Always, not only when unset: a tester's exported CM_WORKFLOW_HOME may be their real
+// home with autonomy.json on, which defers every stop and fails the 'now' expectations
+// (dogfood 2026-11-17: four tests failed with a real home under standing authorization).
+const DEFAULT_HOME=fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-default-home-'));
+process.env.CM_WORKFLOW_HOME=DEFAULT_HOME;
+process.on('exit',()=>fs.rmSync(DEFAULT_HOME,{recursive:true,force:true}));
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
 const BRIDGE=new URL('../runtime/js/cm-ai/host-tool-bridge.mjs',import.meta.url).href;
