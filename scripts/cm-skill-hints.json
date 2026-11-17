@@ -26,7 +26,7 @@
       "invoke": {"mode": "direct", "when": "要结束或切换当前会话：请求写交接文档、交接摘要或接手说明，把当前进度和上下文留给新会话、新窗口或另一个 agent 接着做"},
       "keywords": ["会话太长", "上下文太长", "上下文快满", "换个会话", "开个新会话", "新开一个会话", "context is getting long", "start a new session", "上下文不够了", "上下文要满了", "上下文快爆了", "上下文快用完", "下个会话接着做", "新会话接着做", "hand off to a new session", "running out of context", "context window is almost full", "continue in a new session"],
       "reason": "先写交接摘要，再换新会话接着做",
-      "patterns": ["^(?=[\\s\\S]*(新会话|新的会话|下个会话|下一个会话|换(个|一个)?会话|开(个|一个)?新会话|(上下文|会话)((快|要)(满|爆|用完)|不够|满了|爆了|用完了|太长)))[\\s\\S]*交接"]
+      "patterns": ["^(?=[\\s\\S]*(新会话|新的会话|下个会话|下一个会话|换(个|一个)?会话|开(个|一个)?新会话|(上下文|会话)((快|要)(满|爆|用完)|不够|满了|爆了|用完了|太长)|\\b(new|fresh|next|another) session|running out of context|context (window )?is (almost |getting )?(full|long)))[\\s\\S]*(交接|\\bhand-? ?off\\b)"]
     },
     {
       "id": "multi-session-work",

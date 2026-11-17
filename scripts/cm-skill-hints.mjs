@@ -156,6 +156,45 @@ export function loadRules({env=process.env,rulesFile=defaultRulesPath()}={}){
 // Pasted logs and code are where stray keywords live, so fenced blocks never match.
 export const stripCode=text=>text.replace(/```[\s\S]*?(?:```|$)/g,' ');
 
+// Keyword-fallback guards for invoke rules only (方案-否定句 2026-11-16). Hints and the Jev
+// path are untouched: changing what Jev is sent would void the recorded exam answers.
+// Real misfire: "不要换个会话，继续当前任务" told the model to start handoff.
+// Quoted or inline-code words are being talked about, not asked for. ASCII ' is left
+// alone because English contractions use it.
+const QUOTED=[/`[^`\n]*`/g,/“[^”]*”/g,/「[^」]*」/g,/『[^』]*』/g,/"[^"\n]*"/g];
+export const stripQuoted=text=>QUOTED.reduce((out,re)=>out.replace(re,' '),text);
+// A negation masks only the few characters (Chinese) or words (English) right after it,
+// within its own clause: "不要继续当前任务，换个会话交接" still asks for a handoff.
+// "别忘了/不要忘了/别忘记" mean "do", so a negation followed by 忘 is not one.
+export const NEGATION_WINDOW={zh:4,en:3};
+const CLAUSE_END=/[，,。.！!？?；;：:\n]/;
+// A lone 别 inside a word (别人、特别、分别、区别、告别、别名…) is not a negation (review r1),
+// nor are A-not-A questions (要不要、用不用、想不想) or "why not" (review r2).
+const ZH_NEGATION=/(?:先别|(?<!(?<!只)要)不要|(?<!用)不用|(?<!想)不想|无需|不必|(?<![特分区识级类个告差辨鉴性派道送判甄离])别(?![人处的致墅名扭样具]))(?!忘)/g;
+const EN_NEGATION=/\b(?:(?<!why\s+)don['’]?t|do not|no need to|(?<!why\s+)not)\b/g;
+const EN_WORD=/^[ \t]+[^\s，,。.！!？?；;：:]+/;
+export function maskNegated(text){
+  let out=text;
+  const blank=(from,to)=>{out=out.slice(0,from)+' '.repeat(to-from)+out.slice(to);};
+  for(const match of text.matchAll(ZH_NEGATION)){
+    const start=match.index+match[0].length;
+    let end=start;
+    while(end<text.length&&end-start<NEGATION_WINDOW.zh&&!CLAUSE_END.test(text[end]))end++;
+    blank(start,end);
+  }
+  for(const match of text.matchAll(EN_NEGATION)){
+    const start=match.index+match[0].length;
+    let end=start;
+    for(let words=0;words<NEGATION_WINDOW.en;words++){
+      const next=EN_WORD.exec(text.slice(end));
+      if(!next)break;
+      end+=next[0].length;
+    }
+    blank(start,end);
+  }
+  return out;
+}
+
 // A user regex can backtrack for minutes; it runs in a context with a hard time
 // budget, and on timeout no pattern counts as matched (keywords still do).
 export function patternMatches(rules,text,budget=PATTERN_BUDGET_MS){
@@ -269,8 +308,31 @@ export async function pickInvoke({prompt,rules,host,env,authorCheck,judgeModule,
       choices:candidates.map(rule=>({skill:rule.skill,when:rule.invoke.when,near:rule.invoke.near}))});
   }
   if(!verdict.error)return {rule:candidates.find(rule=>rule.skill===verdict.skill)??null,via:'jev',candidates};
-  const hits=keywordHits(candidates,prompt);
-  return {rule:candidates.find((rule,index)=>hits[index])??null,via:'keyword',error:verdict.error,candidates};
+  const fallback={via:'keyword',error:verdict.error,candidates};
+  const unquoted=stripQuoted(stripCode(prompt.toLowerCase()));
+  const guarded=splitHits(candidates,maskNegated(unquoted));
+  // Guards only take matches away: masking can also hide a pattern's exclusion words
+  // ("不要重构一下，架构太乱了"), so a guarded hit counts only where the plain text hit too.
+  const plain=splitHits(candidates,stripCode(prompt.toLowerCase()));
+  const raw=plain.map(hit=>hit.keyword||hit.pattern);
+  const index=guarded.findIndex((hit,at)=>raw[at]&&(hit.keyword||hit.pattern));
+  if(index>=0){
+    const rule=candidates[index];
+    // A rule with patterns keeps its mode only when a pattern matched both before and after
+    // the guards; its bare keywords ("换个会话" without "交接") make the model ask first.
+    const strong=guarded[index].pattern&&plain[index].pattern;
+    return {...fallback,rule,mode:rule.patterns.length&&!strong?'ask':rule.invoke.mode};
+  }
+  // What the guards held back, for the log (rule and reason only, never the text).
+  const first=raw.findIndex(Boolean);
+  if(first<0)return {...fallback,rule:null};
+  const unguarded=splitHits([candidates[first]],unquoted)[0];
+  return {...fallback,rule:null,suppressed:{rule:candidates[first].id,skill:candidates[first].skill,
+    reason:unguarded.keyword||unguarded.pattern?'negated':'quoted'}};
+}
+function splitHits(rules,text){
+  const byPattern=patternMatches(rules,text);
+  return rules.map((rule,index)=>({keyword:rule.keywords.some(word=>text.includes(word)),pattern:byPattern[index]}));
 }
 
 export const messageText=(hints,host)=>
@@ -304,13 +366,14 @@ export async function hook(input,{env=process.env,host='claude',rulesFile=defaul
   // An installed invoke rule is handled above only; the rest hint as before.
   const handled=new Set(invoked.candidates.map(rule=>rule.id));
   const hints=short?pickHints({prompt,rules:loaded.rules.filter(rule=>!handled.has(rule.id)),host,env,hinted:state.hinted,authorCheck}):[];
-  const start=invoked.rule?{skill:invoked.rule.skill,mode:invoked.rule.invoke.mode,reason:invoked.rule.reason}:null;
+  const start=invoked.rule?{skill:invoked.rule.skill,mode:invoked.mode??invoked.rule.invoke.mode,reason:invoked.rule.reason}:null;
   // Bookkeeping failures cost the statistics, never the hint itself.
   try{
     for(const item of adopted)appendLog(env,{t:time,event:'adopted',host,rule:item.rule,skill:item.skill});
     // A missing key is the normal state for most users, not worth a line per message.
     if(invoked.error&&!['no-key','off'].includes(invoked.error))appendLog(env,{t:time,event:'judge-error',host,error:invoked.error});
     if(start)appendLog(env,{t:time,event:'invoke',host,rule:invoked.rule.id,skill:start.skill,mode:start.mode,via:invoked.via});
+    if(invoked.suppressed)appendLog(env,{t:time,event:'suppressed',host,...invoked.suppressed});
     for(const hint of hints)appendLog(env,{t:time,event:'hint',host,rule:hint.rule,skill:hint.skill});
   }catch{/* 统计丢一条 */}
   // Session state is never removed (decided 2026-10-24): a session resumed months
