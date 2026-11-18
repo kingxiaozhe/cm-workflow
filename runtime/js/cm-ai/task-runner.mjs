@@ -816,7 +816,8 @@ export function createTaskRunner(options) {
       need(liveToken===token&&state==='committing'&&busy&&completeEffect,'commit_capability_invalid');
       if(action==='guard'){storeOperation(currentStore);return ack();}
       need(action==='append-intent'?phase==='prepared':phase==='intent','commit_phase_invalid');
-      const fields={effectId:completeEffect.effect.id,completeIntentDigest:completeEffect.digest,commit:json(payload)};
+      // Same bound as readCommitIntent: a commit record the reader accepts must also be writable.
+      const fields={effectId:completeEffect.effect.id,completeIntentDigest:completeEffect.digest,commit:json(payload,JOURNAL_PAYLOAD_LIMIT)};
       const type=action==='append-intent'?'task-commit-intent':'task-commit-result';
       // Invalid caller data is rejected before invoking the appender. The actual
       // append repeats preflight against its protected current cursor.

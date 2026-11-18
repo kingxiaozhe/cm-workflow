@@ -7,6 +7,9 @@ import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {patrol,inspectHosts,processAlive} from './cm-patrol.mjs';
 import {hostRegistryDir,buildNotifyMessage,removeHostRegistry} from '../runtime/js/notify.mjs';
+// An exported CM_NOTIFY_OFF silences every notice; these fixtures expect notices on
+// (review 2026-11-17). Tests of the switch itself set it explicitly.
+delete process.env.CM_NOTIFY_OFF;
 
 const HOST_SESSION=new URL('../runtime/js/cm-ai/host-session.mjs',import.meta.url).href;
 const PATROL=fileURLToPath(new URL('./cm-patrol.mjs',import.meta.url));
