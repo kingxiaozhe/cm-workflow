@@ -23,6 +23,13 @@ import {checkPrdDraftMechanics,matchesPrdDraftMechanics} from '../runtime/js/cm-
 import {digest} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {buildManifest} from './cm-spec-manifest.mjs';
 
+// Spec approvals write a round ledger under CM_WORKFLOW_HOME; keep it off the real home.
+// Always, not only when unset: an exported CM_WORKFLOW_HOME may be the tester's real home
+// (review 2026-11-17: these suites left 11 approval records in an externally named home).
+const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-approval-home-'));
+process.env.CM_WORKFLOW_HOME=isolatedHome;
+process.on('exit',()=>fs.rmSync(isolatedHome,{recursive:true,force:true}));
+
 const TIMEOUT=Number(process.env.CM_TEST_FIXTURE_TIMEOUT_MS??120000);
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const UPGRADE_BASE='f73402d';

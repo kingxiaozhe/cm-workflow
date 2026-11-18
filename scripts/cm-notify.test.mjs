@@ -15,6 +15,9 @@ import {notify,notifyLater,cancelPendingNotice,clearAttention,sessionTitle,sched
 const DEFAULT_HOME=fs.mkdtempSync(path.join(os.tmpdir(),'cm-notify-default-home-'));
 process.env.CM_WORKFLOW_HOME=DEFAULT_HOME;
 process.on('exit',()=>fs.rmSync(DEFAULT_HOME,{recursive:true,force:true}));
+// The same for the per-process off switch: an exported CM_NOTIFY_OFF would silence every
+// fixture that expects a notice (review 2026-11-17). Tests that need it set it explicitly.
+delete process.env.CM_NOTIFY_OFF;
 const NOW=Date.parse('2026-10-08T08:00:00.000Z');
 const DRIVE_CORE=new URL('../runtime/js/cm-ai/drive-core.mjs',import.meta.url).href;
 const BRIDGE=new URL('../runtime/js/cm-ai/host-tool-bridge.mjs',import.meta.url).href;

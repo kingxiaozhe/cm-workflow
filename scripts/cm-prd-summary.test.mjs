@@ -16,11 +16,11 @@ import {loadConfig} from './cm-workflow-config.mjs';
 import {TASK_GRAMMAR} from '../runtime/js/spec-task-line.mjs';
 import {writeSpecsStatus} from '../runtime/js/specs-status.mjs';
 // Spec approvals write a round ledger under CM_WORKFLOW_HOME; keep it off the real home.
-if(!process.env.CM_WORKFLOW_HOME){
-  const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-approval-home-'));
-  process.env.CM_WORKFLOW_HOME=isolatedHome;
-  process.on('exit',()=>fs.rmSync(isolatedHome,{recursive:true,force:true}));
-}
+// Always, not only when unset: an exported CM_WORKFLOW_HOME may be the tester's real home
+// (review 2026-11-17: these suites left 11 approval records in an externally named home).
+const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-approval-home-'));
+process.env.CM_WORKFLOW_HOME=isolatedHome;
+process.on('exit',()=>fs.rmSync(isolatedHome,{recursive:true,force:true}));
 const sha=content=>createHash('sha256').update(content).digest('hex');
 function fixture(t,{pendingCorrection=false,mandatory=false}={}){
   const specs=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-summary-marks-')));

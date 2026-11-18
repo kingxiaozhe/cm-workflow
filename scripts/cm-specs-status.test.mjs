@@ -14,11 +14,11 @@ import {publishPrdReview} from '../runtime/js/cm-prd/review-publication.mjs';
 import {recordPrdHostDisposition} from '../runtime/js/cm-prd/review-disposition.mjs';
 import {createPrdSummaryOwner,publishPrdAwaitingReview} from '../runtime/js/cm-prd/summary.mjs';
 // Spec approvals write a round ledger under CM_WORKFLOW_HOME; keep it off the real home.
-if(!process.env.CM_WORKFLOW_HOME){
-  const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-approval-home-'));
-  process.env.CM_WORKFLOW_HOME=isolatedHome;
-  process.on('exit',()=>fs.rmSync(isolatedHome,{recursive:true,force:true}));
-}
+// Always, not only when unset: an exported CM_WORKFLOW_HOME may be the tester's real home
+// (review 2026-11-17: these suites left 11 approval records in an externally named home).
+const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-approval-home-'));
+process.env.CM_WORKFLOW_HOME=isolatedHome;
+process.on('exit',()=>fs.rmSync(isolatedHome,{recursive:true,force:true}));
 const entry=fileURLToPath(new URL('./cm-ai-admission.mjs',import.meta.url));
 const at='2026-09-18T00:00:00.000Z';
 const keys=['status','summaryDigest','at','features','specFiles','testCases','approval'];
