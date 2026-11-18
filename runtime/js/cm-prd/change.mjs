@@ -10,6 +10,7 @@ import {loadConfig,resolveRole} from '../../../scripts/cm-workflow-config.mjs';
 import {buildManifest} from '../../../scripts/cm-spec-manifest.mjs';
 import {specLines,taskDeclarations,TASK_GRAMMAR,LEGACY_TASK_GRAMMAR,recordedTaskGrammar} from '../spec-task-line.mjs';
 import {inspectPrdReview} from '../../../scripts/cm-prd-review-gate.mjs';
+import {approvedSpecBaseline} from '../cm-ai/spec-amendment.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {prdTreeFileDigest} from './tree-digest.mjs';
 import {writeImmutableWorkflowFile} from '../cm-ai/review-evidence-file.mjs';
@@ -290,6 +291,8 @@ export function assertPrdReviewsSettled(specs,selected,{requireSplit=false}={}){
     const archive=read(specs,`.reviews/prd-change-${status.revisionDigest}.json`);
     if(archive!==null){const value=JSON.parse(archive);need(value.proposal.proposalDigest===status.revisionDigest,'prd_revision_archive_invalid');historical=value.before.reviews;}
   }
+  // Receipts predate later human approvals and applied amendments; those bound bytes count too.
+  const approvedBaseline=approvedSpecBaseline(specs);
   for(const directory of selected)for(const stage of ['design','split']){
     const feature=directory.replace(/^\d+\./,''),prefix=`prd-${feature}-${stage}`;
     for(const suffix of ['-dispatch.json','-r1.md','-r2.md','-disposition.json'])readCmInitSource(specs,`.reviews/${prefix}${suffix}`);
@@ -299,7 +302,7 @@ export function assertPrdReviewsSettled(specs,selected,{requireSplit=false}={}){
         need(sha(readCmInitSource(specs,file))===hash,'prd_change_review_changed');
       continue;
     }
-    const gate=inspectPrdReview({stage,feature,evidence:path.join(reviews,`${prefix}-r1.md`),receipt:path.join(reviews,`${prefix}-disposition.json`)});
+    const gate=inspectPrdReview({stage,feature,evidence:path.join(reviews,`${prefix}-r1.md`),receipt:path.join(reviews,`${prefix}-disposition.json`),approvedBaseline});
     need(['dispatch_once','completed'].includes(gate.outcome),'prd_revision_prior_review_unresolved');
     if(requireSplit&&stage==='split')need(gate.outcome==='completed','prd_revision_original_split_required');
   }

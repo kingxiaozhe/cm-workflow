@@ -293,6 +293,23 @@ function compareTestCases(before,after,reasons,name){
 const rawBytes=target=>{try{return fs.readFileSync(target);}catch{return null;}};
 const sameBytes=(a,b)=>a===null?b===null:b!==null&&a.equals(b);
 
+// The bytes the latest human approval bound, as re-bound only by applied amendments:
+// path -> runtime-mark-normalized sha256. Null unless status is approved and the
+// snapshot, the out-of-tree round ledger and the status all name the same round, so a
+// restored older snapshot or a hand-synced one never becomes a baseline.
+export function approvedSpecBaseline(specsDir){
+  const statusPath=path.join(specsDir,'.cm-specs-status'),snapshotPath=path.join(specsDir,SNAPSHOT_FILE);
+  const statusBytes=rawBytes(statusPath),snapshotBytes=rawBytes(snapshotPath),roundBytes=readRound(specsDir);
+  const status=readSpecsStatus(specsDir),snapshot=readApprovalSnapshot(specsDir);
+  if(!sameBytes(statusBytes,rawBytes(statusPath))||!sameBytes(snapshotBytes,rawBytes(snapshotPath))
+    ||!sameBytes(roundBytes,readRound(specsDir)))return null;
+  if(status.kind!=='valid'||snapshot.kind!=='valid'||status.value.status!=='approved')return null;
+  const bound=snapshot.value,rows=snapshotRows(bound.files);
+  if(roundProblem(roundBytes,snapshotBytes,bound.approval.at)
+    ||rowsDigest(status.value.specFiles??[])!==rowsDigest(rows)||status.value.approval?.at!==bound.approval.at)return null;
+  return new Map(rows.map(row=>[row.path,row.sha256]));
+}
+
 export function inspectSpecAmendment(specsDir){
   const reasons=[],statusPath=path.join(specsDir,'.cm-specs-status'),snapshotPath=path.join(specsDir,SNAPSHOT_FILE);
   const statusBytes=rawBytes(statusPath),snapshotBytes=rawBytes(snapshotPath),roundBytes=readRound(specsDir);

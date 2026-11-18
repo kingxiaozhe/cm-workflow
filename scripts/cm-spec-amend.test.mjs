@@ -9,7 +9,9 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {approveCmAiSpecs} from '../runtime/js/cm-ai/cm-ai-admission.mjs';
-import {applySpecAmendment,withApprovalLock} from '../runtime/js/cm-ai/spec-amendment.mjs';
+import {applySpecAmendment,withApprovalLock,roundLedgerPath} from '../runtime/js/cm-ai/spec-amendment.mjs';
+import {recordPrdReview} from './cm-prd-review-gate.mjs';
+import {assertPrdReviewsSettled} from '../runtime/js/cm-prd/change.mjs';
 
 // The round ledger lives under CM_WORKFLOW_HOME; never touch the real home.
 const isolatedHome=fs.mkdtempSync(path.join(os.tmpdir(),'cm-spec-amend-home-'));
@@ -508,3 +510,49 @@ test('a failed approval snapshot write leaves no round to restore',()=>fixture((
   reset();fs.writeFileSync(target,roundA);edit('tasks.md',addTask);
   assert.deepEqual(inspect().reasons,['snapshot_round_missing']);
 }));
+
+// wue 实跑事故（2026-11-17）：拆分审查回执之后，设计稿经用户重新批准、任务经 1 级补正换绑，
+// cm-prd --change 的 save_draft 仍拿最早回执指纹比对，误报 prd_review_artifact_changed。
+function splitReceipt(specs){
+  const reviews=path.join(specs,'.reviews');fs.mkdirSync(reviews,{recursive:true});
+  const args={stage:'split',feature:'login',evidence:path.join(reviews,'prd-login-split-r1.md'),receipt:path.join(reviews,'prd-login-split-disposition.json')};
+  fs.writeFileSync(args.evidence,'---\nat: 2026-11-01T00:00:00Z\nreviewer: codex-subagent\nindependent: true\nscope:\n  - tasks.md\n---\nSynthetic split review\n');
+  recordPrdReview({...args,disposition:'no_findings',finding_count:0,unresolved_count:0,
+    artifact:['requirements.md','design.md','tasks.md','test-cases.json'].map(name=>path.join(specs,'1.login',name))});
+}
+test('change save accepts specs re-bound by a later approval or applied amendment after the split receipt',()=>fixture(({specs,approve,inspect,apply,review,edit})=>{
+  splitReceipt(specs);assert.equal(approve().status,0);
+  const settled=()=>assertPrdReviewsSettled(specs,['1.login']);
+  assert.doesNotThrow(settled);
+  edit('design.md',text=>text+'\n模块 2：设计稿换版。\n');
+  // The design swap goes back through cm-prd (awaiting_review) and a fresh human 「开始」.
+  fs.writeFileSync(path.join(specs,'.cm-specs-status'),JSON.stringify({status:'awaiting_review',features:['1.login'],testCases:[]}));
+  const again=approve();assert.equal(again.status,0,JSON.stringify(again.json));
+  assert.doesNotThrow(settled);
+  edit('tasks.md',addTask);const {tier,deltaDigest}=inspect();assert.equal(tier,1);
+  assert.equal(apply(['--review-output',review(deltaDigest),'--reviewer','codex']).status,0);
+  assert.doesNotThrow(settled);
+  // Runtime completion marks stay outside the comparison, as for the receipt itself.
+  edit('tasks.md',text=>text.replace('- [ ] T-001: 登录页','- [x] T-001: 登录页'));
+  assert.doesNotThrow(settled);
+},{cases:true}));
+test('change save still refuses specs that match no approved version',()=>{
+  fixture(({specs,approve,edit})=>{
+    splitReceipt(specs);assert.equal(approve().status,0);
+    edit('tasks.md',addTask);
+    assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact changed after disposition/);
+  },{cases:true});
+  // An approved snapshot whose round ledger is gone (or a restored older one) is no baseline.
+  fixture(({specs,approve,edit})=>{
+    splitReceipt(specs);edit('design.md',text=>text+'\n换版\n');assert.equal(approve().status,0);
+    fs.rmSync(roundLedgerPath(specs));
+    assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact changed after disposition/);
+  },{cases:true});
+  // A snapshot never approved (status back to awaiting_review) is no baseline either.
+  fixture(({specs,approve,edit})=>{
+    splitReceipt(specs);edit('design.md',text=>text+'\n换版\n');assert.equal(approve().status,0);
+    const status=path.join(specs,'.cm-specs-status');
+    fs.writeFileSync(status,JSON.stringify({...JSON.parse(fs.readFileSync(status,'utf8')),status:'awaiting_review'}));
+    assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact changed after disposition/);
+  },{cases:true});
+});

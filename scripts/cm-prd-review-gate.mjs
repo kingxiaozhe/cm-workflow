@@ -8,7 +8,7 @@ import {TextDecoder} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {acceptsPrdSplitDesign} from '../runtime/js/cm-prd/split-design.mjs';
 import {inspectPrdFailedCorrection} from '../runtime/js/cm-prd/failed-correction.mjs';
-import {normalizeRuntimeMarks} from './cm-spec-manifest.mjs';
+import {normalizeRuntimeMarks,normalizeRuntimeMarkBytes} from './cm-spec-manifest.mjs';
 import {tagDiagnosticReason} from '../runtime/js/cm-ai/diagnostic-reason.mjs';
 
 // Messages stay byte-identical for the CLI and its Python oracle. Hosts get a stable
@@ -150,6 +150,12 @@ function loadReceipt(file,args,evidence){
     const completedSplit=value.stage==='design'&&item.path.endsWith('/design.md')
       &&stat(path.join(path.dirname(file),`prd-${value.feature}-split-disposition.json`));
     if(currentSha!==item.sha256||completedSplit){
+      // Change mode only: bytes a later human approval (or an applied amendment
+      // re-binding it) bound supersede this receipt's. Any other drift still refuses.
+      const approvedSha=args.approvedBaseline instanceof Map?args.approvedBaseline.get(item.path):undefined;
+      if(approvedSha!==undefined&&createHash('sha256').update(normalizeRuntimeMarkBytes(bytes,path.basename(artifact))).digest('hex')===approvedSha){
+        value.approvedBaselineAccepted=true;continue;
+      }
       const accepted=acceptsPrdSplitDesign({specs:root,evidence:path.relative(root,evidence).split(path.sep).join('/'),
         receipt:value,item,currentSha,pendingSplit:args.pendingSplit??null});
       if(accepted===true)continue;
@@ -272,7 +278,7 @@ export function inspectPrdReview(args){
     {...base,outcome:'dispatch_once'};
   evidenceHeader(evidence);if(!stat(receipt))return {...base,outcome:'resume_disposition'};
   const value=loadReceipt(receipt,args,evidence);return {...base,outcome:'completed',disposition:value.disposition,
-    ...(value.runtimeMarksNormalized?{runtimeMarksNormalized:true}:{})};
+    ...(value.runtimeMarksNormalized?{runtimeMarksNormalized:true}:{}),...(value.approvedBaselineAccepted?{approvedBaseline:true}:{})};
 }
 export function recordPrdReview(args){
   counts(args.disposition,args.finding_count,args.unresolved_count,typeof args.receipt==='string'?reviewFile(args.receipt):null);
