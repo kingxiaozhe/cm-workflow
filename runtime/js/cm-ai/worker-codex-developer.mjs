@@ -4,7 +4,7 @@ import {createProviderUsageCapture} from './provider-usage.mjs';
 import {signalOwnedGroup} from './process-group-exit.mjs';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {commonArgs,cleanEnvironment,specsPermissionArgs} from './codex-config.mjs';
+import {commonArgs,cleanEnvironment,specsPermissionArgs,NO_USER_INPUT_TOOL} from './codex-config.mjs';
 import {need,text,validCallTimeout,json} from './effect-contract.mjs';
 import {CODEX_RECONNECT_NOTICE_LIMIT,isCodexReconnectNotice} from './codex-reconnect-notice.mjs';
 import {codexRateLimited,CODEX_FAILURE_GRACE_MS} from './worker-codex.mjs';
@@ -20,6 +20,8 @@ export function developerArgs({cwd,model,effort,schemaPath,disabledSkills=[],spe
     // Codex 0.153.4 uses code_mode_host for tool execution; keep its default
     // on the coding path without enabling the separate code_mode feature.
     if(args[i]==='--disable'&&(coding.has(args[i+1])||args[i+1]==='code_mode_host')){i++;continue;}
+    // The review-only removals for Codex 0.167 leave the coding tool surface as it was.
+    if(args[i]==='--disable'&&args[i+1]==='view_image'||args[i]==='-c'&&args[i+1]===NO_USER_INPUT_TOOL){i++;continue;}
     result.push(args[i]==='read-only'&&args[i-1]==='--sandbox'?'workspace-write':args[i]);
   }
   return [...result,...[...coding].flatMap(name=>['--enable',name]),

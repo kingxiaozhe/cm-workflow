@@ -24,14 +24,19 @@ export const disabledFeatures = Object.freeze([
   'shell_tool', 'unified_exec', 'shell_snapshot', 'multi_agent', 'goals',
   'memories', 'image_generation', 'code_mode_host', 'workspace_dependencies',
   'skill_mcp_dependency_install', 'tool_suggest',
+  // codex-cli 0.167.0 sends view_image to gpt-6.2-sol by default (2026-11-17 preflight failure).
+  'view_image',
 ]);
+// Review-only config: codex-cli 0.167.0 also sends request_user_input to gpt-6.2-sol, and no
+// feature flag removes it; this key does (checked offline with tool-preview, 6.1 and 6.2 both 0 tools).
+export const NO_USER_INPUT_TOOL='tools.experimental_request_user_input.enabled=false';
 
 export function commonArgs({ cwd, model, effort, disabledSkills = [] }) {
   if (!/^[a-zA-Z0-9._-]+$/.test(model)) throw new Error('invalid model');
   return ['exec', '--ignore-user-config', '--strict-config', '--ephemeral',
     '--sandbox', 'read-only', '--skip-git-repo-check', '--cd', cwd, '--json',
     ...disabledFeatures.flatMap(name => ['--disable', name]),
-    '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
+    '-c', 'approval_policy="never"', '-c', 'web_search="disabled"', '-c', NO_USER_INPUT_TOOL,
     '-c', 'project_doc_max_bytes=0', '-c', 'mcp_servers={}',
     '-c', 'check_for_update_on_startup=false', '-c', 'analytics.enabled=false',
     '-c', `model="${model}"`, '-c', `model_reasoning_effort=${JSON.stringify(externalEffort('codex',effort))}`,
