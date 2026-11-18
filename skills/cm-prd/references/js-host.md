@@ -69,13 +69,13 @@ result必须填真实结果，不留空对象。不同kind的合同见当前请�
 
 | kind | 当前宿主执行 |
 | --- | --- |
-| prd_analyze | 按原Step 0–5分析与提问；保留用户用例、形态、平台与范围约束。question交给用户，不能代答。 |
+| prd_analyze | 按原Step 0–5.5分析，并按requirement-grilling.md逐轮追问（每轮一个question，阻断项答完才回analyzed）；保留用户用例、形态、平台与范围约束。question交给用户，不能代答。 |
 | prd_materials | 用已可用、已授权的实际工具处理材料；HTML交互只走Codex内置浏览器，PDF逐页覆盖，不伪造截图/页数/证据。能力不足返回blocked。 |
 | prd_generate | 按payload.phase执行：design只做Step6–9的需求/设计；tasks_after_design默认保留acceptedDesign原feature及正文，每个feature只回tasks.md和适用的test-cases.json，省略的requirements.md/design.md由宿主按原字节补回（64KB只算新回的文档；照旧回全文也须逐字一致）；整稿自检失败时按下文登记同清单修订；full_draft走原Step6–10。保留UI基准与原粒度约束，只回正文不写文件。 |
 | prd_self_check | 读取spec-self-check.md与相关真实代码/地图/用例，逐项返回有依据的结果；机械通过不等于语义通过，不能用自检冒充独立审查。 |
 | prd_review | 按原9.5或10.6，使用实际授权的新上下文独立审查，核对作者与审查者上下文标识、材料摘要并原样回传。无法独立时只允许预先选定的显式self-degraded；开始后不换模式或补审。 |
 | prd_correct | 对原findings提出完整原路径清单与逐项采纳/升级决定；不自行写规格，不新增范围/勾任务/再次review。 |
-| prd_summary | 按原Step11核对交付形态、开放问题、风险、平台/UI基准及原9.5风险信号；未知明确写待核对，不能推断人工批准。 |
+| prd_summary | 按原Step11核对交付形态、开放问题（先写requirement-grilling G4的倒推结果）、风险、平台/UI基准及原9.5风险信号；未知明确写待核对，不能推断人工批准。 |
 
 读取角色Skill不代表配置模型已调用；非当前runtime角色路由被JS阻断时如实报告。
 JS拥有日志、草稿保存、修订写入、自检轮次、审查记录、处置和审批位写入；宿主不再运行
