@@ -17,6 +17,10 @@
 
 ## 最近更新
 
+**0.21.2**
+
+- **cm-prd 会对照现有业务倒推需求缺口，逐轮追问后再出规格**：分析需求后，对照业务地图和代码检查角色权限、状态流转、增删改查、老数据、相邻功能、入口通知、报表导出七项，找出文档漏掉的地方；分轮提问，每轮最多 5 题，每题带出处，能推荐时给推荐答案；会改变范围、权限、数据的问题答完才生成规格。详见[更新日志](CHANGELOG.md)。
+
 **0.21.1**
 
 - **接近存档上限的任务提交可以正常读回**：单条存档上限放到 4 MiB 后，任务提交记录读取时仍按 1 MiB 校验，超过 1 MiB 的提交写得进却读不回；现在读写同用一个上限。
@@ -281,7 +285,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.21.1 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.21.2 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
