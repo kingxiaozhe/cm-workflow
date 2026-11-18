@@ -5,6 +5,7 @@ import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {parseCallTimeoutMinutes,callTimeoutFrom,DEFAULT_CALL_TIMEOUT_MS} from '../runtime/js/cm-ai/call-timeout.mjs';
 import {createConversationExecution} from '../runtime/js/cm-ai/host-conversation-execution.mjs';
+import {sameRunnerConfig} from '../runtime/js/cm-ai/durable-runner-state.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,4 +36,23 @@ test('宿主与驱动都接上了这个参数（静态核对，防止只改一�
   assert.match(host, /callTimeoutMs/);
   const drive = fs.readFileSync(path.join(here, 'cm-ai-drive.mjs'), 'utf8');
   assert.match(drive, /'--call-timeout-minutes'/);
+});
+
+test('落盘回放只对当前会话运行放宽期限比对；其余字段与受保护／外部模型运行仍逐字节比对', () => {
+  const base = {root: '/r', timeoutMs: 1800000, developer: {provider: 'claude', requestedModel: 'current-session', contextId: 'c'}};
+  assert.doesNotThrow(() => sameRunnerConfig(base, {...base, timeoutMs: 3600000}));
+  assert.doesNotThrow(() => sameRunnerConfig({...base, timeoutMs: 3600000}, base));
+  assert.throws(() => sameRunnerConfig(base, {...base, root: '/other', timeoutMs: 3600000}), {code: 'runner_history_mismatch'});
+  assert.throws(() => sameRunnerConfig(base, {...base, timeoutMs: 3600001}), {code: 'runner_history_mismatch'});
+  const provider = {...base, developer: {...base.developer, requestedModel: 'gpt-x'}};
+  assert.throws(() => sameRunnerConfig(provider, {...provider, timeoutMs: 3600000}), {code: 'runner_history_mismatch'});
+  assert.throws(() => sameRunnerConfig(base, {...provider, timeoutMs: 1800000}), {code: 'runner_history_mismatch'});
+});
+
+test('期限不进执行配置：同一运行定义下 30 与 60 分钟的配置字节相同', () => {
+  const definition = {codeProject: here, specsDir: here, feature: '1.f', identity: {repositoryId: 'r', runId: 'x', taskId: 'T-001', attempt: 1},
+    scope: ['a.js'], requirements: []};
+  const bridge = {call: () => assert.fail('unexpected host call')};
+  const a = createConversationExecution(definition, 'h', bridge), b = createConversationExecution(definition, 'h', bridge, null, null, null, false, 'codex', {callTimeoutMs: 3600000});
+  assert.deepEqual(b.configuration, a.configuration);
 });

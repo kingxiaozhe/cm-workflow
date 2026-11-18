@@ -750,6 +750,14 @@ export function initialRunnerState(config,session,version=1) {
     ...(version>=2?{taskCommit:null}:{}),...(version===3?{reviewInvocation:null}:{}),
     ...(Object.hasOwn(config,'taskLearning')?{learningResult:null}:{})};
 }
+// 当前会话运行的单次调用期限（--call-timeout-minutes，30–60 分钟）只管等多久、不授予能力：
+// 恢复时允许与创建时不同，其余字段仍须逐字节一致。受保护配置与外部模型运行的期限由其已授权配置决定，不放宽。
+export function sameRunnerConfig(saved,current) {
+  const sessionWindow=c=>c?.developer?.requestedModel==='current-session'
+    &&Number.isInteger(c.timeoutMs)&&c.timeoutMs>=1800000&&c.timeoutMs<=3600000;
+  if(sessionWindow(saved)&&sessionWindow(current))same({...saved,timeoutMs:0},{...current,timeoutMs:0});
+  else same(saved,current);
+}
 export function runnerStatus(s,config) {
   return json({state:s.state,code:s.code,...(s.reason?{reason:s.reason}:{}),identity:{...config.identity,attempt:s.attempt},packageDigest:s.reviewPackage?.packageDigest??null,
     receipt:s.receipt,receipts:s.receipts,calls:s.calls,cancelAfterCommit:s.cancelAfterCommit,workflowError:s.workflowError,cancellationRequested:s.cancellationRequested,
@@ -1402,7 +1410,7 @@ export function readRunnerHistory(raw,config,version=1) {
     const common=['version','protocol','type'];
     if(index===0) {
       shape(p,[...common,'config','baseline','session']);need(p.type==='init' && r.kind==='result','runner_init');
-      same(p.config,config);session=p.session;uuid(session);original=readReviewBaseline(p.baseline);
+      sameRunnerConfig(p.config,config);session=p.session;uuid(session);original=readReviewBaseline(p.baseline);
       const reviewScope=Object.hasOwn(config,'taskLearning')&&!config.scope.includes('AGENTS.md')
         ?[...config.scope,'AGENTS.md']:[...config.scope];
       same(original.identity,config.identity);same(original.scope,reviewScope.sort());same(original.requirements,[...config.requirements].sort());

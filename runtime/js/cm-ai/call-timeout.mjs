@@ -1,7 +1,7 @@
 // 当前会话运行的每次宿主调用（含「检查」整步）共用一个期限，默认 30 分钟。
 // 设备检查（构建 Release、在模拟器上跑多条流程）常常超过 30 分钟：运行可在创建时用
 // --call-timeout-minutes N（30–60）把它放宽。上限 60 分钟与 runner 的 validCallTimeout、
-// 宿主应答兜底（HOST_ANSWER_BACKSTOP_MS）一致；期限写进运行指纹，resume 须传同一个值。
+// 宿主应答兜底（HOST_ANSWER_BACKSTOP_MS）一致。它不进运行指纹：恢复时可改（含给现有运行加上）。
 export const DEFAULT_CALL_TIMEOUT_MS=1800000;
 export const MIN_CALL_TIMEOUT_MINUTES=30,MAX_CALL_TIMEOUT_MINUTES=60;
 export function parseCallTimeoutMinutes(raw){

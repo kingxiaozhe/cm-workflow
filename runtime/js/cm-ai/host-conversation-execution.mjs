@@ -182,9 +182,9 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     ...(bootstrap?{bootstrap:bootstrap.configuration}:{}),
     ...(options.batchWorkflowsDigest?{batchWorkflowsDigest:options.batchWorkflowsDigest}:{}),
     ...(review?{review:{version:1,model:review.model,disabledSkills:review.disabledSkills,...(externalModels?{effort:review.effort}:{})}}:{}),
-    ...(workflow?{workflow}: {}),
-    // 放宽的调用期限进运行指纹：恢复时漏传或改值在开跑前按名字报出。默认值不写，旧运行的配置字节不变
-    ...(options.callTimeoutMs!==undefined&&options.callTimeoutMs!==DEFAULT_CALL_TIMEOUT_MS?{callTimeoutMs:options.callTimeoutMs}:{})};
+    ...(workflow?{workflow}: {})};
+  // --call-timeout-minutes 不进执行配置与运行指纹：它只决定单次调用等多久，不授予任何能力；
+  // 现行版本建的运行在设备检查超时后，恢复时可放宽到 60 分钟（durable-runner-state.mjs sameRunnerConfig）。
   const reviewOptions={cwd:definition.codeProject,model:review?.model??'unconfigured',...(externalModels?{effort:review.effort}:{}),preflight:review?.preflight??null,
     disabledSkills:review?.disabledSkills??[],
     ...resolveReviewTimeout(review,protection),

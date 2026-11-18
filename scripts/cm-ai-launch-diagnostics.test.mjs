@@ -76,21 +76,21 @@ test('fingerprint_mismatch names the launch input that differs',t=>{
     '--runtime','claude','--review-config',f.review]}).status,0);
 });
 
-test('--call-timeout-minutes 进运行指纹：同值恢复成功，漏传或改值按名字报出；显式 30 与缺省等价',t=>{
+test('--call-timeout-minutes 恢复时可改：现行 main 建的运行恢复时加 60、漏传或改值都能重开（期限只管调用多久，不进运行指纹）',t=>{
   const f=fixture(t),base=['--runtime','claude','--review-config',f.review];
-  assert.equal(f.host('create',{extra:[...base,'--call-timeout-minutes','60']}).status,0);
-  assert.equal(f.host('resume',{extra:[...base,'--call-timeout-minutes','60']}).status,0,'same value reopens');
-  for(const [label,extra,pattern] of [
-    ['omitted',base,/--call-timeout-minutes：创建时为 60 分钟，本次为 30 分钟/],
-    ['changed',[...base,'--call-timeout-minutes','45'],/--call-timeout-minutes：创建时为 60 分钟，本次为 45 分钟/],
-  ]){
+  assert.equal(f.host('create',{extra:base}).status,0);
+  for(const [label,extra] of [['raised to 60',[...base,'--call-timeout-minutes','60']],['changed to 45',[...base,'--call-timeout-minutes','45']],
+    ['omitted',base],['explicit 30',[...base,'--call-timeout-minutes','30']]]){
     const result=f.host('resume',{extra});
-    assert.equal(result.status,1,label);assert.equal(result.error.code,'fingerprint_mismatch',label);
-    assert.match(result.error.reason,pattern,label);
+    assert.equal(result.status,0,`${label}: ${JSON.stringify(result.error??null)}`);
   }
-  const g=fixture(t);
-  assert.equal(g.host('create',{extra:['--runtime','claude','--review-config',g.review]}).status,0);
-  assert.equal(g.host('resume',{extra:['--runtime','claude','--review-config',g.review,'--call-timeout-minutes','30']}).status,0,'explicit default equals omitted');
+  const g=fixture(t),gbase=['--runtime','claude','--review-config',g.review];
+  assert.equal(g.host('create',{extra:[...gbase,'--call-timeout-minutes','60']}).status,0);
+  assert.equal(g.host('resume',{extra:gbase}).status,0,'created at 60, resumed at default');
+  for(const bad of ['29','61','x']){
+    const result=g.host('resume',{extra:[...gbase,'--call-timeout-minutes',bad]});
+    assert.equal(result.status,1,bad);assert.equal(result.error.code,'invalid_arguments',bad);
+  }
 });
 
 test('a legacy run created without review config explains why the config cannot be added on resume',async t=>{
