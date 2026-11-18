@@ -19,10 +19,13 @@ test('a request carrying the Codex 0.167 default tools is not zero tools',()=>{
  assert.deepEqual(requestTools({...body,tools:[]}),[]);
  assert.equal(requestTools({...body,tools:{}}),null);
 });
-test('the fingerprint binds the review-only tool removals, so older preflight receipts no longer match',()=>{
+test('the fingerprint binds each review-only tool removal, so older preflight receipts no longer match',()=>{
  const options={cwd:'/fixture',model:'gpt-6.2-sol',effort:'high'},args=commonArgs(options);
- const older=args.filter((arg,i)=>!(arg==='--disable'&&args[i+1]==='view_image'||arg==='view_image'&&args[i-1]==='--disable'
-  ||arg==='-c'&&args[i+1]===NO_USER_INPUT_TOOL||arg===NO_USER_INPUT_TOOL));
- assert.equal(older.length,args.length-4);
- assert.notEqual(configFingerprint(options),createHash('sha256').update(JSON.stringify(older)).digest('hex'));
+ const hash=list=>createHash('sha256').update(JSON.stringify(list)).digest('hex');
+ const without=(flag,value)=>args.filter((arg,i)=>!(arg===flag&&args[i+1]===value||arg===value&&args[i-1]===flag));
+ assert.equal(configFingerprint(options),hash(args));
+ for(const [flag,value] of [['--disable','view_image'],['-c',NO_USER_INPUT_TOOL]]){
+  const older=without(flag,value);assert.equal(older.length,args.length-2);
+  assert.notEqual(configFingerprint(options),hash(older));
+ }
 });
