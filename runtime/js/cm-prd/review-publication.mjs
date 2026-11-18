@@ -36,7 +36,8 @@ export function inspectPrdReviewResponse({reviewPackage,packageDigest,authorCont
   return {response,result,examinedPaths,degraded};
 }
 
-export function publishPrdReview({specs,reviewPackage,packageDigest,authorContextId,response,inspectOnly=false,pendingSplit=null}){
+export function publishPrdReview({specs,reviewPackage,packageDigest,authorContextId,response,inspectOnly=false,pendingSplit=null,approvedBaseline=null}){
+  need(approvedBaseline===null||inspectOnly,'prd_review_approved_baseline_inspect_only');
   inspectPrdReviewResponse({reviewPackage,packageDigest,authorContextId,response});
   if(!inspectOnly)assertPrdBatchActive(specs,[reviewPackage.feature]);
   reviewPackage=json(reviewPackage,256*1024);response=json(response,64*1024);id(authorContextId);
@@ -48,7 +49,7 @@ export function publishPrdReview({specs,reviewPackage,packageDigest,authorContex
   const reviews=path.join(specs,'.reviews');
   need(fs.realpathSync(reviews)===reviews&&fs.lstatSync(reviews).isDirectory(),'prd_review_path_invalid');
   const stage=reviewPackage.stage,feature=match[2],prefix=`prd-${feature}-${stage}`;
-  const args={stage,feature,pendingSplit,evidence:path.join(reviews,`${prefix}-r1.md`),receipt:path.join(reviews,`${prefix}-disposition.json`)};
+  const args={stage,feature,pendingSplit,approvedBaseline,evidence:path.join(reviews,`${prefix}-r1.md`),receipt:path.join(reviews,`${prefix}-disposition.json`)};
   const gate=inspectPrdReview(args);
   need(gate.package_sha256===packageDigest&&['dispatch_unknown','resume_disposition','completed'].includes(gate.outcome),
     'prd_review_unclaimed');

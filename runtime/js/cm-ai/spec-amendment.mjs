@@ -304,9 +304,11 @@ export function approvedSpecBaseline(specsDir){
   if(!sameBytes(statusBytes,rawBytes(statusPath))||!sameBytes(snapshotBytes,rawBytes(snapshotPath))
     ||!sameBytes(roundBytes,readRound(specsDir)))return null;
   if(status.kind!=='valid'||snapshot.kind!=='valid'||status.value.status!=='approved')return null;
+  const listed=status.value.specFiles;
+  if(!Array.isArray(listed)||!listed.every(row=>record(row)&&typeof row.path==='string'&&typeof row.sha256==='string'))return null;
   const bound=snapshot.value,rows=snapshotRows(bound.files);
   if(roundProblem(roundBytes,snapshotBytes,bound.approval.at)
-    ||rowsDigest(status.value.specFiles??[])!==rowsDigest(rows)||status.value.approval?.at!==bound.approval.at)return null;
+    ||rowsDigest(listed)!==rowsDigest(rows)||status.value.approval?.at!==bound.approval.at)return null;
   return new Map(rows.map(row=>[row.path,row.sha256]));
 }
 

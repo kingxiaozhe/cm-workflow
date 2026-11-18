@@ -556,3 +556,31 @@ test('change save still refuses specs that match no approved version',()=>{
     assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact changed after disposition/);
   },{cases:true});
 });
+// Codex 审查 #2：同一功能不能拼接旧回执字节与新批准字节。
+test('change save refuses mixing receipt bytes with a later approved round',()=>fixture(({specs,approve,edit})=>{
+  splitReceipt(specs);const original=fs.readFileSync(path.join(specs,'1.login/tasks.md'));
+  edit('design.md',text=>text+'\n换版\n');edit('tasks.md',addTask);assert.equal(approve().status,0);
+  assert.doesNotThrow(()=>assertPrdReviewsSettled(specs,['1.login']));
+  fs.writeFileSync(path.join(specs,'1.login/tasks.md'),original);
+  assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact changed after disposition/);
+},{cases:true}));
+// Codex 审查 #3：批准轮次已合法去掉 test-cases.json 时不再误拦；未批准的删除仍拦。
+test('change save follows an approved round that no longer has test-cases.json',()=>{
+  fixture(({specs,approve})=>{
+    splitReceipt(specs);fs.rmSync(path.join(specs,'1.login/test-cases.json'));assert.equal(approve().status,0);
+    assert.doesNotThrow(()=>assertPrdReviewsSettled(specs,['1.login']));
+  },{cases:true});
+  fixture(({specs,approve})=>{
+    splitReceipt(specs);assert.equal(approve().status,0);fs.rmSync(path.join(specs,'1.login/test-cases.json'));
+    assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact is missing or unsafe/);
+  },{cases:true});
+});
+// Codex 审查 #4：畸形状态清单不是基线，也不能打断原回执校验。
+test('malformed approved status falls back to the strict receipt check',()=>fixture(({specs,approve,edit})=>{
+  splitReceipt(specs);assert.equal(approve().status,0);
+  const status=path.join(specs,'.cm-specs-status');
+  fs.writeFileSync(status,JSON.stringify({...JSON.parse(fs.readFileSync(status,'utf8')),specFiles:{}}));
+  assert.doesNotThrow(()=>assertPrdReviewsSettled(specs,['1.login']));
+  edit('tasks.md',addTask);
+  assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact changed after disposition/);
+},{cases:true}));
