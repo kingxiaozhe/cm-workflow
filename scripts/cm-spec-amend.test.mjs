@@ -600,3 +600,17 @@ test('approved baseline never covers receipt artifacts outside the approved spec
   fs.rmSync(path.join(specs,'1.login/api-schema.json'));
   assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact is missing or unsafe/);
 },{cases:true}));
+// Codex 复审第 3 轮：规格根目录下指纹未变的辅助产物不是功能目录，不能被误拦。
+test('approved baseline keeps root-level receipt artifacts on their own fingerprints',()=>fixture(({specs,approve,edit})=>{
+  const extra=path.join(specs,'api-schema.json');fs.writeFileSync(extra,'{"type":"object"}\n');
+  splitReceipt(specs);
+  const receipt=path.join(specs,'.reviews/prd-login-split-disposition.json'),value=JSON.parse(fs.readFileSync(receipt,'utf8'));
+  // Old `record` accepted any file inside the specs root; model such a receipt directly.
+  fs.rmSync(receipt);
+  recordPrdReview({stage:'split',feature:'login',evidence:path.join(specs,'.reviews/prd-login-split-r1.md'),receipt,
+    disposition:'no_findings',finding_count:0,unresolved_count:0,artifact:[...value.artifacts.map(item=>path.join(specs,item.path)),extra]});
+  edit('design.md',text=>text+'\n换版\n');assert.equal(approve().status,0);
+  assert.doesNotThrow(()=>assertPrdReviewsSettled(specs,['1.login']));
+  fs.appendFileSync(extra,' ');
+  assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact changed after disposition/);
+},{cases:true}));

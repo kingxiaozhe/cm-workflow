@@ -180,7 +180,7 @@ function loadReceipt(file,args,evidence){
   if(value.approvedBaselineAccepted){
     // Every spec file the approval binds, present or not; other receipt artifacts were
     // already held to the receipt's own fingerprints above.
-    const features=[...new Set(value.artifacts.map(item=>item.path.split('/')[0]))].sort();
+    const features=[...new Set(value.artifacts.map(item=>item.path.split('/')).filter(parts=>parts.length>1&&/^\d+\./.test(parts[0])).map(parts=>parts[0]))].sort();
     for(const row of features.flatMap(feature=>APPROVED_SPEC_FILES.map(name=>`${feature}/${name}`))){
       const target=path.join(root,row),present=stat(target);
       need(!link(target)&&(present===null||present.isFile()),'PRD review artifact is missing or unsafe','prd_review_artifact_unsafe',()=>({receipt,artifact:row}));
