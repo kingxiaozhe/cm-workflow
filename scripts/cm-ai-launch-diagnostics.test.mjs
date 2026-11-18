@@ -76,17 +76,20 @@ test('fingerprint_mismatch names the launch input that differs',t=>{
     '--runtime','claude','--review-config',f.review]}).status,0);
 });
 
-test('--call-timeout-minutes 恢复时可改：现行 main 建的运行恢复时加 60、漏传或改值都能重开（期限只管调用多久，不进运行指纹）',t=>{
+test('--call-timeout-minutes 恢复时可放宽：现行 main 建的运行恢复时加 60 能重开；缩短（含漏传）按名字拒绝',t=>{
   const f=fixture(t),base=['--runtime','claude','--review-config',f.review];
   assert.equal(f.host('create',{extra:base}).status,0);
-  for(const [label,extra] of [['raised to 60',[...base,'--call-timeout-minutes','60']],['changed to 45',[...base,'--call-timeout-minutes','45']],
-    ['omitted',base],['explicit 30',[...base,'--call-timeout-minutes','30']]]){
+  for(const [label,extra] of [['explicit 30',[...base,'--call-timeout-minutes','30']],['raised to 45',[...base,'--call-timeout-minutes','45']],
+    ['raised to 60',[...base,'--call-timeout-minutes','60']]]){
     const result=f.host('resume',{extra});
     assert.equal(result.status,0,`${label}: ${JSON.stringify(result.error??null)}`);
   }
   const g=fixture(t),gbase=['--runtime','claude','--review-config',g.review];
   assert.equal(g.host('create',{extra:[...gbase,'--call-timeout-minutes','60']}).status,0);
-  assert.equal(g.host('resume',{extra:gbase}).status,0,'created at 60, resumed at default');
+  assert.equal(g.host('resume',{extra:[...gbase,'--call-timeout-minutes','60']}).status,0,'created at 60, resumed at 60');
+  const lowered=g.host('resume',{extra:gbase});
+  assert.equal(lowered.status,1,'omitting the flag would shorten the window');assert.equal(lowered.error.code,'invalid_arguments');
+  assert.match(lowered.error.reason,/此运行已用 60 分钟，本次为 30 分钟/);
   for(const bad of ['29','61','x']){
     const result=g.host('resume',{extra:[...gbase,'--call-timeout-minutes',bad]});
     assert.equal(result.status,1,bad);assert.equal(result.error.code,'invalid_arguments',bad);

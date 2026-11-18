@@ -351,7 +351,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const executionPolicy=readLaunchExecutionPolicy({definition,mode:argv[4],enabled:extra.has('--execution-optimizations')});
     const externalModels=readLaunchExternalModels({definition,mode:argv[4],enabled:extra.has('--external-models'),inputFile:extra.get('--external-models-config'),providers:[routes.coderRuntime,routes.reviewerRuntime].filter(Boolean)});
     // 期限放宽只给普通当前会话运行：受保护会话与外部模型运行的期限由其已授权配置决定（恢复时自动加载的外部模型快照同样适用）
-    refuse(callTimeoutMs===null||(!protection&&!externalModels),'invalid_arguments','--call-timeout-minutes 只用于普通当前会话运行；--protected-conversation-config 与外部模型运行不接受');
+    refuse(callTimeoutMs===null||!protection,'invalid_arguments','--call-timeout-minutes 不用于 --protected-conversation-config 运行，期限由其已授权配置决定');
+    // 外部模型运行（含恢复时自动加载的快照）不可新开放宽；恢复时可带创建时的同一值，落盘回放逐字节核对
+    refuse(callTimeoutMs===null||!externalModels||argv[4]==='resume','invalid_arguments','外部模型运行创建时不接受 --call-timeout-minutes');
     need(!externalModels||!extra.has('--failover'),'external_model_failover_unsupported');
     review=extra.has('--review-config')?reviewConfiguration(extra.get('--review-config'),externalModels?.providers[routes.reviewerRuntime]??null):null;
     // Launch-time capability assertion. See host-workflow-capabilities: this is a

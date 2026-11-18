@@ -156,7 +156,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       selection:options.bootstrap.selection,bridge,allowWrite:options.bootstrap.allowWrite});
   }
   const protection=options.protection??null;
-  need(!Object.hasOwn(options,'callTimeoutMs')||(protection===null&&!options.externalModels),'invalid_input');
+  need(!Object.hasOwn(options,'callTimeoutMs')||protection===null,'invalid_input');
   if(protection){shape(protection,['checkCommands','timeoutMs']);specsPermissionArgs({cwd:definition.codeProject,specsRoot:definition.specsDir});}
   need(!definition.codeProjects||protection,'multi_root_protection_required');
   const projectExecution=protection?createProjectExecution({definition,protection,executionPolicy}):null;

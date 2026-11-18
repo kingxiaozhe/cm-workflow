@@ -100,7 +100,14 @@ const optionValue = (tokens, name) => {
 
 // 运行可用 --call-timeout-minutes（30–60）放宽整步期限；值非法或重复时宿主会拒绝启动，这里不论有无 checks 都提前报出
 function callLimit(plan) {
-  try { return {limitMs: callTimeoutFrom(plan.permissions) ?? CHECK_CALL_LIMIT_MS, findings: []}; }
+  try {
+    const value = callTimeoutFrom(plan.permissions), flags = Array.isArray(plan.permissions) ? plan.permissions : [];
+    if (value !== null && (flags.includes('--protected-conversation-config') || flags.includes('--protected-config')))
+      return {limitMs: CHECK_CALL_LIMIT_MS, findings: [{level: 'error', code: 'call_timeout_invalid', message: '--call-timeout-minutes 不用于受保护运行'}]};
+    if (value !== null && flags.includes('--external-models') && plan.mode !== 'resume')
+      return {limitMs: CHECK_CALL_LIMIT_MS, findings: [{level: 'error', code: 'call_timeout_invalid', message: '外部模型运行创建时不接受 --call-timeout-minutes'}]};
+    return {limitMs: value ?? CHECK_CALL_LIMIT_MS, findings: []};
+  }
   catch (error) { return {limitMs: CHECK_CALL_LIMIT_MS, findings: [{level: 'error', code: 'call_timeout_invalid', message: error.message}]}; }
 }
 

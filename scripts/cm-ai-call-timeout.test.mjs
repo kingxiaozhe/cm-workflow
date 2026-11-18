@@ -41,7 +41,7 @@ test('宿主与驱动都接上了这个参数（静态核对，防止只改一�
 test('落盘回放只对当前会话运行放宽期限比对；其余字段与受保护／外部模型运行仍逐字节比对', () => {
   const base = {root: '/r', timeoutMs: 1800000, developer: {provider: 'claude', requestedModel: 'current-session', contextId: 'c'}};
   assert.doesNotThrow(() => sameRunnerConfig(base, {...base, timeoutMs: 3600000}));
-  assert.doesNotThrow(() => sameRunnerConfig({...base, timeoutMs: 3600000}, base));
+  assert.throws(() => sameRunnerConfig({...base, timeoutMs: 3600000}, base), {code: 'invalid_arguments'});
   assert.throws(() => sameRunnerConfig(base, {...base, root: '/other', timeoutMs: 3600000}), {code: 'runner_history_mismatch'});
   assert.throws(() => sameRunnerConfig(base, {...base, timeoutMs: 3600001}), {code: 'runner_history_mismatch'});
   const provider = {...base, developer: {...base.developer, requestedModel: 'gpt-x'}};
@@ -61,9 +61,8 @@ test('受保护会话与外部模型运行不接受期限放宽：构造入口�
   const definition = {codeProject: here, specsDir: here, feature: '1.f', identity: {repositoryId: 'r', runId: 'x', taskId: 'T-001', attempt: 1},
     scope: ['a.js'], requirements: []};
   const bridge = {call: () => assert.fail('unexpected host call')};
-  for (const extra of [{protection: {checkCommands: [], timeoutMs: 600000}}, {externalModels: {version: 1}}])
-    assert.throws(() => createConversationExecution(definition, 'h', bridge, null, null, null, false, 'codex', {callTimeoutMs: 3600000, ...extra}),
-      {code: 'invalid_input'}, Object.keys(extra)[0]);
+  assert.throws(() => createConversationExecution(definition, 'h', bridge, null, null, null, false, 'codex', {callTimeoutMs: 3600000, protection: {checkCommands: [], timeoutMs: 600000}}),
+    {code: 'invalid_input'});
   const external = {root: '/r', timeoutMs: 1800000, externalModels: {version: 1},
     developer: {provider: 'claude', requestedModel: 'current-session', contextId: 'c'}};
   assert.throws(() => sameRunnerConfig(external, {...external, timeoutMs: 3600000}), {code: 'runner_history_mismatch'});
@@ -73,6 +72,14 @@ test('受保护会话与外部模型运行不接受期限放宽：构造入口�
 
 test('宿主在加载外部模型快照与受保护会话配置之后拒绝期限放宽（静态核对顺序）', () => {
   const host = fs.readFileSync(path.join(here, 'cm-ai-host.mjs'), 'utf8');
-  const load = host.indexOf('const externalModels=readLaunchExternalModels('), guard = host.indexOf("refuse(callTimeoutMs===null||(!protection&&!externalModels)");
+  const load = host.indexOf('const externalModels=readLaunchExternalModels('), guard = host.indexOf("refuse(callTimeoutMs===null||!externalModels||argv[4]==='resume'");
   assert.ok(load > 0 && guard > load);
+  assert.match(host, /refuse\(callTimeoutMs===null\|\|!protection,/);
+});
+
+test('恢复只可保持或放宽期限：缩短（含漏传）按参数名拒绝，不悄悄变短', () => {
+  const base = {root: '/r', timeoutMs: 3600000, developer: {provider: 'claude', requestedModel: 'current-session', contextId: 'c'}};
+  assert.doesNotThrow(() => sameRunnerConfig(base, base));
+  assert.throws(() => sameRunnerConfig(base, {...base, timeoutMs: 1800000}),
+    error => error.code === 'invalid_arguments' && /此运行已用 60 分钟，本次为 30 分钟/.test(error.reason));
 });

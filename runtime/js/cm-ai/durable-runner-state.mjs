@@ -755,7 +755,12 @@ export function initialRunnerState(config,session,version=1) {
 export function sameRunnerConfig(saved,current) {
   const sessionWindow=c=>c?.developer?.requestedModel==='current-session'&&!Object.hasOwn(c,'externalModels')
     &&Number.isInteger(c.timeoutMs)&&c.timeoutMs>=1800000&&c.timeoutMs<=3600000;
-  if(sessionWindow(saved)&&sessionWindow(current))same({...saved,timeoutMs:0},{...current,timeoutMs:0});
+  if(sessionWindow(saved)&&sessionWindow(current)){
+    same({...saved,timeoutMs:0},{...current,timeoutMs:0});
+    // 只许放宽不许缩短：漏传或调小会悄悄缩短检查整步期限，按参数名报出
+    if(current.timeoutMs<saved.timeoutMs)throw Object.assign(new Error('invalid_arguments'),{code:'invalid_arguments',
+      reason:`--call-timeout-minutes：此运行已用 ${saved.timeoutMs/60000} 分钟，本次为 ${current.timeoutMs/60000} 分钟；恢复只可保持或放宽，请传不小于 ${saved.timeoutMs/60000} 的值`});
+  }
   else same(saved,current);
 }
 export function runnerStatus(s,config) {
