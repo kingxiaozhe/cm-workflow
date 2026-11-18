@@ -8,7 +8,8 @@ import {TextDecoder} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {acceptsPrdSplitDesign} from '../runtime/js/cm-prd/split-design.mjs';
 import {inspectPrdFailedCorrection} from '../runtime/js/cm-prd/failed-correction.mjs';
-import {normalizeRuntimeMarks} from './cm-spec-manifest.mjs';
+import {normalizeRuntimeMarks,normalizeRuntimeMarkBytes} from './cm-spec-manifest.mjs';
+import {APPROVED_SPEC_FILES} from '../runtime/js/cm-ai/spec-amendment.mjs';
 import {tagDiagnosticReason} from '../runtime/js/cm-ai/diagnostic-reason.mjs';
 
 // Messages stay byte-identical for the CLI and its Python oracle. Hosts get a stable
@@ -135,6 +136,11 @@ function loadReceipt(file,args,evidence){
   if(value.disposition==='self_check_failed')need(value.stage==='split','prd_failed_check_split_only','prd_failed_check_split_only',where);
   need(Array.isArray(value.artifacts)&&value.artifacts.length>0,'PRD review receipt must contain artifact hashes','prd_review_receipt_invalid',where);
   const root=resolve(path.dirname(path.dirname(file))),seen=new Set();
+  // Change mode only (assertPrdReviewsSettled): the bytes the latest human approval bound,
+  // as re-bound by applied amendments, path -> runtime-mark-normalized sha256. It stands in
+  // for this receipt's fingerprints only; every other receipt and split-binding check runs.
+  const approved=args.approvedBaseline instanceof Map?args.approvedBaseline:null;
+  const normalizedSha=(bytes,name)=>createHash('sha256').update(normalizeRuntimeMarkBytes(bytes,name)).digest('hex');
   for(const item of value.artifacts){
     need(keys(item,['path','sha256'])&&typeof item.path==='string'&&typeof item.sha256==='string'
       &&/^[0-9a-f]{64}$/.test(item.sha256),'PRD review receipt contains an invalid artifact','prd_review_receipt_invalid',where);
@@ -144,6 +150,11 @@ function loadReceipt(file,args,evidence){
     const named=()=>({receipt,artifact:item.path});
     const raw=path.join(root,item.path);need(!link(raw),'PRD review artifact is missing or unsafe','prd_review_artifact_unsafe',named);
     const artifact=resolve(raw);need(within(root,artifact),'PRD review artifact escapes the specs directory','prd_review_artifact_unsafe',named);
+    // Only the optional test-cases.json may be gone, and only when the approved round of a
+    // feature it binds no longer lists it; the whole-set check below enforces that round.
+    const parts=item.path.split('/');
+    if(!stat(artifact)&&approved!==null&&parts.length===2&&parts[1]==='test-cases.json'&&!approved.has(item.path)
+      &&approved.has(`${parts[0]}/design.md`)){value.approvedBaselineAccepted=true;continue;}
     need(stat(artifact)?.isFile(),'PRD review artifact is missing or unsafe','prd_review_artifact_unsafe',named);
     const bytes=bytesOf(artifact,'prd_review_artifact_unsafe',named());
     const currentSha=createHash('sha256').update(bytes).digest('hex');
@@ -151,8 +162,9 @@ function loadReceipt(file,args,evidence){
       &&stat(path.join(path.dirname(file),`prd-${value.feature}-split-disposition.json`));
     if(currentSha!==item.sha256||completedSplit){
       const accepted=acceptsPrdSplitDesign({specs:root,evidence:path.relative(root,evidence).split(path.sep).join('/'),
-        receipt:value,item,currentSha,pendingSplit:args.pendingSplit??null});
+        receipt:value,item,currentSha,pendingSplit:args.pendingSplit??null,approvedBaseline:approved});
       if(accepted===true)continue;
+      if(approved?.has(item.path)&&normalizedSha(bytes,path.basename(artifact))===approved.get(item.path)){value.approvedBaselineAccepted=true;continue;}
       if(completedSplit&&accepted!==null)need(false,'prd_design_receipt_changed','prd_design_receipt_changed',named);
       if(currentSha===item.sha256)continue;
       const text=bytes.toString('utf8');
@@ -161,6 +173,19 @@ function loadReceipt(file,args,evidence){
         'PRD review artifact changed after disposition','prd_review_artifact_changed',
         ()=>({receipt,artifact:item.path,recordedSha256:item.sha256,currentSha256:currentSha}));
       value.runtimeMarksNormalized=true;
+    }
+  }
+  // Once any file leans on the approved round, every file of the receipt's features must be
+  // exactly that round: old receipt bytes cannot be mixed with newly approved ones.
+  if(value.approvedBaselineAccepted){
+    // Every spec file the approval binds, present or not; other receipt artifacts were
+    // already held to the receipt's own fingerprints above.
+    const features=[...new Set(value.artifacts.map(item=>item.path.split('/')).filter(parts=>parts.length>1&&/^\d+\./.test(parts[0])).map(parts=>parts[0]))].sort();
+    for(const row of features.flatMap(feature=>APPROVED_SPEC_FILES.map(name=>`${feature}/${name}`))){
+      const target=path.join(root,row),present=stat(target);
+      need(!link(target)&&(present===null||present.isFile()),'PRD review artifact is missing or unsafe','prd_review_artifact_unsafe',()=>({receipt,artifact:row}));
+      const current=present===null?undefined:normalizedSha(bytesOf(target,'prd_review_artifact_unsafe',{receipt,artifact:row}),path.basename(row));
+      need(current===approved.get(row),'PRD review artifact changed after disposition','prd_review_artifact_changed',()=>({receipt,artifact:row}));
     }
   }
   if(value.disposition==='self_check_failed')inspectPrdFailedCorrection({specs:root,receipt:value});
@@ -272,7 +297,7 @@ export function inspectPrdReview(args){
     {...base,outcome:'dispatch_once'};
   evidenceHeader(evidence);if(!stat(receipt))return {...base,outcome:'resume_disposition'};
   const value=loadReceipt(receipt,args,evidence);return {...base,outcome:'completed',disposition:value.disposition,
-    ...(value.runtimeMarksNormalized?{runtimeMarksNormalized:true}:{})};
+    ...(value.runtimeMarksNormalized?{runtimeMarksNormalized:true}:{}),...(value.approvedBaselineAccepted?{approvedBaseline:true}:{})};
 }
 export function recordPrdReview(args){
   counts(args.disposition,args.finding_count,args.unresolved_count,typeof args.receipt==='string'?reviewFile(args.receipt):null);

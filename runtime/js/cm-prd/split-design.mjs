@@ -8,13 +8,13 @@ import {inspectPrdDispositionPlan} from './disposition-plan.mjs';
 import {need,digest} from '../cm-ai/effect-contract.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
-export function inspectPrdSplitDesign({specs,feature,originalSha,requirementsSha,draftDigest,pendingSplit=null,document='design.md'}){
+export function inspectPrdSplitDesign({specs,feature,originalSha,requirementsSha,draftDigest,pendingSplit=null,document='design.md',approvedBaseline=null}){
   need(['requirements.md','design.md'].includes(document),'prd_split_document_invalid');
   const targetPath=`${feature}/${document}`;
   const changedError=document==='requirements.md'?'prd_design_requirements_changed':'prd_design_receipt_changed';
   const prefix=`.reviews/prd-${feature.replace(/^\d+\./,'')}-split`;
   if(readCmInitSource(specs,prefix+'-r1.md')===null)return null;
-  const review=inspectPrdFindings({specs,stage:'split',feature});
+  const review=inspectPrdFindings({specs,stage:'split',feature,approvedBaseline});
   const designPath=`${feature}/design.md`,requirementsPath=`${feature}/requirements.md`;
   const baseline=prdSelfCheckRevisionBaseline(specs,feature,{originalSha,requirementsSha,draftDigest});
   need(draftDigest===undefined||draftDigest===baseline.draftDigest,'prd_split_design_binding_changed');
@@ -45,7 +45,7 @@ export function inspectPrdSplitDesign({specs,feature,originalSha,requirementsSha
 
 // Used by the shared receipt gate, including summary, publication and revision.
 // Legacy receipts without a host archive retain their original strict behavior.
-export function acceptsPrdSplitDesign({specs,evidence,receipt,item,currentSha,pendingSplit=null}){
+export function acceptsPrdSplitDesign({specs,evidence,receipt,item,currentSha,pendingSplit=null,approvedBaseline=null}){
   if(receipt.stage!=='design'||!item.path.endsWith('/design.md'))return null;
   const bytes=readCmInitSource(specs,evidence);
   const line=bytes?.toString('utf8').match(/\n```json\n([^\n]+)\n```\n$/);
@@ -61,7 +61,7 @@ export function acceptsPrdSplitDesign({specs,evidence,receipt,item,currentSha,pe
   // accepted requirements/design bytes; pending plans require exact saved hashes.
   const baseline=prdSelfCheckRevisionBaseline(specs,pkg.feature,{designDraftDigest:pkg.draftDigest,originalSha:item.sha256,requirementsSha});
   const splitSha=inspectPrdSplitDesign({specs,feature:pkg.feature,originalSha:item.sha256,requirementsSha,
-    pendingSplit:currentSha===baseline.originalSha?null:pendingSplit});
+    pendingSplit:currentSha===baseline.originalSha?null:pendingSplit,approvedBaseline});
   const completed=readCmInitSource(specs,`.reviews/prd-${receipt.feature}-split-disposition.json`)!==null;
   return (completed||splitSha!==null?splitSha:baseline.originalSha)===currentSha;
 }
