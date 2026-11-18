@@ -172,7 +172,7 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 
 ### Step 5.5: 需求倒推与逐轮追问
 
-读取 `references/requirement-grilling.md` 执行 G1–G4：对照现有业务倒推缺口，按设计树逐轮提问（每题带出处与推荐答案），`阻断` 级问题有用户答案后才进入 Step 6，不得自行假设。
+读取 `references/requirement-grilling.md` 执行 G1–G4：对照现有业务倒推缺口，按设计树逐轮提问（每题带出处与推荐答案），满足其 G4 停止条件后才进入 Step 6，不得自行假设。
 
 `DELIVERY_SHAPE=wechat-miniprogram` 时追加平台就绪检查：账号主体、服务类目/资质、
 变现路径、权限与隐私、后端/合法域名和发布通道。会改变功能可行性或范围但未确认的
