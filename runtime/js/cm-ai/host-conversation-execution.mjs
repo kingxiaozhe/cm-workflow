@@ -156,6 +156,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       selection:options.bootstrap.selection,bridge,allowWrite:options.bootstrap.allowWrite});
   }
   const protection=options.protection??null;
+  need(!Object.hasOwn(options,'callTimeoutMs')||(protection===null&&!options.externalModels),'invalid_input');
   if(protection){shape(protection,['checkCommands','timeoutMs']);specsPermissionArgs({cwd:definition.codeProject,specsRoot:definition.specsDir});}
   need(!definition.codeProjects||protection,'multi_root_protection_required');
   const projectExecution=protection?createProjectExecution({definition,protection,executionPolicy}):null;
@@ -282,7 +283,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     return verdict.satisfied?{satisfied:true,items:verdict.items,...(facts?{hostRecord:facts}:{}),...(coverage?{coverage}:{})}
       :{satisfied:false,reason:boundedReason('verification_precheck_failed: ',verdict.unsatisfied??['门禁未记录具体缺项'])};
   };
-  // 当前会话运行默认 30 分钟；创建时 --call-timeout-minutes 可放宽到 60 分钟（设备检查），值随执行配置写进运行指纹
+  // 当前会话运行默认 30 分钟；--call-timeout-minutes 可放宽到 60 分钟（设备检查）。首条 journal 记录保留创建时的值，
+  // 普通当前会话运行恢复时用本次传入值（durable-runner-state.mjs sameRunnerConfig）
   const outerTimeoutMs=provider?protection.timeoutMs:(options.callTimeoutMs??DEFAULT_CALL_TIMEOUT_MS);
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,
     identity:request.identity,runtime:selectedRuntime,stage,signal:control.signal},run);

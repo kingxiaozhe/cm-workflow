@@ -98,8 +98,14 @@ const optionValue = (tokens, name) => {
   return at === -1 ? '' : tokens[at + 1] ?? '';
 };
 
+// 运行可用 --call-timeout-minutes（30–60）放宽整步期限；值非法或重复时宿主会拒绝启动，这里不论有无 checks 都提前报出
+function callLimit(plan) {
+  try { return {limitMs: callTimeoutFrom(plan.permissions) ?? CHECK_CALL_LIMIT_MS, findings: []}; }
+  catch (error) { return {limitMs: CHECK_CALL_LIMIT_MS, findings: [{level: 'error', code: 'call_timeout_invalid', message: error.message}]}; }
+}
+
 function checkChecks(plan) {
-  const findings = [];
+  const {limitMs, findings} = callLimit(plan);
   if (!Array.isArray(plan.checks)) return findings;
   const items = plan.checks.filter(item => item !== null && typeof item === 'object' && !Array.isArray(item));
   let timeouts;
@@ -132,10 +138,6 @@ function checkChecks(plan) {
       message: `检查 ${group.map(entry => entry.item.id).join('、')} 都是同一 scheme／目的地、没有 -only-testing 的 xcodebuild test，很可能各自跑了一遍全量。保留一个，或用 -only-testing 分开`});
   }
   const totalMs = own.reduce((sum, entry) => sum + entry.timeoutMs, 0);
-  // 运行可用 --call-timeout-minutes（30–60）放宽整步期限；值非法时宿主会拒绝启动，这里提前报出
-  let limitMs = CHECK_CALL_LIMIT_MS;
-  try { limitMs = callTimeoutFrom(plan.permissions) ?? CHECK_CALL_LIMIT_MS; }
-  catch (error) { findings.push({level: 'error', code: 'call_timeout_invalid', message: error.message}); }
   if (totalMs > limitMs)
     findings.push({level: 'warn', code: 'check_budget_over_call_limit', totalMs, limitMs,
       message: `各检查超时之和 ${Math.round(totalMs / 60000)} 分钟，超过检查整步的 ${limitMs / 60000} 分钟期限；这是最坏情况，实际可能更短。`

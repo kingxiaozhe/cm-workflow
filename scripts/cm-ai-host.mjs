@@ -350,6 +350,8 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const routes=extra.has('--protected-config')?resolveProtectedRuntimes(loadConfig({projectRoot:definition.codeProject}),boundRuntime):{reviewerRuntime:boundRuntime};
     const executionPolicy=readLaunchExecutionPolicy({definition,mode:argv[4],enabled:extra.has('--execution-optimizations')});
     const externalModels=readLaunchExternalModels({definition,mode:argv[4],enabled:extra.has('--external-models'),inputFile:extra.get('--external-models-config'),providers:[routes.coderRuntime,routes.reviewerRuntime].filter(Boolean)});
+    // 期限放宽只给普通当前会话运行：受保护会话与外部模型运行的期限由其已授权配置决定（恢复时自动加载的外部模型快照同样适用）
+    refuse(callTimeoutMs===null||(!protection&&!externalModels),'invalid_arguments','--call-timeout-minutes 只用于普通当前会话运行；--protected-conversation-config 与外部模型运行不接受');
     need(!externalModels||!extra.has('--failover'),'external_model_failover_unsupported');
     review=extra.has('--review-config')?reviewConfiguration(extra.get('--review-config'),externalModels?.providers[routes.reviewerRuntime]??null):null;
     // Launch-time capability assertion. See host-workflow-capabilities: this is a

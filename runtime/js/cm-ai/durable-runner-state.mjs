@@ -753,7 +753,7 @@ export function initialRunnerState(config,session,version=1) {
 // 当前会话运行的单次调用期限（--call-timeout-minutes，30–60 分钟）只管等多久、不授予能力：
 // 恢复时允许与创建时不同，其余字段仍须逐字节一致。受保护配置与外部模型运行的期限由其已授权配置决定，不放宽。
 export function sameRunnerConfig(saved,current) {
-  const sessionWindow=c=>c?.developer?.requestedModel==='current-session'
+  const sessionWindow=c=>c?.developer?.requestedModel==='current-session'&&!Object.hasOwn(c,'externalModels')
     &&Number.isInteger(c.timeoutMs)&&c.timeoutMs>=1800000&&c.timeoutMs<=3600000;
   if(sessionWindow(saved)&&sessionWindow(current))same({...saved,timeoutMs:0},{...current,timeoutMs:0});
   else same(saved,current);

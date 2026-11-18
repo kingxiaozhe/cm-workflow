@@ -56,3 +56,23 @@ test('期限不进执行配置：同一运行定义下 30 与 60 分钟的配置
   const a = createConversationExecution(definition, 'h', bridge), b = createConversationExecution(definition, 'h', bridge, null, null, null, false, 'codex', {callTimeoutMs: 3600000});
   assert.deepEqual(b.configuration, a.configuration);
 });
+
+test('受保护会话与外部模型运行不接受期限放宽：构造入口拒绝，回放不忽略外部模型运行的期限差异；重复参数非法', () => {
+  const definition = {codeProject: here, specsDir: here, feature: '1.f', identity: {repositoryId: 'r', runId: 'x', taskId: 'T-001', attempt: 1},
+    scope: ['a.js'], requirements: []};
+  const bridge = {call: () => assert.fail('unexpected host call')};
+  for (const extra of [{protection: {checkCommands: [], timeoutMs: 600000}}, {externalModels: {version: 1}}])
+    assert.throws(() => createConversationExecution(definition, 'h', bridge, null, null, null, false, 'codex', {callTimeoutMs: 3600000, ...extra}),
+      {code: 'invalid_input'}, Object.keys(extra)[0]);
+  const external = {root: '/r', timeoutMs: 1800000, externalModels: {version: 1},
+    developer: {provider: 'claude', requestedModel: 'current-session', contextId: 'c'}};
+  assert.throws(() => sameRunnerConfig(external, {...external, timeoutMs: 3600000}), {code: 'runner_history_mismatch'});
+  assert.throws(() => callTimeoutFrom(['--call-timeout-minutes', '60', '--call-timeout-minutes', '90']), {code: 'invalid_arguments'});
+  assert.throws(() => callTimeoutFrom(['--call-timeout-minutes', '60', '--call-timeout-minutes', '60']), {code: 'invalid_arguments'});
+});
+
+test('宿主在加载外部模型快照与受保护会话配置之后拒绝期限放宽（静态核对顺序）', () => {
+  const host = fs.readFileSync(path.join(here, 'cm-ai-host.mjs'), 'utf8');
+  const load = host.indexOf('const externalModels=readLaunchExternalModels('), guard = host.indexOf("refuse(callTimeoutMs===null||(!protection&&!externalModels)");
+  assert.ok(load > 0 && guard > load);
+});

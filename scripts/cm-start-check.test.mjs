@@ -257,6 +257,11 @@ test('--call-timeout-minutes 放宽整步期限：45 分钟的检查在 60 分�
   assert.deepEqual(r.report.findings.map(item => [item.code, item.limitMs]), [['check_budget_over_call_limit', 2400000]]);
   const bad = project(t, {checks: [cmd('a', ['a'])], plan: {permissions: ['--allow-development', '--call-timeout-minutes', '90']}});
   assert.deepEqual(check(bad).report.findings.map(item => [item.level, item.code]), [['error', 'call_timeout_invalid']]);
+  // 计划不写 checks、或参数重复时也要提前报出（宿主同样会拒绝）
+  const noChecks = project(t, {plan: {permissions: ['--allow-development', '--call-timeout-minutes', '90']}});
+  assert.deepEqual(check(noChecks).report.findings.map(item => [item.level, item.code]), [['error', 'call_timeout_invalid']]);
+  const twice = project(t, {checks: [cmd('a', ['a'])], plan: {permissions: ['--call-timeout-minutes', '60', '--call-timeout-minutes', '90']}});
+  assert.deepEqual(check(twice).report.findings.map(item => [item.level, item.code]), [['error', 'call_timeout_invalid']]);
 });
 
 test('the call limit constant still matches the host source', () => {

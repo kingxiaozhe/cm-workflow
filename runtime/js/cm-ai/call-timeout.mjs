@@ -14,6 +14,8 @@ export function parseCallTimeoutMinutes(raw){
 }
 export const callTimeoutFrom=permissions=>{
   const at=Array.isArray(permissions)?permissions.indexOf('--call-timeout-minutes'):-1;
+  // 宿主拒绝重复参数；体检同样按非法处理，不只读第一个值
+  if(at!==-1&&permissions.indexOf('--call-timeout-minutes',at+1)!==-1)parseCallTimeoutMinutes('');
   // 写了参数却没给值：按非法处理，不悄悄退回默认
   return at===-1?null:parseCallTimeoutMinutes(permissions[at+1]??'');
 };
