@@ -283,9 +283,9 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     return verdict.satisfied?{satisfied:true,items:verdict.items,...(facts?{hostRecord:facts}:{}),...(coverage?{coverage}:{})}
       :{satisfied:false,reason:boundedReason('verification_precheck_failed: ',verdict.unsatisfied??['门禁未记录具体缺项'])};
   };
-  // 当前会话运行默认 30 分钟；--call-timeout-minutes 可放宽到 60 分钟（设备检查）。首条 journal 记录保留创建时的值，
-  // 普通当前会话运行恢复时用本次传入值（durable-runner-state.mjs sameRunnerConfig）
   const outerTimeoutMs=provider?protection.timeoutMs:(options.callTimeoutMs??DEFAULT_CALL_TIMEOUT_MS);
+  // 当前会话运行默认 30 分钟；--call-timeout-minutes 可放宽到 60 分钟（设备检查）。首条 journal 记录保留创建时的值，
+  // 普通当前会话运行恢复时用本次传入值，不得低于创建值（durable-runner-state.mjs sameRunnerConfig）
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,
     identity:request.identity,runtime:selectedRuntime,stage,signal:control.signal},run);
   const execution={configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],applicableAgentFiles:[],
