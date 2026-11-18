@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {CHECK_CALL_LIMIT_MS, MAX_SCOPE_PATHS, startCheck, checkMandatoryTests, checkReviewInventory, checkLaunchInputs} from './cm-start-check.mjs';
+import {CHECK_CALL_LIMIT_MS, MAX_SCOPE_PATHS, startCheck, checkMandatoryTests, checkReviewInventory, checkLaunchInputs, callLimit} from './cm-start-check.mjs';
 import {buildManifest} from './cm-spec-manifest.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -560,4 +560,14 @@ test('answers the advance will ask and an invalid interactive QA declaration are
   fs.writeFileSync(path.join(answers, 'develop-a1.json'), '{}');
   const resumed = checkLaunchInputs({...plan([]), mode: 'resume'}, planFile, definition).filter(item => item.code === 'answers_conflict');
   assert.deepEqual(resumed.map(item => item.level), ['warn']);
+});
+
+test('恢复时体检按原运行判断期限：普通运行不得低于创建值，外部模型运行须一致（与宿主同一规则）', () => {
+  const codes = r => r.findings.map(item => item.code);
+  const plain = {timeoutMs: 3600000, external: false}, external = {timeoutMs: 1800000, external: true};
+  assert.deepEqual(codes(callLimit({mode: 'resume', permissions: ['--call-timeout-minutes', '60']}, plain)), []);
+  assert.deepEqual(codes(callLimit({mode: 'resume', permissions: []}, plain)), ['call_timeout_invalid']);
+  assert.equal(callLimit({mode: 'resume', permissions: ['--call-timeout-minutes', '60']}, {timeoutMs: 1800000, external: false}).limitMs, 3600000);
+  assert.deepEqual(codes(callLimit({mode: 'resume', permissions: []}, external)), []);
+  assert.deepEqual(codes(callLimit({mode: 'resume', permissions: ['--call-timeout-minutes', '60']}, external)), ['call_timeout_invalid']);
 });
