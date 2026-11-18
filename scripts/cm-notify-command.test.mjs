@@ -11,6 +11,9 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {parseAssignments,readPrivateFile,readSecret,runSender,responseCodeType,readRegularFile,entryDecision,WINDOWS_UNSUPPORTED,SEND_EXIT} from '../runtime/js/notify-send.mjs';
 import {main,notifyStatus,switchChannel,turnOff,sendTest,formatTest,previewText,formatPreview,managedSenderPath,classifyCommand,SENDER_SOURCE,TEMPLATES} from './cm-notify.mjs';
+// An exported CM_NOTIFY_OFF silences every notice; these fixtures expect notices on
+// (review 2026-11-17). Tests of the switch itself set it explicitly.
+delete process.env.CM_NOTIFY_OFF;
 
 // Every test works in its own temp CM_WORKFLOW_HOME / log home / HOME: the
 // real ~/.cm-workflow/notify.json would push to the user's phone.

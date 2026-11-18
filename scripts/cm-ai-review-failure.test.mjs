@@ -24,6 +24,9 @@ import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {isSupportedExecutionPlatform} from '../runtime/js/cm-ai/execution-platform.mjs';
 import {rateLimitRetryEligible} from '../runtime/js/cm-ai/drive-rate-limit.mjs';
 import {guardFixtureSource,killFixtureProcesses} from './fixtures/process-cleanup.mjs';
+// An exported CM_NOTIFY_OFF silences every notice; these fixtures expect notices on
+// (review 2026-11-17). Tests of the switch itself set it explicitly.
+delete process.env.CM_NOTIFY_OFF;
 
 // Native V3 runner fixtures require Node 24.14+ on macOS/Linux. Preserve the
 // suite's existing explicit platform gate; only CLI fixtures spawn POSIX shims.
