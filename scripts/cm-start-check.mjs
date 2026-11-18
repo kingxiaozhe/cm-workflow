@@ -160,7 +160,7 @@ function checkChecks(plan, saved = null) {
     findings.push({level: 'warn', code: 'check_budget_over_call_limit', totalMs, limitMs,
       message: `各检查超时之和 ${Math.round(totalMs / 60000)} 分钟，超过检查整步的 ${limitMs / 60000} 分钟期限；这是最坏情况，实际可能更短。`
         + '按分层缩减（单元测试全跑，界面测试只跑本任务新写的和牵连的，其余留到功能末尾回归任务），或拆成多次运行；'
-        + (canWiden(plan, saved) ? '设备检查确需更久时，在 PLAN.permissions 加 "--call-timeout-minutes","<30–60>"' : '此运行模式不接受 --call-timeout-minutes')});
+        + (canWiden(plan, saved) ? '设备检查确需更久时，在 PLAN.permissions 加 "--call-timeout-minutes","<30–60>"' : '此运行模式不能用 --call-timeout-minutes 延长期限（外部模型运行恢复时只可传创建时的原值）')});
   return findings;
 }
 
