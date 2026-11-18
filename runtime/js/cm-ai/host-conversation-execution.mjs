@@ -1,3 +1,4 @@
+import {DEFAULT_CALL_TIMEOUT_MS} from './call-timeout.mjs';
 import {createNativeUsageLog} from './native-usage-log.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
 import {readControlPolicy} from './control-policy.mjs';
@@ -100,7 +101,8 @@ export const REVIEW_BOUND_MARGIN_MS=60000;
 export const reviewRaceTimeout=(outerTimeoutMs,reviewTimeoutMs)=>Math.max(outerTimeoutMs,reviewTimeoutMs+REVIEW_BOUND_MARGIN_MS);
 export function createConversationExecution(definition,hostContextId,bridge,review=null,reservedReviewAttempt=null,workflow=null,allowQa=false,runtime='codex',options={}){
   definition=json(definition);workflow=workflow===null?null:json(workflow);options=json(options);
-  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','soloMember','verificationPrecheck','executionPolicy','controlPolicy','memberDevelopment'].filter(key=>Object.hasOwn(options,key))]);
+  shape(options,[...['originalHostContextId','protection','batchWorkflowsDigest','qaLogHome','bootstrap','providerDevelopment','externalModels','reviewerRuntime','reviewRuntime','parallelMember','soloMember','verificationPrecheck','executionPolicy','controlPolicy','memberDevelopment','callTimeoutMs'].filter(key=>Object.hasOwn(options,key))]);
+  need(!Object.hasOwn(options,'callTimeoutMs')||(Number.isInteger(options.callTimeoutMs)&&options.callTimeoutMs>=DEFAULT_CALL_TIMEOUT_MS&&options.callTimeoutMs<=3600000),'invalid_input');
   const controlPolicy=options.controlPolicy?readControlPolicy(options.controlPolicy):null;
   need(!Object.hasOwn(options,'verificationPrecheck')||typeof options.verificationPrecheck==='boolean','invalid_input');
   const executionPolicy=options.executionPolicy?readExecutionPolicy(options.executionPolicy):null;
@@ -154,6 +156,7 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
       selection:options.bootstrap.selection,bridge,allowWrite:options.bootstrap.allowWrite});
   }
   const protection=options.protection??null;
+  need(!Object.hasOwn(options,'callTimeoutMs')||protection===null,'invalid_input');
   if(protection){shape(protection,['checkCommands','timeoutMs']);specsPermissionArgs({cwd:definition.codeProject,specsRoot:definition.specsDir});}
   need(!definition.codeProjects||protection,'multi_root_protection_required');
   const projectExecution=protection?createProjectExecution({definition,protection,executionPolicy}):null;
@@ -181,6 +184,8 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     ...(options.batchWorkflowsDigest?{batchWorkflowsDigest:options.batchWorkflowsDigest}:{}),
     ...(review?{review:{version:1,model:review.model,disabledSkills:review.disabledSkills,...(externalModels?{effort:review.effort}:{})}}:{}),
     ...(workflow?{workflow}: {})};
+  // --call-timeout-minutes 不进执行配置与运行指纹：它只决定单次调用等多久，不授予任何能力；
+  // 现行版本建的运行在设备检查超时后，恢复时可放宽到 60 分钟（durable-runner-state.mjs sameRunnerConfig）。
   const reviewOptions={cwd:definition.codeProject,model:review?.model??'unconfigured',...(externalModels?{effort:review.effort}:{}),preflight:review?.preflight??null,
     disabledSkills:review?.disabledSkills??[],
     ...resolveReviewTimeout(review,protection),
@@ -278,7 +283,9 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
     return verdict.satisfied?{satisfied:true,items:verdict.items,...(facts?{hostRecord:facts}:{}),...(coverage?{coverage}:{})}
       :{satisfied:false,reason:boundedReason('verification_precheck_failed: ',verdict.unsatisfied??['门禁未记录具体缺项'])};
   };
-  const outerTimeoutMs=provider?protection.timeoutMs:1800000;
+  const outerTimeoutMs=provider?protection.timeoutMs:(options.callTimeoutMs??DEFAULT_CALL_TIMEOUT_MS);
+  // 当前会话运行默认 30 分钟；--call-timeout-minutes 可放宽到 60 分钟（设备检查）。首条 journal 记录保留创建时的值，
+  // 普通当前会话运行恢复时用本次传入值，不得低于创建值（durable-runner-state.mjs sameRunnerConfig）
   const progress=(request,control,stage,run,selectedRuntime=runtime)=>withHostProgress({definition,
     identity:request.identity,runtime:selectedRuntime,stage,signal:control.signal},run);
   const execution={configuration,timeoutMs:outerTimeoutMs,excludedContexts:[durableHostContextId],applicableAgentFiles:[],

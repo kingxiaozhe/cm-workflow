@@ -13,13 +13,14 @@ import {git as safeGit} from '../runtime/js/cm-security/scan.mjs';
 import {captureSpecificationMaterial} from '../runtime/js/cm-ai/specification-material.mjs';
 import {readReviewBaseline,captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
 import {taskReviewScope} from '../runtime/js/cm-ai/effect-contract.mjs';
+import {callTimeoutFrom} from '../runtime/js/cm-ai/call-timeout.mjs';
 import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-projects.mjs';
 import {readExecutionSnapshot} from '../runtime/js/cm-ai/execution-snapshot.mjs';
 import {acceptanceCoverage} from '../runtime/js/cm-ai/acceptance-contract.mjs';
 import {featureHasBrowserCases,readBrowserCapability} from '../runtime/js/cm-ai/host-workflow-capabilities.mjs';
 
 // The whole check step of a current-session run is one host call with this deadline
-// (runtime/js/cm-ai/host-conversation-execution.mjs, outerTimeoutMs). The test
+// (runtime/js/cm-ai/host-conversation-execution.mjs, outerTimeoutMs; default unless --call-timeout-minutes). The test
 // file guards that the literal is still there.
 export const CHECK_CALL_LIMIT_MS = 1800000;
 const MAX_LISTED = 20;
@@ -97,8 +98,32 @@ const optionValue = (tokens, name) => {
   return at === -1 ? '' : tokens[at + 1] ?? '';
 };
 
-function checkChecks(plan) {
-  const findings = [];
+// 运行可用 --call-timeout-minutes（30–60）放宽整步期限；值非法或重复时宿主会拒绝启动，这里不论有无 checks 都提前报出
+export function callLimit(plan, saved = null) {
+  try {
+    const value = callTimeoutFrom(plan.permissions), flags = Array.isArray(plan.permissions) ? plan.permissions : [];
+    const effective = value ?? CHECK_CALL_LIMIT_MS, bad = message => ({limitMs: CHECK_CALL_LIMIT_MS, findings: [{level: 'error', code: 'call_timeout_invalid', message}]});
+    if (saved?.external && effective !== saved.timeoutMs)
+      return bad(`外部模型运行恢复时期限须与创建时一致（${saved.timeoutMs / 60000} 分钟）`);
+    if (saved && !saved.external && effective < saved.timeoutMs)
+      return bad(`--call-timeout-minutes：此运行已用 ${saved.timeoutMs / 60000} 分钟，本次为 ${effective / 60000} 分钟；恢复时不得低于创建时的值`);
+    if (value !== null && (flags.includes('--protected-conversation-config') || flags.includes('--protected-config')))
+      return {limitMs: CHECK_CALL_LIMIT_MS, findings: [{level: 'error', code: 'call_timeout_invalid', message: '--call-timeout-minutes 不用于受保护运行'}]};
+    if (value !== null && flags.includes('--external-models') && plan.mode !== 'resume')
+      return {limitMs: CHECK_CALL_LIMIT_MS, findings: [{level: 'error', code: 'call_timeout_invalid', message: '外部模型运行创建时不接受 --call-timeout-minutes'}]};
+    return {limitMs: value ?? CHECK_CALL_LIMIT_MS, findings: []};
+  }
+  catch (error) { return {limitMs: CHECK_CALL_LIMIT_MS, findings: [{level: 'error', code: 'call_timeout_invalid', message: error.message}]}; }
+}
+
+// 与宿主同一规则：受保护运行不接受；外部模型运行只在恢复时可带原值
+const canWiden = (plan, saved = null) => {
+  const flags = Array.isArray(plan.permissions) ? plan.permissions : [];
+  return !saved?.external && !flags.includes('--protected-config') && !flags.includes('--protected-conversation-config') && !flags.includes('--external-models');
+};
+
+function checkChecks(plan, saved = null) {
+  const {limitMs, findings} = callLimit(plan, saved);
   if (!Array.isArray(plan.checks)) return findings;
   const items = plan.checks.filter(item => item !== null && typeof item === 'object' && !Array.isArray(item));
   let timeouts;
@@ -131,10 +156,11 @@ function checkChecks(plan) {
       message: `检查 ${group.map(entry => entry.item.id).join('、')} 都是同一 scheme／目的地、没有 -only-testing 的 xcodebuild test，很可能各自跑了一遍全量。保留一个，或用 -only-testing 分开`});
   }
   const totalMs = own.reduce((sum, entry) => sum + entry.timeoutMs, 0);
-  if (totalMs > CHECK_CALL_LIMIT_MS)
-    findings.push({level: 'warn', code: 'check_budget_over_call_limit', totalMs, limitMs: CHECK_CALL_LIMIT_MS,
-      message: `各检查超时之和 ${Math.round(totalMs / 60000)} 分钟，超过检查整步的 ${CHECK_CALL_LIMIT_MS / 60000} 分钟期限；这是最坏情况，实际可能更短。`
-        + '按分层缩减（单元测试全跑，界面测试只跑本任务新写的和牵连的，其余留到功能末尾回归任务），或拆成多次运行'});
+  if (totalMs > limitMs)
+    findings.push({level: 'warn', code: 'check_budget_over_call_limit', totalMs, limitMs,
+      message: `各检查超时之和 ${Math.round(totalMs / 60000)} 分钟，超过检查整步的 ${limitMs / 60000} 分钟期限；这是最坏情况，实际可能更短。`
+        + '按分层缩减（单元测试全跑，界面测试只跑本任务新写的和牵连的，其余留到功能末尾回归任务），或拆成多次运行；'
+        + (canWiden(plan, saved) ? '设备检查确需更久时，在 PLAN.permissions 加 "--call-timeout-minutes","<30–60>"' : '此运行模式不能用 --call-timeout-minutes 延长期限（外部模型运行恢复时只可传创建时的原值）')});
   return findings;
 }
 
@@ -335,6 +361,16 @@ export function checkMandatoryTests(plan, requiredTests) {
       + '补充明确执行这些测试的命令。包装脚本须先经原规格流程确认可机械核对的测试映射，不能仅在参数中出现测试名就认定覆盖'}];
 }
 
+// 恢复时读原运行首条记录里的期限与外部模型标记（只读、尽力而为；读不到时按计划自身判断，宿主仍会核对）
+function savedRunConfig(plan, definition) {
+  if (plan.mode !== 'resume') return null;
+  try {
+    const config = readExecutionSnapshot({specsRoot: definition.specsDir,
+      identity: {repositoryId: definition.identity.repositoryId, runId: definition.identity.runId}}).records[0]?.payload?.config;
+    return config && Number.isInteger(config.timeoutMs) ? {timeoutMs: config.timeoutMs, external: Object.hasOwn(config, 'externalModels')} : null;
+  } catch { return null; }
+}
+
 function approvedStartContract(plan,definition){
   // Old scope-only advisory inputs have no task identity and make no claim
   // about a runnable CM specification. Real run definitions are checked below.
@@ -377,7 +413,7 @@ export function startCheck(planFile, {requiredTests = []} = {}) {
       tests:coverage.missing,unverifiable:coverage.unverifiable,commands:coverage.missingCommands,
       message:'当前计划未完整包含冻结的必验检查；补齐检查，不能缩减批准的验收范围'});
   }
-  return [...checkProtectedScope(definition.scope), ...checkChecks(plan), ...checkAffectedTests(plan, definition),
+  return [...checkProtectedScope(definition.scope), ...checkChecks(plan, savedRunConfig(plan, definition)), ...checkAffectedTests(plan, definition),
     ...checkMandatoryTests(plan, requiredTests), ...mandatory, ...checkDirtyScope(definition), ...checkReviewInventory(definition), ...checkLaunchInputs(plan, planFile, definition)];
 }
 

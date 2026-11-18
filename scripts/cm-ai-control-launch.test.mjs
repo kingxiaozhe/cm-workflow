@@ -171,6 +171,24 @@ test('real v2 CLI publishes a launch target, refuses a stale target and rebinds 
   assert.equal(f.snapshot().records.find(row=>row.payload.type==='specification-rebound').payload.record.reason,reason);
 });
 
+test('v2 run created without --call-timeout-minutes resumes with 60 (device checks that hit the 30 minute call limit)',t=>{
+  const f=fixture(t),config=path.join(f.root,'run.json'),control=path.join(f.root,'control.json'),
+    review=path.join(f.root,'review.json'),workflow=path.join(f.root,'workflow.json');
+  fs.writeFileSync(config,JSON.stringify(f.definition));fs.writeFileSync(control,JSON.stringify(policy));
+  fs.writeFileSync(workflow,JSON.stringify(f.execution.configuration.workflow));
+  fs.writeFileSync(review,JSON.stringify({model:'fixture',preflight:{passed:true,cli_model:'fixture',prompt_transport:'stdin',
+    config_fingerprint:configFingerprint({cwd:f.codeProject,model:'fixture'})}}));
+  const serve=(mode,extra=[])=>spawnSync(process.execPath,[cli,'serve','--config',config,'--mode',mode,'--host-context','main',
+    '--control-config',control,'--review-config',review,'--workflow-config',workflow,...extra],
+    {encoding:'utf8',timeout:20000,input:JSON.stringify({version:2,requestId:'status',operation:'status',identity:f.identity})+'\n',
+      env:{...process.env,CM_WORKFLOW_HOME:path.join(f.root,'home'),CM_WORKFLOW_LOG_HOME:path.join(f.root,'logs')}});
+  const created=serve('create');assert.equal(created.status,0,created.stderr);
+  const before=f.snapshot().fingerprints;
+  const resumed=serve('resume',['--call-timeout-minutes','60']);assert.equal(resumed.status,0,resumed.stderr);
+  assert.deepEqual(f.snapshot().fingerprints,before,'the call timeout never enters the run fingerprint');
+  const refused=serve('resume',['--call-timeout-minutes','61']);assert.equal(refused.status,1);assert.match(refused.stderr,/invalid_arguments/);
+});
+
 test('v2 argv requires target for startup recovery and refuses external allow flags or create supersession',t=>{
   const f=fixture(t),config=path.join(f.root,'run.json'),control=path.join(f.root,'control.json');
   fs.writeFileSync(config,JSON.stringify(f.definition));fs.writeFileSync(control,JSON.stringify(policy));

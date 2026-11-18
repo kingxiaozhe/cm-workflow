@@ -179,6 +179,7 @@ cm-fix 的 `learning.json`、`diagnosis.json`、`test-edits.json`、`repair-edit
 缺答案、结构错误、路径或存档无效会在启动宿主前退出 2。
 
 `develop` 回答可能超默认 64 KiB 时，首次启动即在 `PLAN.permissions` 传 `["--input-limit","1048576"]`（上限 4194304）；详见 R「开发交付阻断与存档限额」。
+检查整步（含设备流程）可能超默认 30 分钟时，在 `PLAN.permissions` 加 `["--call-timeout-minutes","60"]`（30–60，仅当前会话运行）；它不进运行指纹，已因超时停下的运行可在 resume 时补上；恢复时不得低于创建时的值，每次启动在 stderr 报出实际期限。
 
 `check` 只运行计划里的真实命令；原始输出打印到驾驶员 stderr，宿主只保存实际退出码和精简证据；静态 `check.json` 不会被读取。单任务和批次 PLAN 可设 `checkTimeoutMs` 作为检查默认超时，每个 `checks` 条目可设 `timeoutMs` 覆盖；均为 1..3600000 的整数毫秒，省略时驱动默认 900000（15 分钟），启动前校验。宿主 `host-check` 对其他调用方的默认值仍是 60000。
 驾驶员收到 `state: "unknown"` 或 `pendingAction: "reconcile"` 的宿主结果时退出 1，并保留原输出供原 run 恢复；不能把有结果的 JSON 当成成功。
