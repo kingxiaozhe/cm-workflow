@@ -27,6 +27,7 @@ export function roundLedgerPath(specsDir){
 export const AMEND_LIMIT=3;
 export const REVIEW_MARKER='cmSpecAmendReview';
 const FILES=['requirements.md','design.md','tasks.md','test-cases.json'];
+export const APPROVED_SPEC_FILES=Object.freeze([...FILES]);
 const FEATURE=/^\d+\.[^/\\]+$/;
 const ACCEPTANCE=/^\s*[-*]\s+(?:\[[ xX]\]\s+)?(?:\[(AC-\d{3,})\]|(AC-\d{3,}))(?=[:\s])/;
 const AC_REF=/AC-\d{3,}/g;

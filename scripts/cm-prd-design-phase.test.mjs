@@ -548,10 +548,12 @@ for(const mode of ['failed','drift'])test(`disposed-design split self-check cann
   assert.equal(checks,1);assert.equal(fs.existsSync(path.join(f.specs,'.reviews/prd-guide-split-disposition.json')),mode==='failed');
 });
 // Models a human 「开始」 binding the current specs; the round ledger stays in a temporary home.
-function approveCurrentSpecs(t,specs){
+function isolateApprovalHome(t){
   const home=fs.mkdtempSync(path.join(os.tmpdir(),'cm-prd-approved-home-')),previous=process.env.CM_WORKFLOW_HOME;
   process.env.CM_WORKFLOW_HOME=home;
   t.after(()=>{if(previous===undefined)delete process.env.CM_WORKFLOW_HOME;else process.env.CM_WORKFLOW_HOME=previous;fs.rmSync(home,{recursive:true,force:true});});
+}
+function approveCurrentSpecs(specs){
   const specFiles=buildManifest(specs),features=[...new Set(specFiles.map(row=>row.path.split('/')[0]))];
   const approval={response:'开始',at:'2026-11-17T00:00:00.000Z'};
   writeSpecsStatus(specs,{status:'approved',at:approval.at,features,specFiles,testCases:specFiles.filter(row=>row.path.endsWith('/test-cases.json')),approval,taskGrammar:3});
@@ -559,18 +561,18 @@ function approveCurrentSpecs(t,specs){
 }
 // Codex 审查 #1：批准基线只替代指纹比对，设计与拆分审查的关联校验照常执行。
 test('change save accepts an approved design after a completed split but keeps the split binding check',async t=>{
-  const f=await splitDesignFixture(t);f.edit();
+  isolateApprovalHome(t);const f=await splitDesignFixture(t);f.edit();
   await createPrdDispositionOwner({checkContext:async payload=>checked(payload)})(f.args,new AbortController().signal);
   fs.writeFileSync(path.join(f.specs,f.feature,'design.md'),f.content+'\nLater approved design');
   assert.throws(()=>assertPrdReviewsSettled(f.specs,[f.feature]));
-  approveCurrentSpecs(t,f.specs);
+  approveCurrentSpecs(f.specs);
   assert.doesNotThrow(()=>assertPrdReviewsSettled(f.specs,[f.feature]));
   const g=await splitDesignFixture(t),other=await splitDesignFixture(t,{featureName:'other'});
   other.edit();await createPrdDispositionOwner({checkContext:async payload=>checked(payload)})(other.args,new AbortController().signal);
   g.edit();
   for(const suffix of ['-r1.md','-dispatch.json','-disposition.json'])fs.copyFileSync(
     path.join(other.specs,`.reviews/prd-other-split${suffix}`),path.join(g.specs,`.reviews/prd-guide-split${suffix}`));
-  approveCurrentSpecs(t,g.specs);
+  approveCurrentSpecs(g.specs);
   assert.throws(()=>assertPrdReviewsSettled(g.specs,[g.feature]),/prd_review_archive_identity_mismatch/);
 });
 test('unchanged split disposition preserves legacy accepted binding and both receipt bytes',async t=>{

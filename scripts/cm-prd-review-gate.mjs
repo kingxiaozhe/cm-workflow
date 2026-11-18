@@ -9,6 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {acceptsPrdSplitDesign} from '../runtime/js/cm-prd/split-design.mjs';
 import {inspectPrdFailedCorrection} from '../runtime/js/cm-prd/failed-correction.mjs';
 import {normalizeRuntimeMarks,normalizeRuntimeMarkBytes} from './cm-spec-manifest.mjs';
+import {APPROVED_SPEC_FILES} from '../runtime/js/cm-ai/spec-amendment.mjs';
 import {tagDiagnosticReason} from '../runtime/js/cm-ai/diagnostic-reason.mjs';
 
 // Messages stay byte-identical for the CLI and its Python oracle. Hosts get a stable
@@ -140,7 +141,6 @@ function loadReceipt(file,args,evidence){
   // for this receipt's fingerprints only; every other receipt and split-binding check runs.
   const approved=args.approvedBaseline instanceof Map?args.approvedBaseline:null;
   const normalizedSha=(bytes,name)=>createHash('sha256').update(normalizeRuntimeMarkBytes(bytes,name)).digest('hex');
-  const approvedFeature=p=>approved!==null&&[...approved.keys()].some(row=>row.split('/')[0]===p.split('/')[0]);
   for(const item of value.artifacts){
     need(keys(item,['path','sha256'])&&typeof item.path==='string'&&typeof item.sha256==='string'
       &&/^[0-9a-f]{64}$/.test(item.sha256),'PRD review receipt contains an invalid artifact','prd_review_receipt_invalid',where);
@@ -150,9 +150,11 @@ function loadReceipt(file,args,evidence){
     const named=()=>({receipt,artifact:item.path});
     const raw=path.join(root,item.path);need(!link(raw),'PRD review artifact is missing or unsafe','prd_review_artifact_unsafe',named);
     const artifact=resolve(raw);need(within(root,artifact),'PRD review artifact escapes the specs directory','prd_review_artifact_unsafe',named);
-    // A file the approved round no longer has (e.g. test-cases.json) may be gone; the
-    // whole-set check below still binds the feature to that one round.
-    if(!stat(artifact)&&!approved?.has(item.path)&&approvedFeature(item.path)){value.approvedBaselineAccepted=true;continue;}
+    // Only the optional test-cases.json may be gone, and only when the approved round of a
+    // feature it binds no longer lists it; the whole-set check below enforces that round.
+    const parts=item.path.split('/');
+    if(!stat(artifact)&&approved!==null&&parts.length===2&&parts[1]==='test-cases.json'&&!approved.has(item.path)
+      &&approved.has(`${parts[0]}/design.md`)){value.approvedBaselineAccepted=true;continue;}
     need(stat(artifact)?.isFile(),'PRD review artifact is missing or unsafe','prd_review_artifact_unsafe',named);
     const bytes=bytesOf(artifact,'prd_review_artifact_unsafe',named());
     const currentSha=createHash('sha256').update(bytes).digest('hex');
@@ -176,9 +178,10 @@ function loadReceipt(file,args,evidence){
   // Once any file leans on the approved round, every file of the receipt's features must be
   // exactly that round: old receipt bytes cannot be mixed with newly approved ones.
   if(value.approvedBaselineAccepted){
-    const features=new Set(value.artifacts.map(item=>item.path.split('/')[0]));
-    const rows=new Set([...value.artifacts.map(item=>item.path),...[...approved.keys()].filter(row=>features.has(row.split('/')[0]))]);
-    for(const row of [...rows].sort()){
+    // Every spec file the approval binds, present or not; other receipt artifacts were
+    // already held to the receipt's own fingerprints above.
+    const features=[...new Set(value.artifacts.map(item=>item.path.split('/')[0]))].sort();
+    for(const row of features.flatMap(feature=>APPROVED_SPEC_FILES.map(name=>`${feature}/${name}`))){
       const target=path.join(root,row),present=stat(target);
       need(!link(target)&&(present===null||present.isFile()),'PRD review artifact is missing or unsafe','prd_review_artifact_unsafe',()=>({receipt,artifact:row}));
       const current=present===null?undefined:normalizedSha(bytesOf(target,'prd_review_artifact_unsafe',{receipt,artifact:row}),path.basename(row));

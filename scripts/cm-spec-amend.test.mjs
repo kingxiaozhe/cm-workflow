@@ -513,12 +513,12 @@ test('a failed approval snapshot write leaves no round to restore',()=>fixture((
 
 // wue 实跑事故（2026-11-17）：拆分审查回执之后，设计稿经用户重新批准、任务经 1 级补正换绑，
 // cm-prd --change 的 save_draft 仍拿最早回执指纹比对，误报 prd_review_artifact_changed。
-function splitReceipt(specs){
+function splitReceipt(specs,names=['requirements.md','design.md','tasks.md','test-cases.json']){
   const reviews=path.join(specs,'.reviews');fs.mkdirSync(reviews,{recursive:true});
   const args={stage:'split',feature:'login',evidence:path.join(reviews,'prd-login-split-r1.md'),receipt:path.join(reviews,'prd-login-split-disposition.json')};
   fs.writeFileSync(args.evidence,'---\nat: 2026-11-01T00:00:00Z\nreviewer: codex-subagent\nindependent: true\nscope:\n  - tasks.md\n---\nSynthetic split review\n');
   recordPrdReview({...args,disposition:'no_findings',finding_count:0,unresolved_count:0,
-    artifact:['requirements.md','design.md','tasks.md','test-cases.json'].map(name=>path.join(specs,'1.login',name))});
+    artifact:names.map(name=>path.join(specs,'1.login',name))});
 }
 test('change save accepts specs re-bound by a later approval or applied amendment after the split receipt',()=>fixture(({specs,approve,inspect,apply,review,edit})=>{
   splitReceipt(specs);assert.equal(approve().status,0);
@@ -583,4 +583,20 @@ test('malformed approved status falls back to the strict receipt check',()=>fixt
   assert.doesNotThrow(()=>assertPrdReviewsSettled(specs,['1.login']));
   edit('tasks.md',addTask);
   assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact changed after disposition/);
+},{cases:true}));
+// Codex 复审 #1：两份清单都没有的 test-cases.json 后来出现，也要拦。
+test('change save refuses a test-cases.json no approval or receipt bound',()=>fixture(({specs,approve,edit})=>{
+  splitReceipt(specs,['requirements.md','design.md','tasks.md']);edit('design.md',text=>text+'\n换版\n');assert.equal(approve().status,0);
+  assert.doesNotThrow(()=>assertPrdReviewsSettled(specs,['1.login']));
+  fs.writeFileSync(path.join(specs,'1.login/test-cases.json'),JSON.stringify(CASES));
+  assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact changed after disposition/);
+}));
+// Codex 复审 #2：批准清单范围外的回执产物仍按回执指纹核对，删除不能借基线放行。
+test('approved baseline never covers receipt artifacts outside the approved spec files',()=>fixture(({specs,approve,edit})=>{
+  fs.writeFileSync(path.join(specs,'1.login/api-schema.json'),'{"type":"object"}\n');
+  splitReceipt(specs,['requirements.md','design.md','tasks.md','test-cases.json','api-schema.json']);
+  edit('design.md',text=>text+'\n换版\n');assert.equal(approve().status,0);
+  assert.doesNotThrow(()=>assertPrdReviewsSettled(specs,['1.login']));
+  fs.rmSync(path.join(specs,'1.login/api-schema.json'));
+  assert.throws(()=>assertPrdReviewsSettled(specs,['1.login']),/PRD review artifact is missing or unsafe/);
 },{cases:true}));
