@@ -5,6 +5,10 @@
 
 ## 未发布
 
+- **用 gpt-6.2-sol 审查时预检不再必然失败**（Wue T-012 实跑：codex-cli 0.167.0 给 gpt-6.2-sol 的请求默认带 `request_user_input`、`view_image` 两个工具，「审查进程零工具」预检必然 `passed=false`）：审查参数关闭 `view_image` 功能，并加 `-c tools.experimental_request_user_input.enabled=false`；零工具判定不变，编码进程参数不变。审查路径需要 codex-cli 0.153.4 或更新（更旧版本不认这两个参数，会在发出请求前启动失败）。参数变了，升级前生成的预检回执不再匹配，原运行需用同样配置重新预检；早期严格批次留有旧缓存时会报 `legacy_preflight_cache_invalid`，按原人工归档出口处理。
+
+- **规格变更保存认可回执之后经批准或补正换绑的规格**（Wue 实跑：拆分审查之后设计稿经用户重新批准、任务经 1 级补正换绑，`cm-prd --change` 保存仍拿最早回执指纹比对，误报 `prd_review_artifact_changed`）：当前四个规格文件整套等于最近一次批准轮次（含已应用的补正）时放行；拆分关联校验照常执行，旧回执字节与新批准字节混用、未经批准的改动仍被拦截。（#271）
+
 ## 0.21.1 — 2026-11-17
 
 - **接近存档上限的任务提交可以正常读回**（CI 历史组夹具暴露：存档单条上限放到 4 MiB 后，`readCommitIntent` 仍按通用 JSON 校验的 1 MiB 默认值读取，计划接近或超过 1 MiB 的提交意图写得进却读不回）：任务提交意图的读取改用 `JOURNAL_PAYLOAD_LIMIT`，与写入侧一致；运行器构造记录（`boundRunnerRecord`）先按同一上限校验载荷，再校验整条记录（上限加 1 KiB 外层余量）。
