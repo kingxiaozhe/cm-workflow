@@ -16,7 +16,7 @@ allowed-tools:
 新建和变更模式都读取 `references/phase-timing.md`，只为实际执行的阶段写配对
 `progress/start|complete`；人工等待前关闭 segment，恢复后递增，不手算耗时。
 
-用户明确要求外部专家，或为本次规格任务开启 AUTO 时，读取
+通过 `references/cm-optout.md` 核对后，用户明确要求外部专家或为本次规格任务开启 AUTO 时，读取
 `../../runtime/external-expert.md` 并执行 `../external-expert/SKILL.md` 的任务路由。
 AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VERIFY，其余保持 LOCAL。
 外部结论属于需求/设计输入，必须在本地对照项目事实并进入正常规格人审；AUTO 不
@@ -44,7 +44,7 @@ AUTO 可把复杂方案比较路由到 CONSULT、权威事实查证路由到 VER
 
 ## JS 准入与当前会话执行
 
-在读取需求正文、解析角色、写 `run_start`、创建或修改 specs 之前，把已解析路径和模式传给：
+先按 `references/cm-optout.md` 核对项目规则是否禁用 CM（两种模式都做）；通过后，在读取需求正文、解析角色、写 `run_start`、创建或修改 specs 之前，把已解析路径和模式传给：
 
 ```bash
 node "{CM_WORKFLOW_ROOT}/scripts/cm-prd-entry.mjs" \
@@ -148,8 +148,8 @@ node {CM_WORKFLOW_ROOT}/scripts/cm-workflow-config.mjs \
 ### Step 4: 读取项目上下文（存量项目 = 二开模式，叠加 B 规则）
 
 - 按 `runtime/project-context.md` 读取项目约束和本需求相关规则，扫描两层目录了解模块划分
-- 读取 `references/context-scope.md`，先做定向代码搜索，再设置
-  `CONTEXT_SCOPE=targeted|full`、加载对应地图/代码，并写 `decision/context_scope` 日志
+- 读取 `references/context-scope.md`：按下方 B1 读取适用地图或索引，再定向搜索代码，最后设置
+  `CONTEXT_SCOPE=targeted|full`、加载补充地图/代码，并写 `decision/context_scope` 日志
 - **B1 代码库参考文档判定**：先读代码项目根 CLAUDE.md 的「业务地图」字段（多层仓库
   下以代码项目根为准，仓库根 CLAUDE.md 无此字段再看地图 00-index 头部；init 已判定过，
   仍须核对相关内容与当前代码）。字段=已生成/已刷新或目录存在 → 按 context-scope 渐进加载并核实；字段=
