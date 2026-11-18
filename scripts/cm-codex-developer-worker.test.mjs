@@ -42,13 +42,25 @@ test('coding argv enables tools without weakening reviewer argv',()=>{
   for(const name of ['shell_tool','unified_exec','code_mode_host']){
     assert(reviewDisabled.includes(name));assert(!codingDisabled.includes(name));
   }
-  assert.deepEqual(codingDisabled,reviewDisabled.filter(name=>!['shell_tool','unified_exec','code_mode_host'].includes(name)));
+  // view_image is a review-only removal (Codex 0.167 / gpt-6.2); coding keeps its old surface.
+  assert.deepEqual(codingDisabled,reviewDisabled.filter(name=>!['shell_tool','unified_exec','code_mode_host','view_image'].includes(name)));
   assert.deepEqual(values(coding,'--enable'),['shell_tool','unified_exec']);
   assert(!coding.includes('code_mode'));assert(!coding.includes('code_mode_host'));
   assert(coding.includes('sandbox_workspace_write.network_access=false'));
   assert.equal(coding.at(-1),'-');assert(!coding.includes('--dangerously-bypass-approvals-and-sandbox'));
 });
 
+// 实跑事故（2026-11-17，codex-cli 0.167.0）：gpt-6.2-sol 默认多带 request_user_input、view_image
+// 两个工具，审查预检的「零工具」判定必然失败。审查参数关掉这两个；编码参数保持原样。
+test('review argv removes the default tools Codex 0.167 adds for gpt-6.2; coding argv keeps them',()=>{
+  const options={cwd:'/fixture',model:'gpt-6.2-sol',schemaPath:'/schema.json'};
+  const review=commonArgs(options),coding=developerArgs(options);
+  const values=(args,flag)=>args.flatMap((arg,i)=>arg===flag?[args[i+1]]:[]);
+  assert(values(review,'--disable').includes('view_image'));
+  assert.equal(values(review,'-c').filter(arg=>arg==='tools.experimental_request_user_input.enabled=false').length,1);
+  assert(!values(coding,'--disable').includes('view_image'));
+  assert(!coding.includes('tools.experimental_request_user_input.enabled=false'));
+});
 test('coding and review argv both suppress the user skills catalog (2026-09-16: 18249 -> 11706 input tokens)',()=>{
   const options={cwd:'/fixture',model:'fixture',schemaPath:'/schema.json'};
   for(const args of [developerArgs(options),commonArgs(options)]){
