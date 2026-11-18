@@ -77,7 +77,7 @@ test('宿主在加载外部模型快照与受保护会话配置之后拒绝期�
   assert.match(host, /refuse\(callTimeoutMs===null\|\|!protection,/);
 });
 
-test('恢复只可保持或放宽期限：缩短（含漏传）按参数名拒绝，不悄悄变短', () => {
+test('恢复时期限不得低于创建时的值：缩短（含漏传）按参数名拒绝', () => {
   const base = {root: '/r', timeoutMs: 3600000, developer: {provider: 'claude', requestedModel: 'current-session', contextId: 'c'}};
   assert.doesNotThrow(() => sameRunnerConfig(base, base));
   assert.throws(() => sameRunnerConfig(base, {...base, timeoutMs: 1800000}),

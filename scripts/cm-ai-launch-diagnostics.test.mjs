@@ -83,7 +83,10 @@ test('--call-timeout-minutes 恢复时可放宽：现行 main 建的运行恢复
     ['raised to 60',[...base,'--call-timeout-minutes','60']]]){
     const result=f.host('resume',{extra});
     assert.equal(result.status,0,`${label}: ${JSON.stringify(result.error??null)}`);
+    assert.match(result.stderr,new RegExp(`本次单次宿主调用期限 ${extra.at(-1)} 分钟`),label);
   }
+  // 恢复时放宽不入落盘记录：再次恢复按当次值生效，并在 stderr 明确报出（不悄悄变化）
+  const again=f.host('resume',{extra:base});assert.equal(again.status,0);assert.match(again.stderr,/本次单次宿主调用期限 30 分钟/);
   const g=fixture(t),gbase=['--runtime','claude','--review-config',g.review];
   assert.equal(g.host('create',{extra:[...gbase,'--call-timeout-minutes','60']}).status,0);
   assert.equal(g.host('resume',{extra:[...gbase,'--call-timeout-minutes','60']}).status,0,'created at 60, resumed at 60');

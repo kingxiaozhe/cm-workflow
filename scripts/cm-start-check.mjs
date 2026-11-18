@@ -111,6 +111,12 @@ function callLimit(plan) {
   catch (error) { return {limitMs: CHECK_CALL_LIMIT_MS, findings: [{level: 'error', code: 'call_timeout_invalid', message: error.message}]}; }
 }
 
+// 与宿主同一规则：受保护运行不接受；外部模型运行只在恢复时可带原值
+const canWiden = plan => {
+  const flags = Array.isArray(plan.permissions) ? plan.permissions : [];
+  return !flags.includes('--protected-config') && !flags.includes('--protected-conversation-config') && !flags.includes('--external-models');
+};
+
 function checkChecks(plan) {
   const {limitMs, findings} = callLimit(plan);
   if (!Array.isArray(plan.checks)) return findings;
@@ -149,7 +155,7 @@ function checkChecks(plan) {
     findings.push({level: 'warn', code: 'check_budget_over_call_limit', totalMs, limitMs,
       message: `各检查超时之和 ${Math.round(totalMs / 60000)} 分钟，超过检查整步的 ${limitMs / 60000} 分钟期限；这是最坏情况，实际可能更短。`
         + '按分层缩减（单元测试全跑，界面测试只跑本任务新写的和牵连的，其余留到功能末尾回归任务），或拆成多次运行；'
-        + '设备检查确需更久时，在 PLAN.permissions 加 "--call-timeout-minutes","<30–60>"'});
+        + (canWiden(plan) ? '设备检查确需更久时，在 PLAN.permissions 加 "--call-timeout-minutes","<30–60>"' : '此运行模式不接受 --call-timeout-minutes')});
   return findings;
 }
 

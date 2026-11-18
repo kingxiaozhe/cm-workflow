@@ -401,6 +401,9 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       run=await openControlRun(definition,argv[4],execution,{reviewedIntegration,qaConfigRevision,rerunUnknownQa:extra.has('--rerun-unknown-qa'),rerunBlockedQa:extra.has('--rerun-blocked-qa'),qaEnvironmentFailure:extra.get('--qa-environment-failure')??null,supersedeReason:extra.get('--supersede-reason')??null,acceptSupersededCodeDrift:extra.has('--accept-superseded-code-drift'),allowAbandonReview:recoveryEnabled('--allow-abandon-review'),allowAbandonEffect:recoveryEnabled('--allow-abandon-effect'),allowBootstrapReviewRecovery:recoveryEnabled('--allow-bootstrap-review-recovery'),allowDevelopRedo:recoveryEnabled('--allow-develop-redo'),...(extra.has('--hold-revision')?{holdRevision:true}:{}),scopeRevision,developmentReworkReason:extra.get('--development-rework-reason')??null,specRebindReason:extra.get('--spec-rebind-reason')??null,expectedControl,supersedeTarget});
     }
     if(run.blocked){output.write(JSON.stringify({outcome:'blocked',admission:run.blocked})+'\n');return 1;}
+    // 期限按每次启动传入值生效（只校验不低于创建时的值），所以每次都明确报出，不悄悄变化
+    if(!extra.has('--protected-config')&&!protection)
+      error.write(`[cm-ai] 本次单次宿主调用期限 ${execution.timeoutMs/60000} 分钟（--call-timeout-minutes，不得低于创建时的值，最多 60）\n`);
     if(hasFix&&reviewedIntegration===null){
       need(fs.realpathSync(fix.specsRoot)===fs.realpathSync(definition.specsDir)
         &&fs.realpathSync(fix.configuration.reproduction.cwd)===fs.realpathSync(definition.codeProject)

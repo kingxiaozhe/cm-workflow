@@ -757,9 +757,10 @@ export function sameRunnerConfig(saved,current) {
     &&Number.isInteger(c.timeoutMs)&&c.timeoutMs>=1800000&&c.timeoutMs<=3600000;
   if(sessionWindow(saved)&&sessionWindow(current)){
     same({...saved,timeoutMs:0},{...current,timeoutMs:0});
-    // 只许放宽不许缩短：漏传或调小会悄悄缩短检查整步期限，按参数名报出
+    // 不得低于创建时的值：创建时放宽过的运行漏传或调小会缩短检查整步，按参数名报出。
+    // 恢复时放宽不入落盘记录，下次恢复按当次传入值生效（宿主每次启动在 stderr 报出实际期限）
     if(current.timeoutMs<saved.timeoutMs)throw Object.assign(new Error('invalid_arguments'),{code:'invalid_arguments',
-      reason:`--call-timeout-minutes：此运行已用 ${saved.timeoutMs/60000} 分钟，本次为 ${current.timeoutMs/60000} 分钟；恢复只可保持或放宽，请传不小于 ${saved.timeoutMs/60000} 的值`});
+      reason:`--call-timeout-minutes：此运行已用 ${saved.timeoutMs/60000} 分钟，本次为 ${current.timeoutMs/60000} 分钟；恢复时不得低于创建时的值，请传不小于 ${saved.timeoutMs/60000} 的值`});
   }
   else same(saved,current);
 }
