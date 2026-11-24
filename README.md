@@ -17,6 +17,12 @@
 
 ## 最近更新
 
+**0.21.3**
+
+- **cm-ai 新任务支持软链**：项目里有软链不再一建基线就报错；开发可以新建、改指向或删除软链，CM 会核对它不指出项目、不指进 `.git` 和规格目录。已有任务不受影响。
+- **当前会话运行可放宽单次调用期限**：设备检查等耗时长的步骤，可用 `--call-timeout-minutes`（30–60）放宽，已因超时停下的运行恢复时可补上。
+- **技能提醒更少误触发**：多认「不需要」「没必要」、won't 等否定说法和中文单引号，条件句照常触发。详见[更新日志](CHANGELOG.md)。
+
 **0.21.2**
 
 - **cm-prd 遇到项目规则禁用 CM 时先问一次**：项目规则写了「不用 CM」且仍有效时，生成规格前先问你，未确认不写规格。
@@ -287,7 +293,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.21.2 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.21.3 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
