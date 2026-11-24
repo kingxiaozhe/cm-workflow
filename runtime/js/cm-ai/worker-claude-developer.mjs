@@ -5,17 +5,24 @@ import {spawn} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import {claudeBaseArgs,claudeEnvironment} from './worker-claude.mjs';
 import {reportClaudeDevIntentNotice,reportClaudeRateLimitNotice} from './claude-review-stream.mjs';
+import {validateProtectedEdit} from './symlink-material.mjs';
 import {need,text,validCallTimeout,json,shape} from './effect-contract.mjs';
 
-export function claudeDeveloperArgs(model,effort){
+export function claudeDeveloperArgs(model,effort,{allowSymlinks=false}={}){
   const args=claudeBaseArgs(model,effort),index=args.indexOf('--tools');
   args[index+1]='Read,Grep,Glob';
   const schema=JSON.parse(readFileSync(new URL('./claude-developer-proposal.schema.json',import.meta.url),'utf8'));
   delete schema.$schema;delete schema.$id;
+  if(allowSymlinks){
+    const regular=schema.properties.edits.items;
+    const {path,beforeSha256}=regular.properties;
+    schema.properties.edits.items={anyOf:[regular,{type:'object',additionalProperties:false,
+      required:['path','beforeSha256','symlink'],properties:{path,beforeSha256,symlink:{type:'string',minLength:1,maxLength:1024}}}]};
+  }
   return [...args,'--allowedTools','Read,Grep,Glob','--json-schema',JSON.stringify(schema)];
 }
 
-export function validateClaudeProposal(raw){
+export function validateClaudeProposal(raw,{allowSymlinks=false}={}){
   const result=json(raw,64*1024); // Existing 64 KiB transport contract.
   need(result&&['succeeded','failed'].includes(result.status),'invalid_result');
   if(result.status==='failed'){
@@ -47,6 +54,11 @@ export function validateClaudeProposal(raw){
   }
   need(Array.isArray(result.edits)&&result.edits.length<=64,'protected_edit_invalid');
   for(const edit of result.edits){
+    if(allowSymlinks&&Object.hasOwn(edit,'symlink')){
+      validateProtectedEdit(edit,true);
+      need(typeof edit.path==='string'&&edit.path.length>0,'protected_edit_invalid');
+      continue;
+    }
     shape(edit,['path','beforeSha256','content']);
     need(typeof edit.path==='string'&&edit.path.length>0
       &&(edit.beforeSha256===null||(typeof edit.beforeSha256==='string'&&/^[a-f0-9]{64}$/.test(edit.beforeSha256))),'protected_edit_invalid');
@@ -69,7 +81,7 @@ function startupNotice(subtype,onNotice){
   if(typeof onNotice!=='function')return;
   try{onNotice({kind:'claude_system_notice',subtype});}catch{}
 }
-function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null){
+function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null,allowSymlinks=false){
   let session=null,initialized=false,done=false,value,assistant=false,noticeCount=0,thinkingCount=0;
   const tools=new Set();
   return {
@@ -143,15 +155,15 @@ function createClaudeDeveloperStream(onNotice=null,onUsageTerminal=null){
       if(!Object.hasOwn(event,'structured_output')){
         try{proposal=JSON.parse(event.result);}catch{need(false,'invalid_output_json');}
       }
-      value=validateClaudeProposal(proposal);done=true;
+      value=validateClaudeProposal(proposal,{allowSymlinks});done=true;
     },
     finish(){need(done,'incomplete_result');return {...value,providerThread:session};},
   };
 }
 
-export function claudeDeveloperWorker({cwd,model,effort,cli='claude',timeoutMs=1800000,spawnProcess=spawn,onNotice=null,onUsage=null,onUsageClaim=null}) {
+export function claudeDeveloperWorker({cwd,model,effort,cli='claude',timeoutMs=1800000,spawnProcess=spawn,onNotice=null,onUsage=null,onUsageClaim=null,allowSymlinks=false}) {
   validCallTimeout(timeoutMs);
-  const args=claudeDeveloperArgs(model,effort);
+  const args=claudeDeveloperArgs(model,effort,{allowSymlinks});
   let used=false;
   return async (request,{signal})=>{
     text(request.prompt);need(Buffer.byteLength(request.prompt)<=11*1024*1024,'limit_exceeded');
@@ -167,7 +179,7 @@ export function claudeDeveloperWorker({cwd,model,effort,cli='claude',timeoutMs=1
       try{child=spawnProcess(cli,args,{cwd,env:claudeEnvironment(),stdio:['pipe','pipe','pipe'],shell:false,detached:true});}
       catch{usage.complete();resolve({status:'unavailable',code:'spawn_failed'});return;}
       let buffer='',bytes=0;
-      const stream=createClaudeDeveloperStream(onNotice,value=>usage.terminal(value));
+      const stream=createClaudeDeveloperStream(onNotice,value=>usage.terminal(value),allowSymlinks);
       let failure=null,closed=false,timer,cleanup;
       // signalOwnedGroup (process-group-exit.mjs): an exited, not yet reaped leader
       // (EPERM on macOS) is a stop only once its exit is observed and a re-probe

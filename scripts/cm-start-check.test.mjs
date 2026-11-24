@@ -521,6 +521,16 @@ test('a code tree over the review inventory limit is an error before the run sta
   assert.match(findings[0].message, /build\.bin/);
 });
 
+test('new-run inventory accepts a scoped directory symlink and does not scan its referent', t => {
+  const p=project(t,{scope:['alias'],repo:false});
+  const specsDir=path.join(p.dir,'specs');
+  fs.mkdirSync(specsDir);
+  fs.symlinkSync('src',path.join(p.root,'alias'));
+  const definition={codeProject:p.root,specsDir,scope:['alias'],requirements:['src/a.js'],
+    identity:{repositoryId:'r',runId:'run-1',taskId:'T-001',attempt:1}};
+  assert.deepEqual(checkReviewInventory(definition),[]);
+});
+
 // Wue specs8 T-001: each of these stopped one advance after the start check had passed.
 test('answers the advance will ask and an invalid interactive QA declaration are errors before launch', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-start-launch-'));

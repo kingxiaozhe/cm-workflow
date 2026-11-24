@@ -16,6 +16,7 @@
 //   to child/single-task hosts and are not batch operations.
 // develop_redo/abandon_effect/abandon_review/bootstrap_review_recover -> none:
 //   batch-run.mjs memberAction forwards one to the stopped member's cm-ai entry (Q24).
+import {SYMLINK_BASELINE_VERSION} from '../runtime/js/cm-ai/symlink-material.mjs';
 import {readBatchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
 import {batchSegments,batchMemberWorktree} from '../runtime/js/cm-ai/batch-location.mjs';
 import {readBatchExternalModels,batchModelsFile} from '../runtime/js/cm-ai/external-group-models.mjs';
@@ -139,7 +140,7 @@ function preflight(){
     process.stdout.write('用法: cm-ai-batch-drive.mjs --plan PLAN.json <operation>\n'
       +'operation: advance, status, cancel, reconcile_review（taskKey、invocationId）, develop_redo / abandon_effect / abandon_review / bootstrap_review_recover（resume、PLAN.taskKey、单行 PLAN.reason，permissions 带对应 --allow-… 任务）。PLAN: config, mode, hostContext, permissions, answers, checks, checkTimeoutMs。\n'
       +'checks 每项为 {id,command,timeoutMs?}；超时为 1..3600000 整数，默认 900000 ms（15 分钟）。\n'
-      +'develop.json.edits 与单任务驾驶员相同：内容文件、{file,mode}、{mode}、{delete:true}；启动前同样拒绝超限、空交付与受保护模式下的非 UTF-8 内容（尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查：单文件 1 MiB、答案写入的 scope 文件合计 2 MiB，等等；运行存档单条记录上限要看该任务开跑时的代码树，驾驶员事先算不出，超限交付写入后由宿主拦下，停在可重试的 blocked/develop_package_too_large）。\n'
+      +'develop.json.edits 与单任务驾驶员相同：内容文件、{file,mode}、{mode}、{delete:true} 和新运行的 {symlink}。启动前同样拒绝超限、空交付与受保护模式下的非 UTF-8 内容（尚未开跑的后续任务不看代码树，只做答案本身就能判定的检查：单文件 1 MiB、答案写入的 scope 文件合计 2 MiB，等等；运行存档单条记录上限要看该任务开跑时的代码树，驾驶员事先算不出，超限交付写入后由宿主拦下，停在可重试的 blocked/develop_package_too_large）。\n'
       +'按已有配置自动审查，还没有 develop-a2.json 时照常启动：审查若要求修改，该任务停在 changes_requested（revision_answer_required），读 .reviews/<feature>-<task>-r1.md 的 findings 写好 develop-a2.json 后再 advance。\n');
     process.exit(0);
   }
@@ -364,8 +365,10 @@ function preflight(){
         const known=journal!==null||plan.mode==='create'&&firstGroup.includes(key);
         const cwd=journal?actualCwd(bundle,key,journal.generation):batch.codeProject;
         const codeProject=fs.existsSync(cwd)?cwd:batch.codeProject;
-        preflightDevelopDeliveries({deliveries,answersRoot:taskRoot,codeProject,
-          scope:definition.scope,requirements:definition.requirements,diskChecks:known,
+        const codeProjects=definition.codeProjects?.map(root=>path.join(codeProject,path.relative(definition.codeProject,root)));
+        preflightDevelopDeliveries({deliveries,answersRoot:taskRoot,codeProject,codeProjects,
+          allowSymlinks:journal===null||journal.baseline.version===SYMLINK_BASELINE_VERSION,
+          scope:definition.scope,requirements:definition.requirements,diskChecks:known,specsRoot:definition.specsDir,
           baseline:journal?baselineScope(journal.baseline,definition.scope):'disk',protectedMode,inputLimit,
           checks:plannedCheckResults(protectedMode?null:plan.checks?.[key]),
           preview:known?developPreview({definition,codeProject,journal,
@@ -432,9 +435,10 @@ async function answerFor(row,answers,paths,control){
     if(!value)throw Error(`任务 ${key} develop attempt ${identity?.attempt} 未预检，拒绝复用旧答案`);
     if(row.payload.codeProject!==cwd)return null;
     if(value.status!=='succeeded')return {status:'failed',code:value.code};
+    const editOptions={allowSymlinks:row.payload.allowSymlinks===true,specsRoot:loaded.bundle.batch.specsDir,codeProjects:row.payload.codeProjects};
     if(row.payload.editMode==='protected-text-v1')return {status:'succeeded',value:value.value,
-      edits:protectedDevelopEdits(value.edits,root,cwd,row.payload.expected)};
-    applyDevelopEdits(value.edits,root,cwd,row.payload.request.payload.scope);
+      edits:protectedDevelopEdits(value.edits,root,cwd,row.payload.expected,editOptions)};
+    applyDevelopEdits(value.edits,root,cwd,row.payload.request.payload.scope,editOptions);
     return {status:'succeeded',value:value.value};
   }
   if(row.kind==='documentation_sync'){

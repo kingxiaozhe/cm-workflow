@@ -1,5 +1,6 @@
 // N6 execution over already-authorized host capabilities. No model dispatch,
 // browser installation, task writes, auto-fix or second completion authority.
+import {SYMLINK_BASELINE_VERSION} from './symlink-material.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -224,7 +225,7 @@ export function createHostQaExecutor(options) {
   return Object.freeze({...initial,timeoutMs:configuration.timeoutMs,prepare,
     async run(rawBinding,signal){
       const {mode,caseCount,configuration:{plan}}=prepared??prepare();
-      let {completionChecks=null,...binding}=json(rawBinding);
+      let {completionChecks=null,allowSymlinks=false,...binding}=json(rawBinding);
       shape(binding,['specsDir','codeProject','feature','identity','packageDigest','testRunId','mode','caseCount',
         ...(Object.hasOwn(binding,'qaRound')?['qaRound']:[])]);
       need(completionChecks===null||Array.isArray(completionChecks)&&completionChecks.length<=32,'qa_check_reuse_invalid');
@@ -238,7 +239,7 @@ export function createHostQaExecutor(options) {
       const unchanged=()=>need(digest(readPlan(configuration))===digest(plan),'qa_plan_changed');
       const notCancelled=()=>need(!signal.aborted,'cancelled');notCancelled();unchanged();
       const snapshot=()=>captureReviewBaseline({root:configuration.codeProject,specsRoot:configuration.specsDir,
-        identity:binding.identity,scope:configuration.bootstrap?.scope??(configuration.requirements.length?configuration.requirements:['AGENTS.md']),requirements:configuration.requirements,
+        identity:binding.identity,...(allowSymlinks===true?{version:SYMLINK_BASELINE_VERSION}:{}),scope:configuration.bootstrap?.scope??(configuration.requirements.length?configuration.requirements:['AGENTS.md']),requirements:configuration.requirements,
         ...(!configuration.bootstrap&&!configuration.requirements.length
           ?{specification:{specsRoot:configuration.specsDir,feature:configuration.feature}}:{}),
         ...(configuration.bootstrap?{bootstrapRequirements:configuration.bootstrap.requirements}:{}),

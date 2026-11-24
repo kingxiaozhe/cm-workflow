@@ -1,6 +1,7 @@
 // Pure storage representation only. The runner still validates every restored
 // checkpoint transition, package link, receipt and completion prerequisite.
 import path from 'node:path';
+import {readReviewPackage} from './review-package.mjs';
 import {digest,json,shape,need,hex,id,validIdentity,freeze,JOURNAL_PAYLOAD_LIMIT} from './effect-contract.mjs';
 
 const INVALID='checkpoint_package_material_invalid',STATE_LIMIT=16*1024*1024;
@@ -45,8 +46,8 @@ function storageHeader(payload){
 }
 function packageValue(raw,identity){
   const value=json(raw,STATE_LIMIT);validIdentity(identity);validIdentity(value?.identity);
-  must(value.version===1&&value.kind==='cm-review-package'&&sameRun(value.identity,identity));hex(value.packageDigest);
-  const {packageDigest,...body}=value;must(digest(body)===packageDigest);return value;
+  must([1,2].includes(value.version)&&value.kind==='cm-review-package'&&sameRun(value.identity,identity));hex(value.packageDigest);
+  const {packageDigest,...body}=value;must(digest(body)===packageDigest);return value.version===2?readReviewPackage(value):value;
 }
 function history(raw,identity){
   validIdentity(identity);const records=json(raw,STATE_LIMIT);must(Array.isArray(records)&&records.length<=1024);

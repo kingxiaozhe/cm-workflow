@@ -60,7 +60,7 @@ export function readIntegrationPlan(raw){
 
 function bindTarget(plan,baseline,parentPackage,records){
   const base=readReviewBaseline(baseline),pkg=readReviewPackage(parentPackage),target=plan.target;
-  need(base.version===2&&pkg.baseIdentity===base.baselineDigest&&pkg.rootDigest===base.rootDigest,'integration_binding_mismatch');
+  need(base.version>=2&&pkg.baseIdentity===base.baselineDigest&&pkg.rootDigest===base.rootDigest,'integration_binding_mismatch');
   equal(pkg.identity,base.identity);equal(target.identity,pkg.identity);
   need(target.rootDigest===base.rootDigest&&target.baselineDigest===base.baselineDigest
     &&target.packageDigest===pkg.packageDigest&&target.recordCount===records.length

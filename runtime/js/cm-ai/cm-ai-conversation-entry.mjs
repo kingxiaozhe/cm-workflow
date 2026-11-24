@@ -269,6 +269,7 @@ export function createCmAiConversationEntry(options) {
   const ownerIdentity=json(options.identity);validIdentity(ownerIdentity);
   const runner=options.runner;
   const runnerKeys=['executeEffect','status','cancel','run'];
+  if(runner&&Object.hasOwn(runner,'qaAllowsSymlinks'))runnerKeys.push('qaAllowsSymlinks');
   if(runner&&Object.hasOwn(runner,'qaChangedFiles'))runnerKeys.push('qaChangedFiles');
   if(runner&&Object.hasOwn(runner,'qaCompletionChecks'))runnerKeys.push('qaCompletionChecks');
   if(runner&&Object.hasOwn(runner,'verificationBlocks'))runnerKeys.push('verificationBlocks');
@@ -295,6 +296,7 @@ export function createCmAiConversationEntry(options) {
   if(runner&&Object.hasOwn(runner,'interruptions'))runnerKeys.push('interruptions');
   if(runner&&Object.hasOwn(runner,'inspectBootstrapAdmission'))runnerKeys.push('inspectBootstrapAdmission');
   shape(runner,runnerKeys);
+  if(Object.hasOwn(runner,'qaAllowsSymlinks'))need(typeof runner.qaAllowsSymlinks==='function');
   if(Object.hasOwn(runner,'qaChangedFiles'))need(typeof runner.qaChangedFiles==='function');
   if(Object.hasOwn(runner,'qaCompletionChecks'))need(typeof runner.qaCompletionChecks==='function');
   for(const name of ['executeEffect','status','cancel','run'])need(typeof runner[name]==='function');
@@ -583,7 +585,9 @@ export function createCmAiConversationEntry(options) {
               const executed=await Promise.race([Promise.resolve().then(()=>{
                 notCancelled();
                 need(!controller.signal.aborted,'cancelled');
-                return qaExecutor.run(freeze(completionChecks===null?invocation:{...invocation,completionChecks}),controller.signal);
+                return qaExecutor.run(freeze({...invocation,
+                  ...(completionChecks===null?{}:{completionChecks}),
+                  ...(runner.qaAllowsSymlinks?.(result.packageDigest)?{allowSymlinks:true}:{})}),controller.signal);
               }),interrupted]);
               need(!controller.signal.aborted,'cancelled');
               // A run that moved on meanwhile (for example files in scope replaced):

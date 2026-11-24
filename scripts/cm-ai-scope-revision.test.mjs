@@ -74,8 +74,18 @@ function fixture(t,{qa=false,protectedMode=false,selected=false}={}){
   const rows=()=>JSON.parse(fs.readFileSync(stateFile)).records;
   return {root,app,specs,answers,identity,scope,added,drive,deliver,stateFile,rows};
 }
-function blocked(t,options){
-  const f=fixture(t,options),r=f.drive('start',{mode:'create'});
+function blocked(t,{baselineVersion=3,...options}={}){
+  const f=fixture(t,options);
+  if(baselineVersion===2){
+    assert.equal(f.drive('status',{mode:'create'}).value.state,'ready');
+    const {revision,...snapshot}=JSON.parse(fs.readFileSync(f.stateFile,'utf8'));
+    assert.deepEqual(snapshot.records.map(row=>row.payload.type),['init']);
+    snapshot.records[0].payload.baseline=captureReviewBaseline({root:f.app,specsRoot:f.specs,identity:f.identity,
+      scope:[...f.scope,'AGENTS.md'],requirements:['requirements.md'],specification:{specsRoot:f.specs,feature:'1.work'},version:2});
+    reseal(snapshot.records);
+    fs.writeFileSync(f.stateFile,JSON.stringify({...snapshot,revision:digest(snapshot)})+'\n');
+  }
+  const r=f.drive('start',{mode:baselineVersion===2?'resume':'create'});
   assert.equal(r.status,0,r.stderr);assert.equal(r.value.code,'develop_checks_not_passed',JSON.stringify(r.value));
   f.target=f.drive().value.launchControlTarget;return f;
 }
@@ -145,7 +155,8 @@ test('newly scoped unchanged files retain complete bytes and modes in review mat
     handoffPath:path.join(f.specs,'.reviews','work-T-001-a1-handoff.json')}));
 });
 test('scope refusal leaves source records intact for stale, shrinking, protected and changed additions',t=>{
-  const f=blocked(t),before=fs.readFileSync(f.stateFile);
+  const f=blocked(t,{baselineVersion:2}),before=fs.readFileSync(f.stateFile);
+  assert.equal(f.rows()[0].payload.baseline.version,2);
   const refused=(extra,code)=>{
     const r=revise(f,extra);assert.equal(r.status,71,r.stderr);assert.equal(r.value.code,code,JSON.stringify(r.value));
     assert.ok(fs.readFileSync(f.stateFile).equals(before),'rejection must not append a record');
@@ -172,6 +183,27 @@ test('scope refusal leaves source records intact for stale, shrinking, protected
   assert.equal(revise(f).value.outcome,'recorded');
   assert.equal(revise(f).value.code,'snapshot_changed');
   f.target=f.drive().value.launchControlTarget;assert.equal(revise(f,{scope:[...f.scope,f.added,'another.mjs']}).value.code,'scope_revision_unavailable');
+});
+test('v3 scope revision rejects a file swapped for an external symlink without reading its target',t=>{
+  const f=blocked(t),before=fs.readFileSync(f.stateFile),outside=path.join(f.root,'private.txt');
+  assert.equal(f.rows()[0].payload.baseline.version,3);
+  // Identical file bytes would defeat a check that followed the link and compared only the content.
+  fs.copyFileSync(path.join(f.app,f.added),outside);
+  const file=path.join(f.app,f.added);
+  fs.unlinkSync(file);fs.symlinkSync(outside,file);
+  const open=fs.openSync,guard=t.mock.method(fs,'openSync',(candidate,...args)=>{
+    assert.ok(![file,outside].includes(candidate),'neither the link nor its referent may be opened');
+    return open(candidate,...args);
+  });
+  assert.throws(()=>captureScopeRevisionSources(f.app,f.rows()[0].payload.baseline,[...f.scope,f.added]),
+    {code:'scope_revision_source_changed'});
+  guard.mock.restore();
+  const result=revise(f);
+  assert.equal(result.status,71,result.stderr);
+  assert.equal(result.value.code,'scope_revision_source_changed',JSON.stringify(result.value));
+  assert.deepEqual(fs.readFileSync(f.stateFile),before);
+  assert.equal(fs.readlinkSync(path.join(f.app,f.added)),outside);
+  assert.equal(fs.readFileSync(outside,'utf8'),'export const value = 0;\n');
 });
 test('replay validates the revision source and handles prefixes before and after append without filesystem reads',t=>{
   const f=blocked(t);assert.equal(revise(f).value.outcome,'recorded');

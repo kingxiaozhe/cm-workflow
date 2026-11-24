@@ -10,6 +10,8 @@ import {captureSpecificationMaterial,readSpecificationMaterial,verifySpecificati
 import {resolveCodeProjects,validateCodeProjectPaths,
   codeProjectInstructionPaths,assertCodeProjectSelections} from './code-projects.mjs';
 import {identifyApprovedBootstrapFeature} from './bootstrap-feature.mjs';
+import {SYMLINK_BASELINE_VERSION,reviewPackageVersion,readSymlinkRecord,validateSymlinkRecord,symlinkRecord,projectedPathStat,
+  assertRealParents,lstatOrMissing,resolveSymlinkTarget} from './symlink-material.mjs';
 
 const FILE_LIMIT=1024*1024, SNAPSHOT_LIMIT=2*1024*1024, FILE_COUNT=256;
 // Read-only view for callers that must refuse an oversized delivery before it is written.
@@ -327,14 +329,16 @@ export function reviewSpecsPath(root,specsRoot) {
   need(root!==specsRoot&&!root.startsWith(specsRoot+path.sep),'overlapping_roots');
   return specsRoot.startsWith(root+path.sep)?filePath(path.relative(root,specsRoot).split(path.sep).join('/')):null;
 }
-function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selected=null,policy=null,inventoryOnly=false) {
+function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selected=null,policy=null,inventoryOnly=false,allowSymlinks=false) {
   if(specsPath!==null){
     const target=path.join(root,specsPath);
     need(fs.realpathSync(target)===target&&fs.lstatSync(target).isDirectory(),'unsupported_path');
   }
   const files=[],seen=new Set(); let total=0,materialBytes=0,materialCount=0,visitedSpecs=false;
   function add(p,s){
-    if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1)throw diagnostic('unsupported_file',p);
+    const link=s.isSymbolicLink();
+    if(link?(!allowSymlinks||p.split('/').at(-1)==='AGENTS.md'):(!s.isFile()||s.nlink!==1))
+      throw diagnostic('unsupported_file',p);
     const includeContent=!inventoryOnly&&(selected===null||materialPath(p,selected));
     const countLimit=selected===null&&!inventoryOnly?FILE_COUNT:INVENTORY_COUNT;
     const byteLimit=selected===null&&!inventoryOnly?SNAPSHOT_LIMIT:INVENTORY_LIMIT;
@@ -344,7 +348,7 @@ function snapshot(root,specsPath=null,projectPaths=null,retainedPaths=[],selecte
       throw diagnostic('limit_exceeded',p,`material file count > ${FILE_COUNT}`);
     if(includeContent&&materialBytes+s.size>SNAPSHOT_LIMIT)
       throw diagnostic('limit_exceeded',p,`material bytes ${materialBytes}+${s.size} > ${SNAPSHOT_LIMIT}; scope, requirements and AGENTS.md content count`);
-    const f=readFile(root,p,includeContent,includeContent?Math.min(FILE_LIMIT,SNAPSHOT_LIMIT-materialBytes):byteLimit-total);
+    const f=link?readSymlinkRecord(root,p):readFile(root,p,includeContent,includeContent?Math.min(FILE_LIMIT,SNAPSHOT_LIMIT-materialBytes):byteLimit-total);
     total+=f.size;
     if(includeContent){materialBytes+=f.size;materialCount++;}
     files.push(f);
@@ -431,8 +435,8 @@ export function captureReviewInventory(root,baseline,{withMode=false}={}){
   const policy=stable?stableSnapshotPolicy(root,baseline.ignorePolicy)
     :Object.hasOwn(baseline,'ignorePolicy')?ignorePolicy(root):null;
   return snapshot(root,baseline.specsPath??null,baseline.codeProjectPaths??null,
-    stable?[]:baseline.files.map(file=>file.path),new Set(),policy)
-    .map(file=>withMode?({path:file.path,type:file.type,mode:file.mode,sha256:file.sha256})
+    stable?[]:baseline.files.map(file=>file.path),new Set(),policy,false,baseline.version===SYMLINK_BASELINE_VERSION)
+    .map(file=>withMode?(file.type==='symlink'?file:({path:file.path,type:file.type,mode:file.mode,sha256:file.sha256}))
       :({path:file.path,sha256:file.sha256}));
 }
 // withMode also reports permission-only changes; the mode is part of a reviewed
@@ -446,8 +450,8 @@ export function compareReviewInventoryToBaseline(root,baseline,{withMode=false,p
     :Object.hasOwn(baseline,'ignorePolicy')?ignorePolicy(root):null;
   const before=stable?comparableFiles(baseline.files,policy,new Set([...baseline.scope,...baseline.requirements])):baseline.files;
   const after=snapshot(root,baseline.specsPath??null,baseline.codeProjectPaths??null,
-    stable?[]:baseline.files.map(file=>file.path),new Set(),policy);
-  const key=file=>withMode?`${file.sha256}:${file.mode}`:file.sha256;
+    stable?[]:baseline.files.map(file=>file.path),new Set(),policy,false,baseline.version===SYMLINK_BASELINE_VERSION);
+  const key=file=>withMode?`${file.sha256}:${file.mode??null}`:file.sha256;
   const previous=new Map(before.map(file=>[file.path,key(file)]));
   const current=new Map(after.map(file=>[file.path,key(file)]));
   const records=new Map(after.map(file=>[file.path,file]));
@@ -483,7 +487,8 @@ const sealed = (data,key) => {
 export function captureReviewBaseline(options,legacy=false,policyVersion=2,baselinePolicy=null,acceptance=true) {
   const v=plain(options); keys(v,['root','identity','scope','requirements',
     ...['specsRoot','codeProjectPaths','bootstrapRequirements','specification','version','scopeRevisionPaths'].filter(key=>Object.hasOwn(v,key))]); identityCheck(v.identity);
-  const version=v.version??2;need([1,2].includes(version));
+  const version=v.version??2;need([1,2,SYMLINK_BASELINE_VERSION].includes(version));
+  const allowSymlinks=version===SYMLINK_BASELINE_VERSION;
   const bootstrap=Object.hasOwn(v,'bootstrapRequirements')?v.bootstrapRequirements:null;
   if(bootstrap!==null){
     validBootstrapRequirements(bootstrap);
@@ -497,6 +502,10 @@ export function captureReviewBaseline(options,legacy=false,policyVersion=2,basel
     specification=captureSpecificationMaterial({...v.specification,taskId:v.identity.taskId,acceptance});
   }
   const scope=paths(v.scope), requirements=requirementPaths(v.requirements,bootstrap!==null||specification!==null),root=rootPath(v.root);
+  if(allowSymlinks){
+    for(const p of [...scope,...requirements])assertRealParents(root,p);
+    need(!lstatOrMissing(path.join(root,'.git'))?.isSymbolicLink(),'unsupported_path');
+  }
   need(![...scope,...requirements].some(p=>inDependencyDirectory(p)||inCocoaPodsTree(root,p)),'excluded_snapshot_path');
   const projectPaths=Object.hasOwn(v,'codeProjectPaths')?validateCodeProjectPaths(v.codeProjectPaths):null;
   if(projectPaths!==null)resolveCodeProjects(v.root,projectPaths.map(prefix=>path.join(root,prefix)));
@@ -511,13 +520,21 @@ export function captureReviewBaseline(options,legacy=false,policyVersion=2,basel
   const policy=legacy||version===1?null:policyVersion===1?ignorePolicy(root)
     :stableIgnorePolicy(root,baselinePolicy?.mode==='builtin_limit');
   const snapshotPolicy=baselinePolicy===null?policy:stableSnapshotPolicy(root,baselinePolicy,policy);
-  const files=snapshot(root,specsPath,projectPaths,[],version===1?null:new Set([...scope,...requirements]),snapshotPolicy);
+  const files=snapshot(root,specsPath,projectPaths,[],version===1?null:new Set([...scope,...requirements]),snapshotPolicy,false,allowSymlinks);
   need(requirements.every(p=>files.some(f=>f.path===p)),'read_failed');
+  if(allowSymlinks)for(const p of requirements)
+    need(files.find(f=>f.path===p).type==='file','unsupported_file');
   for(const p of scope) {
     const absolute=path.join(root,p);
+    if(allowSymlinks){
+      const stat=lstatOrMissing(absolute);
+      need(stat===null||stat.isFile()||stat.isSymbolicLink(),'unsupported_file');
+      continue;
+    }
     if(fs.existsSync(absolute)) need(fs.lstatSync(absolute).isFile(),'unsupported_file');
   }
   return sealed({version,kind:'cm-review-baseline',identity:v.identity,rootDigest:sha(root),
+    ...(allowSymlinks?{symlinkPolicy:1}:{}),
     scope,requirements,files,...(Object.hasOwn(v,'scopeRevisionPaths')?{scopeRevisionPaths:paths(v.scopeRevisionPaths)}:{}),...(specsPath===null?{}:{specsPath}),
     ...(projectPaths===null?{}:{codeProjectPaths:projectPaths}),
     ...(bootstrap===null?{}:{bootstrapRequirements:bootstrap}),
@@ -539,7 +556,7 @@ export const readReviewScope=value=>paths(value);
 // Pods can be missing from the creation inventory without a Git-ignore row;
 // this narrow recovery API never opens a parent directory named Pods.
 function scopeRevisionAdditions(b,scope){
-  need(b.version===2&&b.ignorePolicy?.version!==1,'scope_revision_unsupported_baseline');
+  need(b.version>=2&&b.ignorePolicy?.version!==1,'scope_revision_unsupported_baseline');
   const additions=paths(scope).filter(p=>!b.scope.includes(p));
   const ignoredPaths=new Set((b.ignorePolicy?.ignoredPaths??[]).map(p=>p.toLowerCase()));
   const ignoredDirectories=(b.ignorePolicy?.ignoredDirectories??[]).map(p=>p.toLowerCase());
@@ -558,7 +575,7 @@ export function extendReviewBaseline(raw,scope,files){
   need(b.scope.filter(p=>p!=='AGENTS.md').every(p=>desired.includes(p)),'scope_revision_shrink');
   need(Array.isArray(files)&&files.length<=additions.length,'invalid_input');
   const supplied=new Map();
-  for(const file of files){fileRecord(file);need(additions.includes(file.path)&&!supplied.has(file.path),'invalid_input');supplied.set(file.path,file);}
+  for(const file of files){scopeRecord(file,b.version===SYMLINK_BASELINE_VERSION);need(additions.includes(file.path)&&!supplied.has(file.path),'invalid_input');supplied.set(file.path,file);}
   const inventory=new Map(b.files.map(file=>[file.path,file]));
   const aliases=new Set(b.files.map(file=>file.path.toLowerCase()));
   for(const p of additions){
@@ -589,7 +606,8 @@ export function captureScopeRevisionSources(root,baseline,scope){
       catch(error){if(error.code==='ENOENT')break;throw error;}
     }
     const old=b.files.find(file=>file.path===p);
-    if(old)files.push(readFile(real,p));
+    if(old)files.push(b.version===SYMLINK_BASELINE_VERSION&&lstatOrMissing(path.join(real,p))?.isSymbolicLink()
+      ?readSymlinkRecord(real,p):readFile(real,p));
     else{
       try{fs.lstatSync(path.join(real,p));need(false,'scope_revision_source_changed');}
       catch(error){if(error.code!=='ENOENT')throw error;}
@@ -639,6 +657,13 @@ function fileRecord(f) {
   const bytes=Buffer.from(f.contentBase64,'base64');
   need(bytes.toString('base64')===f.contentBase64 && bytes.length===f.size && sha(bytes)===f.sha256);
 }
+function scopeRecord(file,allowSymlinks) {
+  if(allowSymlinks&&file.type==='symlink'){
+    filePath(file.path);
+    need(file.path.split('/').at(-1)!=='AGENTS.md','unsupported_file');
+    validateSymlinkRecord(file);
+  }else fileRecord(file);
+}
 function fileList(files) {
   need(Array.isArray(files) && files.length>0 && files.length<=FILE_COUNT);
   files.forEach(fileRecord);
@@ -650,12 +675,16 @@ function fileList(files) {
 function inventoryList(b) {
   const files=b.files,selected=new Set([...b.scope,...b.requirements]);
   need(Array.isArray(files)&&files.length<=INVENTORY_COUNT);
-  const material=[];let total=0,previous=null;const aliases=new Set();
+  let materialSize=0,materialCount=0,total=0,previous=null;const aliases=new Set();
   for(const f of files){
     // Legacy dependency records retain their original full bytes and drift checks.
     // Ordinary sparse inventory entries still reject unsolicited bodies.
     const legacyDependency=!Object.hasOwn(b,'specification')&&inDependencyDirectory(f.path)&&Object.hasOwn(f,'contentBase64');
-    if(materialPath(f.path,selected)||legacyDependency){fileRecord(f);material.push(f);}
+    const hasMaterial=materialPath(f.path,selected)||legacyDependency;
+    if(b.version===SYMLINK_BASELINE_VERSION&&f.type==='symlink'){
+      need(!b.requirements.includes(f.path));
+      scopeRecord(f,true);
+    }else if(hasMaterial)fileRecord(f);
     else{
       keys(f,['path','type','mode','size','sha256']);filePath(f.path);
       need(f.type==='file'&&Number.isInteger(f.mode)&&f.mode>=0&&f.mode<=0o7777);
@@ -664,8 +693,11 @@ function inventoryList(b) {
     need(previous===null||previous<f.path);previous=f.path;
     need(!aliases.has(f.path.toLowerCase()));aliases.add(f.path.toLowerCase());
     total+=f.size;need(total<=INVENTORY_LIMIT);
+    if(hasMaterial){
+      materialCount++;materialSize+=f.size;
+      need(materialCount<=FILE_COUNT&&materialSize<=SNAPSHOT_LIMIT,'limit_exceeded');
+    }
   }
-  if(material.length)fileList(material);
   need(Buffer.byteLength(JSON.stringify(b))<=8*1024*1024,'limit_exceeded');
 }
 const bootstrapPaths=feature=>[`${feature}/design.md`,`${feature}/requirements.md`];
@@ -691,8 +723,11 @@ export function readReviewSourceRecords(raw){
 function validBaseline(b) {
   try {
     keys(b,['version','kind','identity','rootDigest','scope','requirements','files','baselineDigest',
+      ...(b.version===SYMLINK_BASELINE_VERSION?['symlinkPolicy']:[]),
       ...['specsPath','codeProjectPaths','bootstrapRequirements','specification','specificationRoot','ignorePolicy','scopeRevisionPaths'].filter(key=>Object.hasOwn(b,key))]);
-    need([1,2].includes(b.version) && b.kind==='cm-review-baseline'); identityCheck(b.identity); hex(b.rootDigest);
+    need([1,2,SYMLINK_BASELINE_VERSION].includes(b.version) && b.kind==='cm-review-baseline');
+    if(b.version===SYMLINK_BASELINE_VERSION)need(b.symlinkPolicy===1);
+    identityCheck(b.identity); hex(b.rootDigest);
     if(Object.hasOwn(b,'ignorePolicy')){
       if(b.ignorePolicy.version===2)validateStablePolicy(b.ignorePolicy);
       else{
@@ -716,7 +751,7 @@ function validBaseline(b) {
       need(digest(b.scopeRevisionPaths)===digest(paths(b.scopeRevisionPaths))
         &&b.scopeRevisionPaths.every(p=>b.scope.includes(p)),'invalid_baseline');
     }
-    if(b.version===2)inventoryList(b);
+    if(b.version>=2)inventoryList(b);
     else if(!bootstrap||b.files.length)fileList(b.files);else need(Array.isArray(b.files));
     need(b.requirements.every(p=>b.files.some(f=>f.path===p)));
     if(Object.hasOwn(b,'specsPath'))validateSpecsSelection(b.specsPath,[...b.scope,...b.requirements,...b.files.map(f=>f.path)]);
@@ -763,14 +798,14 @@ const packagePolicy=(root,b)=>b.ignorePolicy?.version===2?stableSnapshotPolicy(r
 function packageSnapshot(root,b,policy){
   const selected=b.version===1?null:new Set([...b.scope,...b.requirements,
     ...b.files.filter(f=>Object.hasOwn(f,'contentBase64')).map(f=>f.path)]);
-  return snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.ignorePolicy?.version===2?[]:b.files.map(f=>f.path),selected,policy);
+  return snapshot(root,b.specsPath??null,b.codeProjectPaths??null,b.ignorePolicy?.version===2?[]:b.files.map(f=>f.path),selected,policy,false,b.version===SYMLINK_BASELINE_VERSION);
 }
 // Read-only: path and size of every material body a package built from the
 // current tree would carry. Callers use it to refuse a delivery before writing it.
 export function reviewMaterialSizes(options){
   const v=plain(options);keys(v,['root','baseline']);const b=v.baseline;validBaseline(b);
   const root=rootPath(v.root);need(sha(root)===b.rootDigest,'invalid_baseline');
-  return freeze(packageSnapshot(root,b,packagePolicy(root,b)).filter(f=>Object.hasOwn(f,'contentBase64'))
+  return freeze(packageSnapshot(root,b,packagePolicy(root,b)).filter(f=>Object.hasOwn(f,'contentBase64')||f.type==='symlink'&&b.scope.includes(f.path))
     .map(f=>({path:f.path,size:f.size})));
 }
 // Validation, specification, policy and bootstrap material a package is built
@@ -789,7 +824,10 @@ function packageContext(v){
   if(bootstrap!==null)need(reviewSpecsPath(root,b.bootstrapRequirements.specsRoot)===(b.specsPath??null),'bootstrap_requirements_mismatch');
   return {b,root,stable,policy,specification,bootstrap};
 }
-function assemblePackage({b,stable,policy,specification,bootstrap},files,checks,handoff){
+export const unchangedScopeRecord=(baseline,file)=>baseline.scopeRevisionPaths?.includes(file.path)||file.type==='symlink'
+  ?file:{path:file.path,sha256:file.sha256};
+function assemblePackage({b,root,stable,policy,specification,bootstrap},files,checks,handoff,
+  stat=relative=>lstatOrMissing(path.join(root,relative))){
   const protectedPaths=new Set([...b.scope,...b.requirements]);
   const before=new Map((stable?comparableFiles(b.files,policy,protectedPaths):b.files).map(f=>[f.path,f]));
   const after=new Map(files.map(f=>[f.path,f]));
@@ -807,11 +845,26 @@ function assemblePackage({b,stable,policy,specification,bootstrap},files,checks,
     throw error;
   }
   need(changes.length>0,'empty_changes');
+  for(const change of changes){
+    if(change.after?.type!=='symlink')continue;
+    const prefix=b.codeProjectPaths?.find(p=>change.path.startsWith(p+'/'));
+    const codeRoot=prefix===undefined?root:path.join(root,prefix);
+    const local=prefix===undefined?change.path:change.path.slice(prefix.length+1);
+    resolveSymlinkTarget(codeRoot,local,change.after.target,{
+      specsRoot:b.specsPath===undefined?null:path.join(root,b.specsPath),
+      stat:file=>{
+        const name=prefix===undefined?file:prefix+'/'+file;
+        if(after.get(name)?.type==='symlink'||(before.has(name)&&!after.has(name)))return null;
+        return stat(name);
+      },
+    });
+  }
   const changedPaths=new Set(changes.map(change=>change.path));
   const unchangedScope=b.scope.filter(p=>!changedPaths.has(p)&&after.has(p))
-    .map(p=>b.scopeRevisionPaths?.includes(p)?after.get(p):({path:p,sha256:after.get(p).sha256}));
-  const requirements=b.requirements.map(p=>{ need(after.has(p),'read_failed'); return after.get(p); });
-  const pkg=sealed({version:1,kind:'cm-review-package',identity:b.identity,rootDigest:b.rootDigest,
+    .map(p=>unchangedScopeRecord(b,after.get(p)));
+  const requirements=b.requirements.map(p=>{ need(after.has(p),'read_failed'); const file=after.get(p);fileRecord(file);return file; });
+  const pkg=sealed({version:reviewPackageVersion(b),kind:'cm-review-package',identity:b.identity,rootDigest:b.rootDigest,
+    ...(b.version===SYMLINK_BASELINE_VERSION?{symlinkPolicy:b.symlinkPolicy}:{}),
     baseIdentity:b.baselineDigest,scope:b.scope,changes,unchangedScope,requirements,checks,
     ...(Object.hasOwn(b,'codeProjectPaths')?{codeProjectPaths:b.codeProjectPaths,
       instructions:files.filter(file=>file.path.split('/').at(-1)==='AGENTS.md')}:{}),
@@ -837,12 +890,23 @@ export function projectedReviewPackage(options){
   const v=plain(options);keys(v,['root','baseline','checks','scopeFiles',...(Object.hasOwn(v,'handoff')?['handoff']:[])]);
   const context=packageContext(v);need(Array.isArray(v.scopeFiles),'invalid_input');
   const files=new Map(packageSnapshot(context.root,context.b,context.policy).map(file=>[file.path,file]));
+  const projectedPaths=new Map();
   for(const item of v.scopeFiles){
-    keys(item,['path','contentBase64','mode']);need(context.b.scope.includes(item.path),'out_of_scope');
-    if(item.contentBase64===null){need(item.mode===null);files.delete(item.path);continue;}
+    need(context.b.scope.includes(item.path),'out_of_scope');
+    if(Object.hasOwn(item,'symlink')){
+      keys(item,['path','symlink']);
+      const record=symlinkRecord(item.path,item.symlink);
+      scopeRecord(record,context.b.version===SYMLINK_BASELINE_VERSION);
+      files.set(item.path,record);
+      projectedPaths.set(item.path,'symlink');
+      continue;
+    }
+    keys(item,['path','contentBase64','mode']);
+    if(item.contentBase64===null){need(item.mode===null);files.delete(item.path);projectedPaths.set(item.path,null);continue;}
     need(typeof item.contentBase64==='string'&&Number.isInteger(item.mode)&&item.mode>=0&&item.mode<=0o7777);
     const bytes=Buffer.from(item.contentBase64,'base64');need(bytes.toString('base64')===item.contentBase64);
     files.set(item.path,{path:item.path,type:'file',mode:item.mode,size:bytes.length,sha256:sha(bytes),contentBase64:item.contentBase64});
+    projectedPaths.set(item.path,'file');
   }
   // A projected handoff ({name,contentBase64,mode}) takes the record shape the
   // package reads back from the published file.
@@ -854,12 +918,14 @@ export function projectedReviewPackage(options){
     const record={path:name,type:'file',mode:v.handoff.mode,size:bytes.length,sha256:sha(bytes),contentBase64:v.handoff.contentBase64};
     handoff=()=>record;
   }
-  return assemblePackage(context,[...files.values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),v.checks,handoff);
+  return assemblePackage(context,[...files.values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),v.checks,handoff,
+    projectedPathStat(context.root,projectedPaths));
 }
 function validPackage(p) {
   try {
     keys(p,['version','kind','identity','rootDigest','baseIdentity','scope','changes','requirements',
       'checks','artifactDigest','requirementsDigest','checksDigest','packageDigest',
+      ...(p.version===2?['symlinkPolicy']:[]),
       ...(Object.hasOwn(p,'unchangedScope')?['unchangedScope']:[]),
       ...(Object.hasOwn(p,'specification')?['specification']:[]),
       ...(Object.hasOwn(p,'handoff')?['handoff']:[]),
@@ -879,7 +945,8 @@ function validPackage(p) {
     if(Object.hasOwn(p,'handoff')) {
       fileRecord(p.handoff);need(!p.handoff.path.includes('/')&&p.handoff.size<=256*1024);
     }
-    need(p.version===1 && p.kind==='cm-review-package'); identityCheck(p.identity);
+    need([1,2].includes(p.version) && p.kind==='cm-review-package'); identityCheck(p.identity);
+    if(p.version===2)need(p.symlinkPolicy===1);
     if(Object.hasOwn(p,'specification'))readSpecificationMaterial(p.specification,p.identity.taskId);
     [p.rootDigest,p.baseIdentity,p.artifactDigest,p.requirementsDigest,p.checksDigest,p.packageDigest].forEach(hex);
     need(digest(p.scope)===digest(paths(p.scope)));
@@ -888,7 +955,7 @@ function validPackage(p) {
     for(const change of p.changes) {
       keys(change,['path','before','after']); filePath(change.path); need(p.scope.includes(change.path));
       names.push(change.path); need(change.before!==null || change.after!==null);
-      for(const f of [change.before,change.after]) if(f!==null) { fileRecord(f); need(f.path===change.path); }
+      for(const f of [change.before,change.after]) if(f!==null) { scopeRecord(f,p.version===2); need(f.path===change.path); }
       need(digest(change.before)!==digest(change.after));
     }
     need(digest(names)===digest(paths(names)));
@@ -897,10 +964,11 @@ function validPackage(p) {
       if(p.requirements.length)fileList(p.requirements);else need(Array.isArray(p.requirements));
     }else if(p.requirements.length||!Object.hasOwn(p,'specification'))fileList(p.requirements);
     else need(Array.isArray(p.requirements));
+    if(p.version===2)need(Object.hasOwn(p,'unchangedScope'));
     if(Object.hasOwn(p,'unchangedScope')){
       need(Array.isArray(p.unchangedScope)&&p.unchangedScope.length<=FILE_COUNT);
       for(const file of p.unchangedScope){
-        if(Object.hasOwn(file,'contentBase64'))fileRecord(file);
+        if(Object.hasOwn(file,'contentBase64')||file.type==='symlink')scopeRecord(file,p.version===2);
         else{keys(file,['path','sha256']);filePath(file.path);hex(file.sha256);}
         need(p.scope.includes(file.path)&&!names.includes(file.path));
         for(const material of [...p.requirements,...(p.instructions??[])])
@@ -931,14 +999,14 @@ export function verifyReviewPackage(options) {
   const v=plain(options); keys(v,['root','baseline','checks','reviewPackage','expectedDigest',
     ...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]);
   hex(v.expectedDigest); validBaseline(v.baseline); validPackage(v.reviewPackage);
-  need(v.reviewPackage.packageDigest===v.expectedDigest,'package_mismatch');
+  need(v.reviewPackage.version===reviewPackageVersion(v.baseline)&&v.reviewPackage.packageDigest===v.expectedDigest,'package_mismatch');
   need(Object.hasOwn(v.reviewPackage,'specification')===Object.hasOwn(v.baseline,'specification'),'package_mismatch');
   need(Object.hasOwn(v.reviewPackage,'handoff')===Object.hasOwn(v,'handoffPath'),'package_mismatch');
   need(digest(v.reviewPackage.ignorePolicy??null)===digest(v.baseline.ignorePolicy??null),'package_mismatch');
   let current=createReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,
     ...(Object.hasOwn(v,'handoffPath')?{handoffPath:v.handoffPath}:{})});
   // Rebuild the historical representation for legacy receipts, without rewriting them.
-  if(!Object.hasOwn(v.reviewPackage,'unchangedScope')){
+  if(v.reviewPackage.version===1&&!Object.hasOwn(v.reviewPackage,'unchangedScope')){
     const {unchangedScope,packageDigest,...legacy}=current;
     current=sealed(legacy,'packageDigest');
   }
@@ -952,13 +1020,13 @@ export function verifyCompletionReviewPackage(options) {
   const v=plain(options);keys(v,['root','baseline','checks','reviewPackage','expectedDigest',
     ...(Object.hasOwn(v,'handoffPath')?['handoffPath']:[])]);
   hex(v.expectedDigest);validBaseline(v.baseline);validPackage(v.reviewPackage);
-  need(v.reviewPackage.packageDigest===v.expectedDigest,'package_mismatch');
+  need(v.reviewPackage.version===reviewPackageVersion(v.baseline)&&v.reviewPackage.packageDigest===v.expectedDigest,'package_mismatch');
   need(Object.hasOwn(v.reviewPackage,'specification')===Object.hasOwn(v.baseline,'specification'),'package_mismatch');
   need(Object.hasOwn(v.reviewPackage,'handoff')===Object.hasOwn(v,'handoffPath'),'package_mismatch');
   need(digest(v.reviewPackage.ignorePolicy??null)===digest(v.baseline.ignorePolicy??null),'package_mismatch');
   let current=createReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,
     ...(Object.hasOwn(v,'handoffPath')?{handoffPath:v.handoffPath}:{})});
-  if(!Object.hasOwn(v.reviewPackage,'unchangedScope')){
+  if(v.reviewPackage.version===1&&!Object.hasOwn(v.reviewPackage,'unchangedScope')){
     const {unchangedScope,packageDigest,...legacy}=current;
     current=sealed(legacy,'packageDigest');
   }

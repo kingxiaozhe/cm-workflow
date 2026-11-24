@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import {SYMLINK_BASELINE_VERSION,assertDisjointEditPaths,assertRealParents,lstatOrMissing,readSymlinkRecord,resolveSymlinkTarget,
+  projectedPathStat,symlinkRecord,validateSymlinkTargetText} from '../runtime/js/cm-ai/symlink-material.mjs';
 import {packageMaterialEligible,checkpointPackageBudget,INLINE_PACKAGE_LIMIT} from '../runtime/js/cm-ai/checkpoint-package-material.mjs';
 // cm-ai host 的单步驾驶员。PLAN 路径相对 PLAN 文件；命令仅在 codeProject 内执行。
 // 请求表来自 host-session.mjs operationNames（传输允许集）、host-conversation-execution.mjs
@@ -36,7 +38,7 @@ import {packageMaterialEligible,checkpointPackageBudget,INLINE_PACKAGE_LIMIT} fr
 import fs from 'node:fs';
 import {readLaunchExecutionPolicy} from '../runtime/js/cm-ai/execution-policy.mjs';
 import path from 'node:path';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {createHostCheck,reportHostCheckProgress} from '../runtime/js/cm-ai/host-check.mjs';
 import {readQaAssessment} from '../runtime/js/cm-ai/host-qa-policy.mjs';
@@ -49,6 +51,7 @@ import {REVIEW_MATERIAL_LIMITS,captureReviewBaseline,reviewMaterialSizes,project
 import {JOURNAL_PAYLOAD_LIMIT,developCheckpointReserve,taskReviewScope} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {reviewPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {hostHandoffDocument} from '../runtime/js/cm-ai/host-handoff.mjs';
+import {projectedImplementationSha256} from './cm-task-gate.mjs';
 import {taskLearningHandoffBytes} from '../runtime/js/cm-ai/cm-ai-learning-handoff-writer.mjs';
 import {projectLearningWriteback} from '../runtime/js/cm-ai/cm-ai-learning-writer.mjs';
 import {inspectCmAiTaskLearningInput,createCmAiTaskLearningApplication,
@@ -179,10 +182,11 @@ export const developFilename=(root,attempt)=>attemptAnswerName(root,'develop',at
 //   "content-file"                 write these bytes (existing mode kept, new file 0644)
 //   {file:"content-file",mode}     write, then set mode
 //   {mode:"0755"|"0644"}           only change the permission bits of an existing file
-//   {delete:true}                  delete an existing file
+//   {delete:true}                  delete an existing file or link
+//   {symlink:"relative-target"}   create or retarget a link in a new run
 // A rename is a delete of the old path plus a write of the new one, both in scope.
 const DEVELOP_MODES=new Map([['0644',0o644],['0755',0o755]]);
-const answerError=message=>Object.assign(new Error(message),{answerShape:true});
+const answerError=(message,code)=>Object.assign(new Error(message),{answerShape:true,...(code?{code}:{})});
 function safeContentFile(local,root,label){
   if(!(typeof local==='string'&&local.length>0&&!path.isAbsolute(local)&&!local.split(/[\\/]/).includes('..')))
     throw answerError(`${label} 路径无效`);
@@ -195,14 +199,19 @@ export function readDevelopEntry(target,entry,root,label='develop.json.edits'){
   if(!nonempty(target))throw answerError(`${label} 路径无效`);
   if(typeof entry==='string')return {kind:'write',local:safeContentFile(entry,root,label)};
   const at=`${label}.${target}`;
-  if(!object(entry))throw answerError(`${at} 应为内容文件名，或 {file,mode} / {mode} / {delete:true}`);
+  if(!object(entry))throw answerError(`${at} 应为内容文件名，或 {file,mode} / {mode} / {delete:true} / {symlink}`);
   const keys=Object.keys(entry).sort().join(',');
   if(Object.hasOwn(entry,'delete')){
     if(keys!=='delete')throw answerError(`${at}: delete 不能与 file、mode 同时出现`);
     if(entry.delete!==true)throw answerError(`${at}.delete 只能是 true`);
     return {kind:'delete'};
   }
-  if(!['file','file,mode','mode'].includes(keys))throw answerError(`${at} 只允许 file、mode 或 delete 字段`);
+  if(keys==='symlink'){
+    try{validateSymlinkTargetText(entry.symlink);}
+    catch(error){throw answerError(`${at}.symlink 须为有效的相对目标，且最多 1024 字节（${error.code}）`,error.code);}
+    return {kind:'symlink',target:entry.symlink};
+  }
+  if(!['file','file,mode','mode'].includes(keys))throw answerError(`${at} 只允许单独的 symlink、delete、mode，或 file 与可选的 mode`);
   if(Object.hasOwn(entry,'mode')&&!DEVELOP_MODES.has(entry.mode))throw answerError(`${at}.mode 只能是字符串 "0644" 或 "0755"`);
   return Object.hasOwn(entry,'file')?{kind:'write',local:safeContentFile(entry.file,root,label),
     ...(Object.hasOwn(entry,'mode')?{mode:entry.mode}:{})}:{kind:'mode',mode:entry.mode};
@@ -219,42 +228,98 @@ function protectedText(bytes,target){
   try{return strictUtf8.decode(bytes);}
   catch{throw answerError(`${target} 不是合法 UTF-8 文本；受保护模式只能提交 UTF-8 文本，二进制文件（图片、证书等）请移出 scope 或改用非受保护模式`);}
 }
-export function protectedDevelopEdits(map,answersRoot,codeProject,expected){
-  return developEntries(map,answersRoot,'develop.json.edits').map(([target,entry])=>{
+export function protectedDevelopEdits(map,answersRoot,codeProject,expected,options={}){
+  const entries=developEntries(map,answersRoot,'develop.json.edits');
+  const before=checkDevelopEntries(entries,codeProject,options);
+  return entries.map(([target,entry])=>{
+
     const beforeSha256=expected?.[target]??null;
     if(entry.kind==='delete')return {path:target,beforeSha256,content:null};
+    if(entry.kind==='symlink')return {path:target,beforeSha256,symlink:entry.target};
+    if(entry.kind==='mode'&&before.get(target)===null)throw answerError(`${target} 不存在，无法改权限`);
     const source=entry.kind==='mode'?path.join(codeProject,target):answerPath(answersRoot,entry.local);
     return {path:target,beforeSha256,content:protectedText(fs.readFileSync(source),target),
       ...(entry.mode?{mode:entry.mode}:{})};
   });
 }
-export function applyDevelopEdits(map,answersRoot,codeProject,allowed){
-  const entries=developEntries(map,answersRoot,'develop.json.edits');
+function checkDevelopEntries(entries,codeProject,options){
+  if(options.allowSymlinks)assertDisjointEditPaths(entries.map(([file])=>file));
+  const before=new Map();
+  const removed=new Set(entries.filter(([,entry])=>['delete','symlink'].includes(entry.kind)).map(([file])=>file));
   for(const [target,entry] of entries){
-    if(!allowed.includes(target))throw Error(`${target} 不在宿主允许的范围`);
-    const file=path.resolve(codeProject,target);
-    if(!file.startsWith(codeProject+path.sep))throw Error('编辑路径越界');
-    for(let parent=path.dirname(file);parent!==codeProject;parent=path.dirname(parent))
-      if(fs.existsSync(parent)&&fs.lstatSync(parent).isSymbolicLink())throw Error('编辑路径经过符号链接');
-    if(fs.existsSync(file)&&fs.lstatSync(file).isSymbolicLink())throw Error('编辑路径是符号链接');
-    if(entry.kind!=='write'&&!(fs.existsSync(file)&&fs.lstatSync(file).isFile()))throw Error(`${target} 不存在，无法删除或改权限`);
+    const prior=diskScopeEntry(codeProject,target);before.set(target,prior);
+    checkDevelopEntry(codeProject,target,entry,prior,{...options,removed});
   }
+  return before;
+}
+
+function checkDevelopEntry(codeProject,file,entry,before,{allowSymlinks=false,specsRoot=null,codeProjects=null,removed,
+  stat=relative=>lstatOrMissing(path.join(codeProject,relative))}){
+  assertRealParents(codeProject,file,stat);
+  if(before?.type==='symlink'&&(!allowSymlinks||!['delete','symlink'].includes(entry.kind)))
+    throw Object.assign(new Error('编辑路径是符号链接'),{code:'unsupported_path'});
+  if(allowSymlinks&&before?.unsupported)throw answerError(`${file}: 只能替换普通文件或软链`);
+  if(entry.kind==='symlink'){
+    if(!allowSymlinks)throw answerError(`${file}: 当前运行的基线版本不支持新建或改指软链`);
+    const cwd=codeProjects?.find(root=>path.join(codeProject,file).startsWith(root+path.sep))??codeProject;
+    const prefix=cwd===codeProject?'':path.relative(codeProject,cwd).split(path.sep).join('/')+'/';
+    resolveSymlinkTarget(cwd,file.slice(prefix.length),entry.target,{specsRoot,
+      stat:relative=>removed.has(prefix+relative)?null:stat(prefix+relative)});
+  }else if(entry.kind!=='write'&&(before===null||before?.unsupported))
+    throw answerError(`${file} 不存在或类型不受支持，无法删除或改权限`);
+}
+
+export function applyDevelopEdits(map,answersRoot,codeProject,allowed,options={}){
+  const entries=developEntries(map,answersRoot,'develop.json.edits');
+  for(const [target] of entries)if(!allowed.includes(target))throw Error(`${target} 不在宿主允许的范围`);
+  const before=checkDevelopEntries(entries,codeProject,options);
+  const removed=new Set(entries.filter(([,entry])=>['delete','symlink'].includes(entry.kind)).map(([file])=>file));
   for(const [target,entry] of entries){
-    const file=path.resolve(codeProject,target);
+    const prior=before.get(target),current=diskScopeEntry(codeProject,target);
+    if(JSON.stringify(prior)!==JSON.stringify(current))throw Error(`${target} 已变化，拒绝覆盖`);
+    checkDevelopEntry(codeProject,target,entry,current,{...options,removed});
+    const file=path.join(codeProject,target),directory=path.dirname(file);
     if(entry.kind==='delete'){fs.unlinkSync(file);continue;}
-    if(entry.kind==='mode'){fs.chmodSync(file,DEVELOP_MODES.get(entry.mode));continue;}
-    const existed=fs.existsSync(file);
-    fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,fs.readFileSync(answerPath(answersRoot,entry.local)));
-    if(entry.mode||!existed)fs.chmodSync(file,entry.mode?DEVELOP_MODES.get(entry.mode):0o644);
+    fs.mkdirSync(directory,{recursive:true});
+    assertRealParents(codeProject,target);
+    if(options.allowSymlinks&&JSON.stringify(diskScopeEntry(codeProject,target))!==JSON.stringify(prior))
+      throw Error(`${target} 已变化，拒绝覆盖`);
+    if(entry.kind==='symlink'){
+      if(prior===null){fs.symlinkSync(entry.target,file);continue;}
+      const temporary=path.join(directory,'.cm-link-'+randomUUID());
+      fs.symlinkSync(entry.target,temporary);
+      try{
+        if(JSON.stringify(diskScopeEntry(codeProject,target))!==JSON.stringify(prior))throw Error(`${target} 已变化，拒绝覆盖`);
+        fs.renameSync(temporary,file);
+      }finally{if(lstatOrMissing(temporary))fs.unlinkSync(temporary);}
+      continue;
+    }
+    const flags=entry.kind==='mode'?fs.constants.O_RDONLY:fs.constants.O_WRONLY
+      |(prior===null?fs.constants.O_CREAT|fs.constants.O_EXCL:fs.constants.O_TRUNC);
+    const fd=fs.openSync(file,flags|fs.constants.O_NOFOLLOW,0o644);
+    try{
+      if(entry.kind==='write')fs.writeFileSync(fd,fs.readFileSync(answerPath(answersRoot,entry.local)));
+      if(entry.mode||prior===null)fs.fchmodSync(fd,entry.mode?DEVELOP_MODES.get(entry.mode):0o644);
+    }finally{fs.closeSync(fd);}
   }
 }
 const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
 function diskScopeEntry(codeProject,target){
-  const file=path.join(codeProject,target);let stat;
-  try{stat=fs.lstatSync(file);}catch(error){if(error.code==='ENOENT'||error.code==='ENOTDIR')return null;throw error;}
-  if(!stat.isFile()||stat.isSymbolicLink())return {unsupported:true};
-  return {size:stat.size,mode:stat.mode&0o7777,source:file,
-    sha256:stat.size<=REVIEW_MATERIAL_LIMITS.file?sha256(fs.readFileSync(file)):null};
+  assertRealParents(codeProject,target);
+  const file=path.join(codeProject,target),stat=lstatOrMissing(file);
+  if(stat===null)return null;
+  if(stat.isSymbolicLink())return readSymlinkRecord(codeProject,target);
+  if(!stat.isFile()||stat.nlink!==1)return {unsupported:true};
+  let hash=null;
+  if(stat.size<=REVIEW_MATERIAL_LIMITS.file){
+    const fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+    try{
+      const opened=fs.fstatSync(fd);
+      if(opened.dev!==stat.dev||opened.ino!==stat.ino||opened.nlink!==1)throw Error(`${target} 已变化，无法读取预期指纹`);
+      hash=sha256(fs.readFileSync(fd));
+    }finally{fs.closeSync(fd);}
+  }
+  return {size:stat.size,mode:stat.mode&0o7777,source:file,sha256:hash};
 }
 const kib=bytes=>`${bytes} 字节`;
 // Most of what the runner would refuse only after the answer is written and the
@@ -287,7 +352,7 @@ export function developPreview({definition,codeProject=definition.codeProject,jo
     if(baseline===null){
       // The same baseline the runner captures (taskReviewScope, specsRoot, specification).
       baseline=captureReviewBaseline({root:codeProject,specsRoot:definition.specsDir,identity:definition.identity,
-        scope:taskReviewScope(definition.scope),requirements:definition.requirements,specification:{specsRoot:definition.specsDir,feature:definition.feature},
+        scope:taskReviewScope(definition.scope),requirements:definition.requirements,version:SYMLINK_BASELINE_VERSION,specification:{specsRoot:definition.specsDir,feature:definition.feature},
         ...(definition.codeProjects?{codeProjectPaths:codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects))}:{})});
       // The new run journals this baseline as one record, next to its own metadata.
       const bytes=Buffer.byteLength(JSON.stringify(baseline));
@@ -309,9 +374,8 @@ export function developPreview({definition,codeProject=definition.codeProject,jo
 }
 // The package the runner will build for this delivery, byte for byte: the same
 // Learning records, AGENTS.md writeback, handoff and package assembly, applied to
-// the projected scope files. Digest values do not change any length, so the
-// implementation hash stands in as 64 hex digits. Null when the runner would not
-// build a package from it at all (blocked outcome, pending writeback, no change).
+// the projected scope files. V3 binds the projected implementation bytes.
+// Returns null for outcomes that would not produce a review package.
 export function projectDevelopCheckpoint({preview,codeProject,attempt,value,projected,checks}){
   const {definition}=preview,identity={...definition.identity,attempt};
   if(value.value?.outcome!=='implemented')return null;
@@ -336,7 +400,9 @@ export function projectDevelopCheckpoint({preview,codeProject,attempt,value,proj
   let initial;
   try{initial=projectedReviewPackage({root:codeProject,baseline,checks,scopeFiles});}
   catch(error){if(['empty_changes','out_of_scope','read_failed'].includes(error.code))return null;throw error;}
-  const {payload}=hostHandoffDocument({baseline,checks,reviewPackage:initial,implementationSha256:'0'.repeat(64)});
+  const implementationSha256=baseline.version===SYMLINK_BASELINE_VERSION
+    ?projectedImplementationSha256(initial.changes):'0'.repeat(64);
+  const {payload}=hostHandoffDocument({baseline,checks,reviewPackage:initial,implementationSha256});
   const handoff=taskLearningHandoffBytes({handoff:payload,feature:definition.feature,identity,learningInput,
     application,retrospective,includeAgents});
   const pkg=projectedReviewPackage({root:codeProject,baseline,checks,scopeFiles,handoff:{
@@ -349,11 +415,20 @@ export function projectDevelopCheckpoint({preview,codeProject,attempt,value,proj
 export const plannedCheckResults=commands=>(Array.isArray(commands)&&commands.length?commands:[{id:'check',command:['check']}])
   .map(({id,command})=>({id,command,outcome:'passed',exitCode:0,evidence:'host check exited 0'}));
 export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,scope,requirements,
-  baseline='disk',diskChecks=true,protectedMode=false,inputLimit=65536,preview=null,checks=plannedCheckResults(null)}){
+  baseline='disk',diskChecks=true,protectedMode=false,inputLimit=65536,preview=null,checks=plannedCheckResults(null),
+  specsRoot=preview?.definition?.specsDir??null,codeProjects=preview?.definition?.codeProjects??null,
+  allowSymlinks=preview?.baseline?.version===SYMLINK_BASELINE_VERSION}){
   const {file:FILE,total:TOTAL,count:COUNT}=REVIEW_MATERIAL_LIMITS;
   let material=diskChecks&&preview?new Map(preview.material.map(item=>[item.path,item.size])):null;
   const projected=new Map();
-  let previous=diskChecks?new Map(scope.map(target=>[target,diskScopeEntry(codeProject,target)])):null;
+  let previous=diskChecks?new Map(scope.map(target=>{
+    try{return [target,diskScopeEntry(codeProject,target)];}
+    catch(error){
+      const reason={unsupported_path:'路径无效或父级经过软链或非目录',
+        unsupported_file:'软链目标不是有效的 UTF-8'}[error.code];
+      stop(2,`无法读取任务范围 ${target}：${reason?`${reason}（${error.code}）`:error.code??error.message}`);
+    }
+  })):null;
   const base=!diskChecks?null:baseline==='disk'?previous:baseline;
   // Without the tree (a later batch task), the scope files the answers write are
   // still known to exist in the review material with exactly these sizes; the
@@ -367,14 +442,32 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
   for(const {file,value,attempt=1} of deliveries){
     if(value.status!=='succeeded')continue;
     const label=path.basename(file);let entries;
-    try{entries=developEntries(value.edits,answersRoot,`${label}.edits`);}catch(error){stop(2,`答案格式错误：${error.message}`);}
+    try{
+      entries=developEntries(value.edits,answersRoot,`${label}.edits`);
+      if(allowSymlinks)assertDisjointEditPaths(entries.map(([file])=>file));
+    }catch(error){stop(2,`答案格式错误：${error.message}`);}
     const next=previous&&new Map(previous);
+    const removed=new Set(entries.filter(([,entry])=>['delete','symlink'].includes(entry.kind)).map(([file])=>file));
+    // Earlier deliveries are already applied when this round runs. The
+    // current delivery still needs its targets to exist before it writes.
+    const stat=previous&&allowSymlinks?projectedPathStat(codeProject,new Map([...previous]
+      .filter(([,state])=>!state?.unsupported).map(([file,state])=>[file,state===null?null:state.type??'file']))):undefined;
     for(const [target,entry] of entries){
       const before=previous?.get(target)??null;
       // Scope and requirements may overlap; every review package must still carry
       // each requirement file, so a delivery cannot delete one.
-      if(entry.kind==='delete'&&requirements.includes(target))
+      if(['delete','symlink'].includes(entry.kind)&&requirements.includes(target))
         stop(2,`${label}.edits.${target}: 该路径同时列在运行定义的 requirements 中，审查包要求它存在，不能删除；可改写其内容，或先在新运行定义里把它移出 requirements`);
+      if(diskChecks){
+        try{checkDevelopEntry(codeProject,target,entry,before,{allowSymlinks,specsRoot,codeProjects,removed,stat});}
+        catch(error){stop(2,`${label}.edits.${target}: ${error.message}`);}
+      }
+      if(entry.kind==='symlink'){
+        if(!allowSymlinks)stop(2,`${label}.edits.${target}: 当前运行的基线版本不支持软链`);
+        const row=symlinkRecord(target,entry.target);
+        next?.set(target,row);delivered?.set(target,row.size);
+        continue;
+      }
       if(entry.kind!=='write'){
         if(entry.kind==='delete')delivered?.delete(target);
         if(previous&&(before===null||before.unsupported))
@@ -392,8 +485,10 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
       const edits=[];
       try{
         for(const [target,entry] of entries){
+          if(entry.kind==='symlink'){edits.push({path:target,beforeSha256:'0'.repeat(64),symlink:entry.target});continue;}
           if(entry.kind==='delete'){edits.push({path:target,beforeSha256:'0'.repeat(64),content:null});continue;}
           const source=entry.kind==='write'?answerPath(answersRoot,entry.local):previous?.get(target)?.source??path.join(codeProject,target);
+          if(!diskChecks&&allowSymlinks&&entry.kind==='mode')continue;
           if(!fs.existsSync(source))continue;
           edits.push({path:target,beforeSha256:'0'.repeat(64),content:protectedText(fs.readFileSync(source),target),
             ...(entry.mode?{mode:entry.mode}:{})});
@@ -433,6 +528,7 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
       for(const [target] of entries){
         const after=next.get(target);
         projected.set(target,after===null?{path:target,contentBase64:null,mode:null}
+          :after.type==='symlink'?{path:target,symlink:after.target}
           :{path:target,contentBase64:fs.readFileSync(after.source).toString('base64'),mode:after.mode});
       }
       const projection=preview.exact?projectDevelopCheckpoint({preview,codeProject,attempt,value,projected,checks}):null;
@@ -469,7 +565,7 @@ export function preflightDevelopDeliveries({deliveries,answersRoot,codeProject,s
 export function baselineScope(baseline,scope){
   const files=new Map((baseline?.files??[]).map(file=>[file.path,file]));
   return new Map(scope.map(target=>{const file=files.get(target);
-    return [target,file?{size:file.size,mode:file.mode,sha256:file.sha256}:null];}));
+    return [target,file?{size:file.size,mode:file.mode,sha256:file.sha256,...(file.type==='symlink'?{type:file.type,target:file.target}:{})}:null];}));
 }
 export const inputLimitFrom=permissions=>{
   const at=permissions.indexOf('--input-limit');
@@ -606,7 +702,7 @@ function load(){
   if(process.argv.length===3&&['--help','-h'].includes(process.argv[2])){
     process.stdout.write('新版 PLAN.controlConfig 为相对 PLAN 的 v2 控制配置路径；development、bootstrap、qa、qaFix 使用明确模式，permissions 禁止所有 --allow-*。普通 advance 自动独立审查；缺少 develop-a2.json 时保持 revision_answer_required。显式恢复需要 resume 与此前 status 返回的 PLAN.expectedControl，驾驶员不会读取新目标覆盖它。\n');
     process.stdout.write('用法: cm-ai-drive.mjs --plan PLAN.json <operation>\nPLAN: config, mode, hostContext, originalHostContext (换会话 resume 必填), runtime, permissions, answers, checks, checkTimeoutMs。\nchecks 每项为 {id,command,timeoutMs?}；checkTimeoutMs 与每项 timeoutMs 为 1..3600000 整数，默认 900000 ms（15 分钟）。\nabandon_review 需要 mode:resume、permissions:["--allow-abandon-review"] 与 PLAN.reason；abandon_effect 需要 mode:resume、permissions:["--allow-abandon-effect"] 与 PLAN.reason（均为单行、最多 500 UTF-8 字节）。develop_redo 需要 mode:resume、permissions:["--allow-develop-redo"] 与 PLAN.reason，先确认会话已停止修改代码。 bootstrap_review_recover 需要 mode:resume、permissions:["--allow-bootstrap-review-recovery"] 与 PLAN.reason；只核对原运行的已写规则与 handoff，不需要答案文件。\n人工答案放 answers/；check 只运行 PLAN.checks，不读取静态执行证据。bootstrap T-001 骨架可用；T-002 规范任务（纯规范 scope、单代码根、非 --protected-config）读 answers/init-generate.json（{status:"generated",documents:[{path,contentFile}]}，覆盖全部 targets）与 answers/init-verify.json（commands 为驾驶员实跑的草稿命令 {id,command,timeoutMs?}，可选 commandsNotRun；checks 只含 globs/file_references/constraint_preservation/rule_applicability；constraintChanges:[]；application/retrospective 沿原 Learning）；第 1 轮也可用 *-a1.json，第 2 轮只读 init-generate-a2.json 与 init-verify-a2.json，审查自动派发；缺少第2轮草稿时先停在 changes_requested，读取首轮 findings 后再写草稿。commands 在宿主接受启动后、发送操作前由驾驶员实跑（须先带 --allow-bootstrap-write 等宿主授权；受保护模式在 specs 沙箱内），失败或改动了预检核对的文件即退出 2 且不发送操作（create 时改用 resume 重跑）；结果只来自实跑，答案文件不能提供。\n'
-      +'develop.json.edits 每项是 scope 路径到下列之一："内容文件"（写入；已有文件保留权限，新文件 0644）、{"file":"内容文件","mode":"0755"|"0644"}、{"mode":"0755"|"0644"}（只改已有文件权限）、{"delete":true}（删除已有文件）。改名 = 删旧路径 + 写新路径，两者都要在 scope 内；同时列在 requirements 里的路径不能删除。\n'
+      +'develop.json.edits 每项是 scope 路径到下列之一："内容文件"（写入；已有文件保留权限，新文件 0644）、{"file":"内容文件","mode":"0755"|"0644"}、{"mode":"0755"|"0644"}（只改已有文件权限）、{"delete":true}（删除已有文件或软链）、{"symlink":"相对目标"}（仅新运行可新建或改指软链）。改名的旧路径和新路径都要在 scope 内。requirements 路径须保留普通文件。\n'
       +'启动前拒绝：单个 scope 文件超过 1 MiB、审查材料（按审查包快照：scope、requirements 与树中全部 AGENTS.md 正文）合计超过 2 MiB 或超过 256 个文件、交付后与任务基线完全相同（edits 为空或内容和权限都没变）、开发检查点（含 handoff 与 AGENTS.md 回写，按宿主同一套构建代码计）超出存档上限（开发检查点的内联预算为单条记录上限（默认 4 MiB）与 1 MiB 取较小值后减去为有界审查与完成记录推出的预留，最低为 0 字节；不支持材料归档的运行（批量、并行、bootstrap 等）按含 base64 审查包的完整检查点核算此预算；支持归档的运行若同一审查包已有归档则直接引用，并要求完整检查点减去审查包大小再加 512 字节后不超过单条记录上限减去预留；若尚未归档且完整检查点装得进内联预算则内联；否则仅在完整检查点加 1 KiB 仍不超过单条记录上限、且引用后的估算大小也符合上述引用预算时首次归档），或任务基线装不进一条记录。受保护模式（--protected-conversation-config）只收合法 UTF-8 文本，应答大于 --input-limit（默认 65536）时提示应加的值。\n'
       +'runId 需 8–128 个字符（运行日志要求），create 前检查。resume 时按存档里的当前轮次发送 identity，第 2 轮的 decision/complete/qa 等无需手改。\n');
     process.exit(0);
@@ -815,7 +911,8 @@ function load(){
   if(deliveries.length)preflightDevelopDeliveries({deliveries,answersRoot:answers,codeProject:definition.codeProject,
     scope:definition.scope,requirements:definition.requirements,
     baseline:plan.mode==='create'?'disk':baselineScope(journal.baseline,definition.scope),
-    protectedMode,inputLimit:inputLimitFrom(permissions),checks:plannedCheckResults(protectedMode?null:plan.checks),
+    allowSymlinks:plan.mode==='create'||journal.baseline.version===SYMLINK_BASELINE_VERSION,
+    specsRoot:definition.specsDir,codeProjects:definition.codeProjects,protectedMode,inputLimit:inputLimitFrom(permissions),checks:plannedCheckResults(protectedMode?null:plan.checks),
     preview:developPreview({definition,journal:plan.mode==='create'?null:journal,controlPolicy:control?.policy??null,
       exact:!permissions.includes('--bootstrap-config')})});
   const unique=[...new Set(asks.filter(kind=>FILES[kind]&&kind!=='develop'))];
@@ -893,9 +990,11 @@ async function answerFor(row,answer,paths,control){
   if(kind==='develop'){
     if(!value)throw Error(`develop attempt ${row.payload.request?.identity?.attempt??row.payload.identity?.attempt} 未预检，拒绝复用旧答案`);
     if(value.status!=='succeeded')return {status:'failed',code:value.code};
+    const editOptions={allowSymlinks:row.payload.allowSymlinks===true,specsRoot:loaded.definition.specsDir,
+      codeProjects:row.payload.codeProjects};
     if(row.payload.editMode==='protected-text-v1')return {status:'succeeded',value:value.value,
-      edits:protectedDevelopEdits(value.edits,loaded.answers,loaded.definition.codeProject,row.payload.expected)};
-    applyDevelopEdits(value.edits,loaded.answers,loaded.definition.codeProject,row.payload.request.payload.scope);
+      edits:protectedDevelopEdits(value.edits,loaded.answers,loaded.definition.codeProject,row.payload.expected,editOptions)};
+    applyDevelopEdits(value.edits,loaded.answers,loaded.definition.codeProject,row.payload.request.payload.scope,editOptions);
     return {status:'succeeded',value:value.value};
   }
   if(kind==='documentation_sync'){

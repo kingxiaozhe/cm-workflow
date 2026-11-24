@@ -12,6 +12,7 @@ import {isXcodebuild, isTestAction, advisoryRunsTest as runsTest, mandatoryCheck
 import {git as safeGit} from '../runtime/js/cm-security/scan.mjs';
 import {captureSpecificationMaterial} from '../runtime/js/cm-ai/specification-material.mjs';
 import {readReviewBaseline,captureReviewBaseline} from '../runtime/js/cm-ai/review-package.mjs';
+import {SYMLINK_BASELINE_VERSION} from '../runtime/js/cm-ai/symlink-material.mjs';
 import {taskReviewScope} from '../runtime/js/cm-ai/effect-contract.mjs';
 import {callTimeoutFrom} from '../runtime/js/cm-ai/call-timeout.mjs';
 import {codeProjectPaths,resolveCodeProjects} from '../runtime/js/cm-ai/code-projects.mjs';
@@ -279,12 +280,12 @@ function checkDirtyScope(definition) {
 // The runner captures this baseline when the run is created and again before
 // each review package; a tree it refuses there stops the run after the develop
 // answer was already written. Capture it here the same way, read-only.
-export function checkReviewInventory(definition){
+export function checkReviewInventory(definition,version=SYMLINK_BASELINE_VERSION){
   if(!fs.existsSync(definition.codeProject)||typeof definition.specsDir!=='string'||!definition.identity
     ||!Array.isArray(definition.requirements))return [];
   try{
     const codeProject=definition.codeProject;
-    captureReviewBaseline({root:codeProject,specsRoot:definition.specsDir,identity:definition.identity,
+    captureReviewBaseline({root:codeProject,specsRoot:definition.specsDir,identity:definition.identity,version,
       scope:taskReviewScope(definition.scope),requirements:definition.requirements,
       ...(typeof definition.feature==='string'?{specification:{specsRoot:definition.specsDir,feature:definition.feature}}:{}),
       ...(definition.codeProjects?{codeProjectPaths:codeProjectPaths(codeProject,resolveCodeProjects(codeProject,definition.codeProjects))}:{})});
@@ -382,7 +383,7 @@ function approvedStartContract(plan,definition){
       const baseline=readReviewBaseline(snapshot.records[0]?.payload?.baseline);
       if(baseline.specificationRoot!==definition.specsDir||baseline.identity.taskId!==definition.identity.taskId)
         throw new Error('owner mismatch');
-      return baseline.specification?.acceptanceContract??null;
+      return {contract:baseline.specification?.acceptanceContract??null,baselineVersion:baseline.version};
     }
     // A create-plan may be inspected before any specification has been written.
     // Preserve its old scope/budget diagnostics; this read-only check grants no
@@ -396,14 +397,14 @@ function approvedStartContract(plan,definition){
       const absent=file=>{try{fs.lstatSync(file);return false;}catch(error){if(error.code==='ENOENT')return true;throw error;}};
       if(absent(path.join(root,'.cm-specs-status'))&&absent(path.join(root,definition.feature)))return null;
     }
-    return captureSpecificationMaterial({specsRoot:definition.specsDir,feature:definition.feature,
-      taskId:definition.identity.taskId}).acceptanceContract;
+    return {contract:captureSpecificationMaterial({specsRoot:definition.specsDir,feature:definition.feature,
+      taskId:definition.identity.taskId}).acceptanceContract};
   }catch{throw new InputError('必验合同无法从已批准规格或原运行读取；先核对规格批准与原运行身份，不能由 PLAN 自报或省略必验范围');}
 }
 
 export function startCheck(planFile, {requiredTests = []} = {}) {
   const {plan, definition} = loadStartInputs(planFile);
-  const contract=approvedStartContract(plan,definition),mandatory=[];
+  const {contract,baselineVersion}=approvedStartContract(plan,definition)??{},mandatory=[];
   if(contract){
     if(contract.unresolved.length)mandatory.push({level:'error',code:'acceptance_mapping_required',
       message:`已批准材料的必验映射尚不明确：${contract.unresolved.join('；')}`});
@@ -414,7 +415,8 @@ export function startCheck(planFile, {requiredTests = []} = {}) {
       message:'当前计划未完整包含冻结的必验检查；补齐检查，不能缩减批准的验收范围'});
   }
   return [...checkProtectedScope(definition.scope), ...checkChecks(plan, savedRunConfig(plan, definition)), ...checkAffectedTests(plan, definition),
-    ...checkMandatoryTests(plan, requiredTests), ...mandatory, ...checkDirtyScope(definition), ...checkReviewInventory(definition), ...checkLaunchInputs(plan, planFile, definition)];
+    ...checkMandatoryTests(plan, requiredTests), ...mandatory, ...checkDirtyScope(definition), ...checkReviewInventory(definition,baselineVersion),
+    ...checkLaunchInputs(plan, planFile, definition)];
 }
 
 export function main(argv = process.argv.slice(2), out = process.stdout, err = process.stderr) {

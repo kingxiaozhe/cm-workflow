@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash,randomUUID } from 'node:crypto';
 import { types } from 'node:util';
 import {createRequire} from 'node:module';
+import {SYMLINK_BASELINE_VERSION} from './symlink-material.mjs';
 import { verifyCompletionReviewPackage,reviewSpecsPath } from './review-package.mjs';
 import { checkCompletion } from './gate-bridge.mjs';
 import { need,shape,json,digest,validIdentity,JOURNAL_PAYLOAD_LIMIT } from './effect-contract.mjs';
@@ -62,7 +63,9 @@ function readFile(p) {
   }finally{if(fd!==undefined)fs.closeSync(fd);}
 }
 function nativeRevision(p,f) {return digest({path:p,stat:statFields(f.stat),sha256:sha(f.bytes)});}
-function completionSelectors(selectors,identity,projectRoot){return {...selectors,task:identity.taskId,projectRoot};}
+function completionSelectors(selectors,identity,projectRoot,baseline){
+  return {...selectors,task:identity.taskId,projectRoot,allowSymlinks:baseline.version===SYMLINK_BASELINE_VERSION};
+}
 function verifyProof(v) {
   verifyCompletionReviewPackage({root:v.root,baseline:v.baseline,checks:v.checks,reviewPackage:v.reviewPackage,expectedDigest:v.reviewPackage.packageDigest,
     ...(Object.hasOwn(v.reviewPackage,'handoff')?{handoffPath:v.selectors.handoff}:{})});
@@ -127,7 +130,7 @@ function commitCore(input,signal,owner,initial,guard,appendIntent,appendResult) 
   need((v.baseline.specsPath??null)===reviewSpecsPath(v.root,owner.specsRoot),'overlapping_roots');
   const parent=parentRevision(path.dirname(owner.tasksPath));
   let plan;
-  try{plan=json(prepareMarkDone(completionSelectors(selectors,v.identity,v.root)),MiB);}
+  try{plan=json(prepareMarkDone(completionSelectors(selectors,v.identity,v.root,v.baseline)),MiB);}
   catch{need(false,'preparation_failed');}
   const {after}=planBytes(plan);
   need(plan.tasksPath===owner.tasksPath && plan.feature===owner.feature && plan.taskId===v.identity.taskId
@@ -149,7 +152,7 @@ function commitCore(input,signal,owner,initial,guard,appendIntent,appendResult) 
     const synced=checkTemp();need(sameStat(synced.stat,fs.fstatSync(fd,{bigint:true})),'temporary_changed');
     fs.closeSync(fd);fd=undefined;
     let verified;
-    try{verified=verifyMarkDonePlan(completionSelectors(selectors,v.identity,v.root),plan.planDigest);}
+    try{verified=verifyMarkDonePlan(completionSelectors(selectors,v.identity,v.root,v.baseline),plan.planDigest);}
     catch{need(false,'preparation_failed');}
     shape(verified,['outcome','planDigest']);need(verified.outcome==='matched' && verified.planDigest===plan.planDigest,'invalid_plan');
     verifyProof(v);guard();

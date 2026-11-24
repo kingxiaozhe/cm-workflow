@@ -6,7 +6,7 @@ import {selectExternalModels} from './external-models.mjs';
 // Fixed current-conversation factory, separate from CLI top-level execution.
 import fs from 'node:fs';
 import {spawn} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {protectedEditDigest,validateProtectedEdit} from './symlink-material.mjs';
 import {loadConfig,resolveProtectedRuntimes} from '../../../scripts/cm-workflow-config.mjs';
 import {claudeDeveloperWorker,validateClaudeProposal} from './worker-claude-developer.mjs';
 import {codexDeveloperWorker} from './worker-codex-developer.mjs';
@@ -36,7 +36,7 @@ import {verifySpecificationMaterial} from './specification-material.mjs';
 import {isFinalCmAiTask} from './cm-ai-admission.mjs';
 import {createHostBootstrap} from './host-bootstrap.mjs';
 import {withHostProgress} from './host-progress.mjs';
-import {digest,id,hex,json,need,shape,freeze,arrayItems,boundedReason} from './effect-contract.mjs';
+import {digest,id,json,need,shape,freeze,arrayItems,boundedReason} from './effect-contract.mjs';
 export const protectedTextInstructions='\nProtected current-host mode: do not write files or run commands. Return {status,value,edits} on success; '
   +'value retains the original implementation/Learning contract. edits is [{path,beforeSha256,content[,mode]}], complete UTF-8 text or null for deletion; '
   +'optional mode "0755" or "0644" sets the permission bits of a written file. '
@@ -303,11 +303,12 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
         need(!used.has(bound.invocationId),'duplicate_dispatch');used.add(bound.invocationId);
       }
       const route=provider?null:resolveHostRole({definition,identity:bound.identity,role:'coder',signal:control.signal,runtime});
+      const allowSymlinks=control.allowSymlinks===true;
       let developerUsage=null;const developerLog=executionPolicy&&provider?createNativeUsageLog({definition,request:bound,provider:coderRuntime,role:'developer'}):null;
       const processWorker=provider?(coderRuntime==='codex'?codexDeveloperWorker:claudeDeveloperWorker)({
         ...(developerLog?{onUsageClaim:()=>developerLog.claimed(),onUsage:value=>{developerUsage=value;}}:{}),
         cwd:definition.codeProject,model:provider.model,...(externalModels?{effort:provider.effort}:{}),timeoutMs:protection.timeoutMs,
-        ...(coderRuntime==='codex'?{specsRoot:definition.specsDir}:{}),
+        ...(coderRuntime==='codex'?{specsRoot:definition.specsDir}:{allowSymlinks}),
         spawnProcess:dispatchSpawn('coder',bound.identity,control.signal,typeof control.onWorker==='function'?control.onWorker:null)}):null;
       const splitReport=response=>{
         if(response?.status!=='succeeded')return response;
@@ -324,22 +325,24 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
           developerLog?.complete(developerUsage??{usage_state:'unavailable'},response.status==='succeeded'?'success':response.status==='cancelled'?'cancelled':'error');
           return response;
         }
-        const expected=projectExecution?projectExecution.expected(bound.payload.scope):null;
+        const expected=projectExecution?projectExecution.expected(bound.payload.scope,allowSymlinks):null;
         if(protection){
           prompt+=protectedTextInstructions;
+          if(allowSymlinks)prompt+=' For a link, return {path,beforeSha256,symlink} with a relative target inside its code root. Delete links with content:null.';
           if(!parallelMember&&documentationPaths.length&&isFinalCmAiTask({specsDir:definition.specsDir,codeProject:definition.codeProject,
             feature:definition.feature,taskId:bound.identity.taskId,featureSelection:definition.featureSelection?.feature}))prompt+=' Include necessary documentation synchronization in the same edits: '+JSON.stringify(documentationPaths);
         }
         const response=splitReport(provider?await processWorker({prompt:prompt+'\n'+JSON.stringify({editMode:'protected-text-v1',expected})},control):json(await bridge.call('develop',{request:bound,prompt,codeProject:definition.codeProject,route,
           ...(definition.codeProjects?{codeProjects:resolveCodeProjects(definition.codeProject,definition.codeProjects),
             projectInstructions:definition.codeProjects.map(root=>({codeProject:root,files:readProjectInstructionContext(root)}))}:{}),
+          ...(allowSymlinks?{allowSymlinks}:{}),
           ...(protection?{editMode:'protected-text-v1',expected}: {})},control.signal)));
         if(provider)developerLog?.complete(developerUsage??{usage_state:'unavailable'},response.status==='succeeded'?'success':response.status==='cancelled'?'cancelled':'error');
         if(response.status==='succeeded'){
           const edits=[];
           try{
             shape(response,['status','value',...(protection?['edits']:[]),...(provider?['providerThread']:[])]);
-            if(provider){const {providerThread,...proposal}=response;id(providerThread);validateClaudeProposal(proposal);}
+            if(provider){const {providerThread,...proposal}=response;id(providerThread);validateClaudeProposal(proposal,{allowSymlinks});}
             if(protection){
               // Complete local validation precedes every protected write.
               validateDeveloperValue(response.value,bound);
@@ -347,17 +350,12 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
               if(response.value.outcome==='blocked')need(response.edits.length===0,'protected_edit_invalid');
               const seen=new Set();
               for(const edit of response.edits){
-                shape(edit,['path','beforeSha256','content',...(Object.hasOwn(edit,'mode')?['mode']:[])]);
-                need(!Object.hasOwn(edit,'mode')||edit.content!==null&&['0644','0755'].includes(edit.mode),'protected_edit_invalid');
+                validateProtectedEdit(edit,allowSymlinks);
                 need(bound.payload.scope.includes(edit.path)&&!seen.has(edit.path),'out_of_scope');seen.add(edit.path);
-                if(edit.beforeSha256!==null)hex(edit.beforeSha256);
-                need(edit.content===null||typeof edit.content==='string','protected_edit_invalid');
-                need(edit.content===null||Buffer.byteLength(edit.content)<=1024*1024,'limit_exceeded');
-                need(edit.content!==null||edit.beforeSha256!==null,'protected_edit_invalid');
                 // Reuse a previous proposal only when its exact output is
                 // already present. A stale proposal never overwrites drift.
                 if(edit.beforeSha256!==expected[edit.path]){
-                  const after=edit.content===null?null:createHash('sha256').update(edit.content).digest('hex');
+                  const after=protectedEditDigest(edit);
                   need(after===expected[edit.path],'protected_edit_stale');
                 }else edits.push(edit);
               }
@@ -369,12 +367,14 @@ export function createConversationExecution(definition,hostContextId,bridge,revi
               specification:bound.payload.specification,identity:bound.identity});
             // The applying sandbox subprocess is journaled like the worker (V9).
             try{await projectExecution.commit({scope:bound.payload.scope,
-              edits,expected,identity:bound.identity,signal:control.signal,
+              edits,expected,allowSymlinks,identity:bound.identity,signal:control.signal,
               ...(typeof control.onWorker==='function'?{onApply:event=>control.onWorker(event)}:{})});}
             catch(error){
               // This code is emitted by the pre-write expected-hash check.
               // Sandbox execution/partial-write failures stay ambiguous.
               if(error.code==='protected_edit_stale')return {status:'failed',code:'protected_edit_stale'};
+              if(allowSymlinks&&['invalid_symlink_target','unsupported_path','protected_edit_invalid'].includes(error.code))
+                return {status:'failed',code:'invalid_result',reason:error.code};
               throw error;
             }
           }

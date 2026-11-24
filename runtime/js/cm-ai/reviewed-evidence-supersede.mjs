@@ -25,7 +25,7 @@ const driftInstruction='这些文件与直接前驱运行开工前的基线不�
 
 function verifyOldCodeBaseline(codeProject,rawBaseline){
   // Legacy journals without a complete V2 inventory cannot prove code drift.
-  if(rawBaseline?.version!==2)return [];
+  if(![2,3].includes(rawBaseline?.version))return [];
   const baseline=readReviewBaseline(rawBaseline);
   let current;
   try{

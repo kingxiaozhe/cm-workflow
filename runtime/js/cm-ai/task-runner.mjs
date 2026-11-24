@@ -17,6 +17,7 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import {verifySpecificationMaterial,boundSpecificationMaterial,inspectSpecificationDrift,describeSpecificationDrift,
   readSpecificationRebind} from './specification-material.mjs';
+import {SYMLINK_BASELINE_VERSION} from './symlink-material.mjs';
 import { captureReviewBaseline, captureScopeRevisionSources, captureReviewInventory, compareReviewBaseline, createReviewPackage, verifyReviewPackage, verifyCompletionReviewPackage, validChecks, readReviewSourceFiles } from './review-package.mjs';
 import { digest,need,shape,id,text,json,freeze,arrayItems,validIdentity,validTaskLearningInput,validCallTimeout,requestFor,terminalFor,failureCode,
   JOURNAL_PAYLOAD_LIMIT,JOURNAL_REASON_LIMIT,developCheckpointReserve,taskReviewScope,boundedReason } from './effect-contract.mjs';
@@ -290,7 +291,7 @@ export function createTaskRunner(options) {
   let scopeRevisionPaths=restored?.original.scopeRevisionPaths??null;
   const effectiveMetadata=()=>({...metadata,scope:effectiveScope,...(scopeRevisionPaths?{scopeRevisionPaths}: {})});
   const baselineOptions=()=>({...configToBaseline(effectiveMetadata()),
-    ...(specificationSelection===null?{}:{specification:specificationSelection})});
+    ...(specificationSelection===null?{}:{specification:specificationSelection,version:SYMLINK_BASELINE_VERSION})});
   let original=restored?.original??captureReviewBaseline(baselineOptions());
   let controller=new AbortController();
   const calls=[],cache=new Map(),session=restored?.session??randomUUID(),registered=new Map(),receipts=[];
@@ -1167,10 +1168,11 @@ export function createTaskRunner(options) {
     for(const file of effectiveScope){
       const record=base.files.find(item=>item.path===file);
       if(!record){files.set(file,null);continue;}
+      if(record.type==='symlink'){files.set(file,{symlink:record.target});continue;}
       if(record.type!=='file'||typeof record.contentBase64!=='string')return {unavailable:'baseline_without_content'};
       files.set(file,{bytes:Buffer.from(record.contentBase64,'base64'),mode:record.mode});
     }
-    return {files};
+    return {files,...(base.version===SYMLINK_BASELINE_VERSION?{allowSymlinks:true}:{})};
   }
   async function verificationSatisfied(checks) {
     requirementEvidence=null;hostReplayEvidence=null;acceptanceEvidence=null;verificationReason=null;
@@ -1307,7 +1309,8 @@ export function createTaskRunner(options) {
     state='awaiting_review';
   }
   function developControl(effectId,documentationRedo){
-    const control={...(workerJournaling()?{onWorker:event=>journalWorker(effectId,event)}:{}),
+    const control={...(original.version===SYMLINK_BASELINE_VERSION?{allowSymlinks:true}:{}),
+      ...(workerJournaling()?{onWorker:event=>journalWorker(effectId,event)}:{}),
       ...(documentationJournaling()?{onDocumentationSync:event=>journalDocumentationSync(effectId,event),
         documentationSnapshot:paths=>documentationSnapshot(json(paths))}:{}),
       ...(documentationRedo?{documentationRedo}:{})};
@@ -2163,7 +2166,7 @@ export function createTaskRunner(options) {
       const handoff=loadHandoff(handoffPath,{task:config.identity.taskId,attempt});
       const paths=pkg.changes.map(item=>item.path);
       need(digest([...handoff.changed_files].sort())===digest([...paths].sort())
-        &&handoff.implementation_sha256===implementationSha256(config.root,handoff.changed_files),
+        &&handoff.implementation_sha256===implementationSha256(config.root,handoff.changed_files,{allowSymlinks:base.version===SYMLINK_BASELINE_VERSION}),
         'bootstrap_review_recovery_mismatch');
       verifyReviewPackage({root:config.root,baseline:base,checks:currentChecks,
         reviewPackage:pkg,expectedDigest:pkg.packageDigest,handoffPath});
@@ -2186,13 +2189,17 @@ export function createTaskRunner(options) {
   // Read-only: the reviewed package's task checks, only while the code root
   // still matches that package, so a QA command may reuse an identical passed
   // check instead of running it again (host-qa-executor reuseCheck).
+  const qaAllowsSymlinks=packageDigest=>{
+    need(state==='fixture_completed'&&reviewPackage?.packageDigest===packageDigest,'stale_qa');
+    return original.version===SYMLINK_BASELINE_VERSION;
+  };
   const qaCompletionChecks=packageDigest=>{
     need(state==='fixture_completed'&&reviewPackage?.packageDigest===packageDigest,'stale_qa');
     verifyReviewPackage({root:config.root,baseline:attemptBaseline(original,reviewPackage.identity.attempt),
       checks:reviewPackage.checks,reviewPackage,expectedDigest:reviewPackage.packageDigest,...handoffBinding()});
     return freeze(structuredClone(reviewPackage.checks));
   };
-  const api={qaChangedFiles,qaCompletionChecks,reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,reworkCompletion,reworkDevelopment,reviseScope,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,acceptReviewedIntegration,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
+  const api={qaChangedFiles,qaCompletionChecks,qaAllowsSymlinks,reviseQa,supersedeEvidence,rebindSpecification,abandonReview,reconcileReview,abandonEffect,recoverBootstrapReview,reworkCompletion,reworkDevelopment,reviseScope,executeEffect,status,cancel,run,inspectFixAssociation,acceptCompletedFix,acceptReviewedIntegration,attachQa,verificationBlocks,completionBlocks,reviewEffectIds,recheckLearningInput,redoDevelop,recoverCommit,interruptions};
   if(bootstrap!==null)api.inspectBootstrapAdmission=()=>bootstrap.inspectAdmission(original);
   if(taskLearning!==null)api.attachLearningEvidence=attachLearningEvidence;
   // A terminal reviewer observation is durable even if the host died before
