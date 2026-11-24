@@ -168,18 +168,29 @@ export const stripQuoted=text=>QUOTED.reduce((out,re)=>out.replace(re,' '),text)
 // "别忘了/不要忘了/别忘记" mean "do", so a negation followed by 忘 is not one.
 export const NEGATION_WINDOW={zh:4,en:3};
 const CLAUSE_END=/[，,。.！!？?；;：:\n]/;
+// After a condition word in the same clause, 就 starts the consequence: "如果不需要测试就换个会话交接"
+// (review r1). Without one, 就 is just "right away": "不要现在就换个会话交接" stays negated (review r2).
+// 就 right after a time word (现在就/马上就) means "right away" and stays inside the negation (review r4b).
+// A lone 这 is left out: 这就 (right away) and 放这就 (put it here, then) cannot be told apart here (review r5).
+const RIGHT_AWAY=/(?:现在|马上|立刻|立即|立马|今天)$/;
+// A lone 若 counts only right before the negation (若不用…); elsewhere it may be a name like 若琳 (review r4).
+const ZH_CONDITION=/(?:如果|要是|假如|假设|万一|倘若|若是|(?<![宛仿犹恍])若$)(?![^就]*就)/;
 // A lone 别 inside a word (别人、特别、分别、区别、告别、别名…) is not a negation (review r1),
-// nor are A-not-A questions (要不要、用不用、想不想) or "why not" (review r2).
-const ZH_NEGATION=/(?:先别|(?<!(?<!只)要)不要|(?<!用)不用|(?<!想)不想|无需|不必|(?<![特分区识级类个告差辨鉴性派道送判甄离])别(?![人处的致墅名扭样具]))(?!忘)/g;
-const EN_NEGATION=/\b(?:(?<!why\s+)don['’]?t|do not|no need to|(?<!why\s+)not)\b/g;
+// nor are A-not-A questions (要不要、用不用、想不想、需(要)不需要、有没有必要), "why not" (review r2)
+// or questions like "won't you/we …".
+const ZH_NEGATION=/(?:先别|(?<!需)(?<!需要)不需要|(?<!有)没有必要|没必要|(?<!(?<!只)要)不要|(?<!用)不用|(?<!想)不想|无需|不必|(?<![特分区识级类个告差辨鉴性派道送判甄离])别(?![人处的致墅名扭样具]))(?!忘)/g;
+const EN_NEGATION=/\b(?:(?<!why\s+)don['’]?t|(?<!why\s+)won['’]?t(?!\s+(?:you|we|they|i)\b)|do not|no need to|(?<!why\s+)not)\b/g;
 const EN_WORD=/^[ \t]+[^\s，,。.！!？?；;：:]+/;
 export function maskNegated(text){
   let out=text;
   const blank=(from,to)=>{out=out.slice(0,from)+' '.repeat(to-from)+out.slice(to);};
   for(const match of text.matchAll(ZH_NEGATION)){
     const start=match.index+match[0].length;
+    let clauseStart=match.index;
+    while(clauseStart>0&&!CLAUSE_END.test(text[clauseStart-1]))clauseStart--;
+    const conditional=ZH_CONDITION.test(text.slice(clauseStart,match.index));
     let end=start;
-    while(end<text.length&&end-start<NEGATION_WINDOW.zh&&!CLAUSE_END.test(text[end]))end++;
+    while(end<text.length&&end-start<NEGATION_WINDOW.zh&&!CLAUSE_END.test(text[end])&&!(conditional&&text[end]==='就'&&!RIGHT_AWAY.test(text.slice(Math.max(0,end-2),end))))end++;
     blank(start,end);
   }
   for(const match of text.matchAll(EN_NEGATION)){
