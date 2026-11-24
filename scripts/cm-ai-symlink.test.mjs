@@ -434,7 +434,7 @@ test('real batch driver passes the v3 flag to apply and QA snapshots',t=>{
   fs.renameSync(f.specsRoot,specsDir);
   f.set('../../lib');
   fs.writeFileSync(path.join(f.cwd,'lib-next/file'),'next fixture');
-  for(const args of [['init','-b','main'],['add','-A'],['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m','baseline']]){
+  for(const args of [['init','-b','main'],['config','user.name','Fixture'],['config','user.email','fixture@example.invalid'],['add','-A'],['commit','-m','baseline']]){
     const git=spawnSync('git',['-C',f.cwd,...args],{encoding:'utf8'});
     assert.equal(git.status,0,git.stderr);
   }
