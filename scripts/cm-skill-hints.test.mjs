@@ -934,6 +934,25 @@ test('guards: 不需要, 没必要 and won\'t also negate; A-not-A and why-won\'
     ['不要现在就换个会话交接，先把测试跑完',null],
     ['要是不用测试就换个会话交接','direct:handoff'],
     ['如果没问题，不要现在就换个会话交接',null],
+    // review r3 todo: single-character 若 is a condition word too; 若干/宛若 are not.
+    ['若不用测试就换个会话交接','direct:handoff'],
+    ['倘若不需要测试就换个会话交接','direct:handoff'],
+    ['前面若干步不要就换个会话交接',null],
+    ['宛若无事不要就换个会话交接',null],
+    // review r4: a condition already closed by its own 就 does not reach a later 就; a name like 若琳 is no condition.
+    ['若测试还没跑完就不要现在就换个会话交接，先继续测试',null],
+    ['如果测试没跑完就不要现在就换个会话交接',null],
+    ['若琳说不要现在就换个会话交接，先把测试跑完',null],
+    ['你若不想测试就换个会话交接','direct:handoff'],
+    // review r4b: 就 after a time word (现在就/马上就/立刻就) is "right away", not the consequence.
+    ['若不想现在就换个会话交接，那就先继续测试',null],
+    ['如果不想马上就换个会话交接，那就先继续测试',null],
+    ['要是不用立刻就换个会话交接，就先继续测试',null],
+    // review r5: single 这/早 end other words (来这/起早), so they are not time words here.
+    ['如果不用来这就换个会话交接，剩下的我远程做','direct:handoff'],
+    ['如果不用起早就换个会话交接，下午再继续','direct:handoff'],
+    ['若不想今天就换个会话交接，那就先继续测试',null],
+    ['如果日志不用放这就换个会话交接，日志我移到归档目录','direct:handoff'],
   ];
   const got=[];
   for(const [prompt] of cases)got.push([prompt,await f.run(prompt)]);
