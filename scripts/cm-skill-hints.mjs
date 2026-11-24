@@ -161,13 +161,19 @@ export const stripCode=text=>text.replace(/```[\s\S]*?(?:```|$)/g,' ');
 // Real misfire: "不要换个会话，继续当前任务" told the model to start handoff.
 // Quoted or inline-code words are being talked about, not asked for. ASCII ' is left
 // alone because English contractions use it.
-const QUOTED=[/`[^`\n]*`/g,/“[^”]*”/g,/「[^」]*」/g,/『[^』]*』/g,/"[^"\n]*"/g];
+// Quotes never span lines, so an unclosed “ cannot swallow the rest of a message (todo from PR #265).
+// A quote never opens twice, so a stray “ pairs with nothing; ’ inside an English word (don’t) is an
+// apostrophe, not the closing quote (review r1).
+const QUOTED=[/`[^`\n\r\u2028\u2029]*`/g,/“[^“”\n\r\u2028\u2029]*”/g,/「[^「」\n\r\u2028\u2029]*」/g,/『[^『』\n\r\u2028\u2029]*』/g,/"[^"\n\r\u2028\u2029]*"/g,
+  // Single quotes go last and never reach into another quote, so ‘ and ’ from two different quotes
+  // cannot pair up (review r2).
+  /‘(?:[^‘’“”「」『』\n\r\u2028\u2029]|’(?=[a-zA-Z]))*’(?![a-zA-Z])/g];
 export const stripQuoted=text=>QUOTED.reduce((out,re)=>out.replace(re,' '),text);
 // A negation masks only the few characters (Chinese) or words (English) right after it,
 // within its own clause: "不要继续当前任务，换个会话交接" still asks for a handoff.
 // "别忘了/不要忘了/别忘记" mean "do", so a negation followed by 忘 is not one.
 export const NEGATION_WINDOW={zh:4,en:3};
-const CLAUSE_END=/[，,。.！!？?；;：:\n]/;
+const CLAUSE_END=/[，,。.！!？?；;：:\n\r\u2028\u2029]/;
 // After a condition word in the same clause, 就 starts the consequence: "如果不需要测试就换个会话交接"
 // (review r1). Without one, 就 is just "right away": "不要现在就换个会话交接" stays negated (review r2).
 // 就 right after a time word (现在就/马上就) means "right away" and stays inside the negation (review r4b).
@@ -181,22 +187,28 @@ const ZH_CONDITION=/(?:如果|要是|假如|假设|万一|倘若|若是|(?<![宛
 const ZH_NEGATION=/(?:先别|(?<!需)(?<!需要)不需要|(?<!有)没有必要|没必要|(?<!(?<!只)要)不要|(?<!用)不用|(?<!想)不想|无需|不必|(?<![特分区识级类个告差辨鉴性派道送判甄离])别(?![人处的致墅名扭样具]))(?!忘)/g;
 const EN_NEGATION=/\b(?:(?<!why\s+)don['’]?t|(?<!why\s+)won['’]?t(?!\s+(?:you|we|they|i)\b)|do not|no need to|(?<!why\s+)not)\b/g;
 const EN_WORD=/^[ \t]+[^\s，,。.！!？?；;：:]+/;
+function zhWindowEnd(text,negationIndex,start){
+  let clauseStart=negationIndex;
+  while(clauseStart>0&&!CLAUSE_END.test(text[clauseStart-1]))clauseStart--;
+  const conditional=ZH_CONDITION.test(text.slice(clauseStart,negationIndex));
+  let end=start;
+  while(end<text.length&&end-start<NEGATION_WINDOW.zh&&!CLAUSE_END.test(text[end])&&!(conditional&&text[end]==='就'&&!RIGHT_AWAY.test(text.slice(Math.max(0,end-2),end))))end++;
+  return end;
+}
 export function maskNegated(text){
   let out=text;
   const blank=(from,to)=>{out=out.slice(0,from)+' '.repeat(to-from)+out.slice(to);};
   for(const match of text.matchAll(ZH_NEGATION)){
     const start=match.index+match[0].length;
-    let clauseStart=match.index;
-    while(clauseStart>0&&!CLAUSE_END.test(text[clauseStart-1]))clauseStart--;
-    const conditional=ZH_CONDITION.test(text.slice(clauseStart,match.index));
-    let end=start;
-    while(end<text.length&&end-start<NEGATION_WINDOW.zh&&!CLAUSE_END.test(text[end])&&!(conditional&&text[end]==='就'&&!RIGHT_AWAY.test(text.slice(Math.max(0,end-2),end))))end++;
-    blank(start,end);
+    blank(start,zhWindowEnd(text,match.index,start));
   }
   for(const match of text.matchAll(EN_NEGATION)){
     const start=match.index+match[0].length;
     let end=start;
-    for(let words=0;words<NEGATION_WINDOW.en;words++){
+    // Chinese right after the English negation ("don't换个会话") is masked like a Chinese negation,
+    // condition rule included (todo from PR #265, review r1).
+    if(/^[\u3400-\u9fff]/.test(text.slice(start)))end=zhWindowEnd(text,match.index,start);
+    else for(let words=0;words<NEGATION_WINDOW.en;words++){
       const next=EN_WORD.exec(text.slice(end));
       if(!next)break;
       end+=next[0].length;
@@ -327,6 +339,12 @@ export async function pickInvoke({prompt,rules,host,env,authorCheck,judgeModule,
   const plain=splitHits(candidates,stripCode(prompt.toLowerCase()));
   const raw=plain.map(hit=>hit.keyword||hit.pattern);
   const index=guarded.findIndex((hit,at)=>raw[at]&&(hit.keyword||hit.pattern));
+  // What the guards held back, for the log (rule and reason only, never the text); every such rule,
+  // also when another rule goes ahead (todo from PR #265, review r1).
+  const unguarded=splitHits(candidates,unquoted);
+  const suppressed=candidates.flatMap((rule,at)=>raw[at]&&!(guarded[at].keyword||guarded[at].pattern)
+    ?[{rule:rule.id,skill:rule.skill,reason:unguarded[at].keyword||unguarded[at].pattern?'negated':'quoted'}]:[]);
+  if(suppressed.length)fallback.suppressed=suppressed;
   if(index>=0){
     const rule=candidates[index];
     // A rule with patterns keeps its mode only when a pattern matched both before and after
@@ -334,12 +352,7 @@ export async function pickInvoke({prompt,rules,host,env,authorCheck,judgeModule,
     const strong=guarded[index].pattern&&plain[index].pattern;
     return {...fallback,rule,mode:rule.patterns.length&&!strong?'ask':rule.invoke.mode};
   }
-  // What the guards held back, for the log (rule and reason only, never the text).
-  const first=raw.findIndex(Boolean);
-  if(first<0)return {...fallback,rule:null};
-  const unguarded=splitHits([candidates[first]],unquoted)[0];
-  return {...fallback,rule:null,suppressed:{rule:candidates[first].id,skill:candidates[first].skill,
-    reason:unguarded.keyword||unguarded.pattern?'negated':'quoted'}};
+  return {...fallback,rule:null};
 }
 function splitHits(rules,text){
   const byPattern=patternMatches(rules,text);
@@ -384,7 +397,7 @@ export async function hook(input,{env=process.env,host='claude',rulesFile=defaul
     // A missing key is the normal state for most users, not worth a line per message.
     if(invoked.error&&!['no-key','off'].includes(invoked.error))appendLog(env,{t:time,event:'judge-error',host,error:invoked.error});
     if(start)appendLog(env,{t:time,event:'invoke',host,rule:invoked.rule.id,skill:start.skill,mode:start.mode,via:invoked.via});
-    if(invoked.suppressed)appendLog(env,{t:time,event:'suppressed',host,...invoked.suppressed});
+    for(const item of invoked.suppressed??[])appendLog(env,{t:time,event:'suppressed',host,...item});
     for(const hint of hints)appendLog(env,{t:time,event:'hint',host,rule:hint.rule,skill:hint.skill});
   }catch{/* 统计丢一条 */}
   // Session state is never removed (decided 2026-10-24): a session resumed months

@@ -969,6 +969,47 @@ test('guards: what they hold back is logged with rule and reason only, never the
   assert.doesNotMatch(fs.readFileSync(logFile(f.env),'utf8'),/换个会话|继续当前任务/);
 });
 
+test('guards: Chinese single quotes, quotes never span lines, English negation right before Chinese (todo from PR #265)',async t=>{
+  const f=guarded(t);
+  const cases=[
+    ['我们讨论 ‘换个会话’ 这个关键词',null],
+    ['他说“先看看\n换个会话交接吧\n后面才是”结尾','direct:handoff'],
+    ['「先看看\n换个会话交接吧\n」','direct:handoff'],
+    ["don't换个会话，继续当前任务",null],
+    ["don’t 换个会话，继续当前任务",null],
+    ['Won’t you start a new session?','ask:handoff'],
+    // review r1: ’ inside an English word is an apostrophe; any line break ends a quote; a quote never
+    // opens twice; English negation glued to Chinese keeps the condition rule.
+    ['我们讨论 ‘don’t hand off to a new session’ 这句英文',null],
+    ['他说“先看看\r换个会话交接吧\r后面才是”结尾','direct:handoff'],
+    ['他说“先看看\u2028换个会话交接吧\u2028后面才是”结尾','direct:handoff'],
+    ['这里先留个左引号“，换个会话交接吧，标题用“进度”','direct:handoff'],
+    ["如果don't测就换个会话交接",'direct:handoff'],
+    // review r2: ‘ and ’ never pair across two other quotes; \r and U+2028/U+2029 end a clause too.
+    ['对比『‘ 是左单引号』和「’ 是右单引号，换个会话交接是测试短语」这两段文字',null],
+    ['don’t测\u2028换个会话交接','direct:handoff'],
+    ['不要测\r换个会话交接','direct:handoff'],
+    ['不要测\u2029换个会话交接','direct:handoff'],
+  ];
+  const got=[];
+  for(const [prompt] of cases)got.push([prompt,await f.run(prompt)]);
+  assert.deepEqual(got,cases);
+});
+
+test('guards: every rule the guards hold back in one message is logged, not just the first (todo from PR #265)',async t=>{
+  const f=guarded(t,{version:1,rules:[
+    {id:'long-session',skill:'handoff',author:true,keywords:['换个会话'],reason:'写交接',invoke:{mode:'direct',when:'写交接'}},
+    {id:'split',skill:'wayfinder',author:true,keywords:['拆会话'],reason:'拆任务',invoke:{mode:'direct',when:'拆任务'}}]});
+  assert.equal(await f.run('不要换个会话，也“拆会话”'),null);
+  assert.deepEqual(f.log().filter(entry=>entry.event==='suppressed').map(({rule,skill,reason})=>({rule,skill,reason})),[
+    {rule:'long-session',skill:'handoff',reason:'negated'},
+    {rule:'split',skill:'wayfinder',reason:'quoted'}]);
+  // review r1: a rule held back is logged even when another rule in the same message goes ahead.
+  assert.equal(await f.run('换个会话交接吧，“拆会话”是另一个选项'),'direct:handoff');
+  assert.deepEqual(f.log().filter(entry=>entry.event==='suppressed').slice(2).map(({rule,reason})=>({rule,reason})),[
+    {rule:'split',reason:'quoted'}]);
+});
+
 test('guards: masking a pattern\'s exclusion words never upgrades ask to direct (review r2)',async t=>{
   const f=guarded(t,{version:1,rules:[{id:'long-session',skill:'handoff',author:true,keywords:['换个会话'],
     patterns:['^(?![\\s\\S]*只是问问)[\\s\\S]*会话'],reason:'写交接',invoke:{mode:'direct',when:'写交接'}}]});
