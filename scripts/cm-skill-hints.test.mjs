@@ -909,6 +909,37 @@ test('guards: window edges, case, everyday words with 别, and guards never add 
   assert.deepEqual(got,cases);
 });
 
+test('guards: 不需要, 没必要 and won\'t also negate; A-not-A and why-won\'t stay questions (todo from PR #265)',async t=>{
+  const f=guarded(t);
+  const cases=[
+    ['不需要换个会话，继续',null],
+    ['没必要换个会话交接',null],
+    ["won't start a new session",null],
+    ['won’t start a new session',null],
+    ['需要换个会话交接','direct:handoff'],
+    ['需不需要换个会话交接','direct:handoff'],
+    ['有没有必要换个会话交接','direct:handoff'],
+    ['不需要的先放着，换个会话交接','direct:handoff'],
+    ["why won't we start a new session",'ask:handoff'],
+    ["we won't need it, start a new session",'ask:handoff'],
+    // review r1: full A-not-A form, won't-questions, a condition ending in 就, and 没有必要.
+    ['需要不需要换个会话交接','direct:handoff'],
+    ['Won’t you start a new session?','ask:handoff'],
+    ["Why exactly won't we start a new session?",'ask:handoff'],
+    ['如果不需要测试就换个会话交接','direct:handoff'],
+    ['如果不用测试就换个会话交接','direct:handoff'],
+    ['没有必要换个会话交接，继续当前任务',null],
+    ['有没有必要换个会话交接','direct:handoff'],
+    // review r2: 就 ends the negation only after a condition word (如果/要是/假如…) in the same clause.
+    ['不要现在就换个会话交接，先把测试跑完',null],
+    ['要是不用测试就换个会话交接','direct:handoff'],
+    ['如果没问题，不要现在就换个会话交接',null],
+  ];
+  const got=[];
+  for(const [prompt] of cases)got.push([prompt,await f.run(prompt)]);
+  assert.deepEqual(got,cases);
+});
+
 test('guards: what they hold back is logged with rule and reason only, never the text',async t=>{
   const f=guarded(t);
   await f.run('不要换个会话，继续当前任务');
