@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Fixed, no-provider control entry. Executing adapters are a subsequent slice.
 import fs from 'node:fs';
+import {SYMLINK_BASELINE_VERSION} from '../runtime/js/cm-ai/symlink-material.mjs';
 import {assertDeclaredScope} from '../runtime/js/task-scope.mjs';
 import {spawn as spawnChild} from 'node:child_process';
 import path from 'node:path';
@@ -442,7 +443,7 @@ async function openControlRunOwned(definition,mode,execution=null,{supersedeHold
   // Reuse the runner's real validator before creating durable state. A failed
   // baseline must not strand an otherwise unused run ID.
   const specification={specsRoot:specsDir,feature};
-  const baselineOptions={root:codeProject,specsRoot:specsDir,identity,scope,requirements,specification,
+  const baselineOptions={root:codeProject,specsRoot:specsDir,identity,scope,requirements,specification,version:SYMLINK_BASELINE_VERSION,
     ...(bootstrapConfig?{bootstrapRequirements:bootstrapConfig.bootstrapRequirements}:{}),
     ...(selectedRoots?{codeProjectPaths:selectedRoots}:{})};
   if(mode==='create'){

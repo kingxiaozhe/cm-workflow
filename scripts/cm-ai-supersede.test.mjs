@@ -844,10 +844,23 @@ function executionFor(f,content,verdict='blocked',qaResult=null){
   }
   return execution;
 }
-async function start(f,runId,content,options={},verdict='blocked',qaResult=null){
+async function start(f,runId,content,options={},verdict='blocked',qaResult=null,baselineVersion=3){
   const identity=identityFor(runId),definition={version:1,specsDir:f.specsDir,codeProject:f.codeProject,
     feature:f.feature,identity,scope:['a.mjs'],requirements:['requirements.md']};
-  const run=await openControlRun(definition,'create',executionFor(f,content,verdict,qaResult),options);
+  const execution=executionFor(f,content,verdict,qaResult);
+  let run=await openControlRun(definition,'create',execution,options);
+  if(baselineVersion===2){
+    run.close();
+    const stateFile=path.join(f.reviewsDir,'.execution',runId,'state.json');
+    const {revision,...snapshot}=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+    assert.deepEqual(snapshot.records.map(row=>row.payload.type),['init']);
+    snapshot.records[0].payload.baseline=captureReviewBaseline({root:f.codeProject,specsRoot:f.specsDir,identity,
+      scope:['a.mjs','AGENTS.md'],requirements:definition.requirements,
+      specification:{specsRoot:f.specsDir,feature:f.feature},version:2});
+    snapshot.records=rechain(snapshot.records);
+    fs.writeFileSync(stateFile,JSON.stringify({...snapshot,revision:digest(snapshot)})+'\n');
+    run=await openControlRun(definition,'resume',execution,options);
+  }
   try{return await run.host.handle(requestFor(identity));}finally{run.close();}
 }
 
@@ -953,7 +966,9 @@ test('supersession drift reason lists only the first 20 of 21 paths',async()=>{
 test('supersession refuses a symlink without reading its target outside the code root',async()=>{
   const f=runFixture();
   try{
-    assert.equal((await start(f,'run-link-old-0001','written\n')).state,'blocked');
+    assert.equal((await start(f,'run-link-old-0001','written\n',{},'blocked',null,2)).state,'blocked');
+    const original=JSON.parse(fs.readFileSync(path.join(f.reviewsDir,'.execution','run-link-old-0001','state.json'),'utf8'));
+    assert.equal(original.records[0].payload.baseline.version,2);
     fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
     const outside=path.join(f.root,'outside.mjs');
     fs.writeFileSync(outside,'private fixture\n');
@@ -965,6 +980,39 @@ test('supersession refuses a symlink without reading its target outside the code
     assert.equal(fs.readFileSync(outside,'utf8'),'private fixture\n');
     assert.equal(fs.existsSync(path.join(f.reviewsDir,'.execution','run-link-new-0002')),false);
   }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('v3 supersession detects an external symlink as drift and never opens its referent',async t=>{
+  const f=runFixture();
+  t.after(()=>fs.rmSync(f.root,{recursive:true,force:true}));
+  const old='run-link-v3-old',next='run-link-v3-new',file=path.join(f.codeProject,'link.mjs'),outside=path.join(f.root,'outside.mjs');
+  const stateFile=id=>path.join(f.reviewsDir,'.execution',id,'state.json');
+  assert.equal((await start(f,old,'written\n')).state,'blocked');
+  const before=fs.readFileSync(stateFile(old));
+  assert.equal(JSON.parse(before).records[0].payload.baseline.version,3);
+  fs.writeFileSync(path.join(f.codeProject,'a.mjs'),'old\n');
+  fs.writeFileSync(outside,'private fixture\n');fs.symlinkSync(outside,file);
+  const open=fs.openSync;
+  const guard=t.mock.method(fs,'openSync',(candidate,...args)=>{
+    assert.ok(![file,outside].includes(candidate),'neither the link nor its referent may be opened');
+    return open(candidate,...args);
+  });
+  await assert.rejects(start(f,next,'new\n',{supersedeReason:'restart'}),error=>{
+    assert.equal(error.code,'supersede_code_drift');
+    assert.match(error.reason,/link\.mjs.*手动还原/);
+    return true;
+  });
+  assert.equal(fs.existsSync(stateFile(next)),false);
+  assert.deepEqual(fs.readFileSync(stateFile(old)),before);
+  assert.equal((await start(f,next,'new\n',{supersedeReason:'restart',acceptSupersededCodeDrift:true})).state,'blocked');
+  const rows=JSON.parse(fs.readFileSync(stateFile(next),'utf8')).records;
+  assert.deepEqual(rows[0].payload.baseline.files.find(item=>item.path==='link.mjs'),{
+    path:'link.mjs',type:'symlink',target:outside,size:Buffer.byteLength(outside),
+    sha256:createHash('sha256').update('symlink\0').update(outside).digest('hex')});
+  assert.doesNotMatch(JSON.stringify(rows),/private fixture/);
+  assert.deepEqual(fs.readFileSync(stateFile(old)),before);
+  guard.mock.restore();
+  assert.equal(fs.readFileSync(outside,'utf8'),'private fixture\n');
 });
 
 test('host launch prints supersede code drift reason and stderr hint',async()=>{

@@ -779,7 +779,7 @@ node scripts/cm-ai-host.mjs serve --config /absolute/run.json --mode create \
 
 批次驾驶员同样直接审查；缺第二轮答案时为该任务加 `--hold-revision FEATURE/TASK`。旗标只缩小本次启动能力，不持久化、不进入指纹；审查批准时不受影响。
 
-`develop.json.edits` 的值可以是内容文件名（写入，已有文件保留权限，新文件 0644）、`{file,mode}`、`{mode}`（只改权限位）或 `{delete:true}`；`mode` 只接受 `"0755"`、`"0644"`，改名为删旧写新；同时是 requirements 的 scope 路径不能删除，启动前拒绝，当前会话仍删除时停在可重试的 `blocked/develop_requirement_missing`（范围外改动仍先按 `unknown/out_of_scope` 处理）。运行存档单条记录上限为 4 MiB（`JOURNAL_PAYLOAD_LIMIT`）。开发检查点的内联预算为单条记录上限（默认 4 MiB）与 1 MiB 取较小值后减去为有界审查与完成记录推出的预留，最低为 0 字节；不支持材料归档的运行（批量、并行、bootstrap 等）按含 base64 审查包的完整检查点核算此预算；支持归档的运行若同一审查包已有归档则直接引用，并要求完整检查点减去审查包大小再加 512 字节后不超过单条记录上限减去预留；若尚未归档且完整检查点装得进内联预算则内联；否则仅在完整检查点加 1 KiB 仍不超过单条记录上限、且引用后的估算大小也符合上述引用预算时首次归档。审查结果除 examinedPaths 外以 12 KiB JSON 为界（超出按固定规则截断 finding 文字与 summary、必要时从末尾省略 finding，先 P3 且至少保留一条阻断 finding，verdict 不变），完成检查点最多重复它 13 次，预留 = 13 ×（examinedPaths + 12 KiB）+ 2 ×（已有回执 + 调用 + Learning 回写）+ 96 KiB；驾驶员用宿主同一套审查包、handoff、Learning 证据与 AGENTS.md 回写代码在启动前核算（含 handoff）并拒绝超限交付，任务基线装不进一条记录时驾驶员与宿主都在建存档前拒绝；当前会话仍交付超限改动时停在可重试的 `blocked/develop_package_too_large`，不再以 `unknown/store_failure` 结束，旧 journal 格式与回放不变。开发阶段阻断在第 2 轮重做本轮交付时不再对照第 1 轮审查包（该交付本就改了代码），第 2 轮 `develop_checks_not_passed` 等因此可在原轮次重试；审查中漂移的 `review_package_changed` 仍须先恢复到已审代码。审查包的文件记录本就含 `mode`，删除为 `after:null`，审查提示会说明二者；包验证逐字段比较，事后改权限同样判为漂移，旧基线和旧包格式不变。驾驶员启动前按审查包上限拒绝单文件超过 1 MiB、材料（与审查包快照同一选取：scope、requirements 与树中全部 AGENTS.md）合计超过 2 MiB 或 256 个文件及与基线完全相同的交付，报错带路径与上限；当前会话若仍交付空改动，运行停在可重试的 `blocked/develop_empty_changes`，旧 `unknown/empty_changes` 历史按原样回放。新建运行要求 `runId` 满足运行日志规则（8–128 个字符），已有运行恢复不变。
+`develop.json.edits` 的值可以是内容文件名（写入，已有文件保留权限，新文件 0644）、`{file,mode}`、`{mode}`（只改权限位）、`{delete:true}`（删除文件或软链），以及新运行的 `{symlink:"相对目标"}`（新建或改指）。`mode` 只接受 `"0755"`、`"0644"`，改名为删旧写新；同时是 requirements 的 scope 路径不能删除，启动前拒绝，当前会话仍删除时停在可重试的 `blocked/develop_requirement_missing`（范围外改动仍先按 `unknown/out_of_scope` 处理）。运行存档单条记录上限为 4 MiB（`JOURNAL_PAYLOAD_LIMIT`）。开发检查点的内联预算为单条记录上限（默认 4 MiB）与 1 MiB 取较小值后减去为有界审查与完成记录推出的预留，最低为 0 字节；不支持材料归档的运行（批量、并行、bootstrap 等）按含 base64 审查包的完整检查点核算此预算；支持归档的运行若同一审查包已有归档则直接引用，并要求完整检查点减去审查包大小再加 512 字节后不超过单条记录上限减去预留；若尚未归档且完整检查点装得进内联预算则内联；否则仅在完整检查点加 1 KiB 仍不超过单条记录上限、且引用后的估算大小也符合上述引用预算时首次归档。审查结果除 examinedPaths 外以 12 KiB JSON 为界（超出按固定规则截断 finding 文字与 summary、必要时从末尾省略 finding，先 P3 且至少保留一条阻断 finding，verdict 不变），完成检查点最多重复它 13 次，预留 = 13 ×（examinedPaths + 12 KiB）+ 2 ×（已有回执 + 调用 + Learning 回写）+ 96 KiB；驾驶员用宿主同一套审查包、handoff、Learning 证据与 AGENTS.md 回写代码在启动前核算（含 handoff）并拒绝超限交付，任务基线装不进一条记录时驾驶员与宿主都在建存档前拒绝；当前会话仍交付超限改动时停在可重试的 `blocked/develop_package_too_large`，不再以 `unknown/store_failure` 结束，旧 journal 格式与回放不变。开发阶段阻断在第 2 轮重做本轮交付时不再对照第 1 轮审查包（该交付本就改了代码），第 2 轮 `develop_checks_not_passed` 等因此可在原轮次重试；审查中漂移的 `review_package_changed` 仍须先恢复到已审代码。审查包的普通文件记录含 `mode`，删除为 `after:null`，审查提示会说明二者；包验证逐字段比较，事后改权限同样判为漂移，旧基线和旧包格式不变。驾驶员启动前按审查包上限拒绝单文件超过 1 MiB、材料（与审查包快照同一选取：scope、requirements 与树中全部 AGENTS.md）合计超过 2 MiB 或 256 个文件及与基线完全相同的交付，报错带路径与上限；当前会话若仍交付空改动，运行停在可重试的 `blocked/develop_empty_changes`，旧 `unknown/empty_changes` 历史按原样回放。新建运行要求 `runId` 满足运行日志规则（8–128 个字符），已有运行恢复不变。
 
 review.json 含 `{model, disabledSkills, preflight}`，另有可选 `timeoutMs`；disabledSkills 是本机探测实际发现并
 禁用的 Skill 路径，preflight 沿原配置指纹/模型/stdin 合同。探测输出不包含原始诊断、
@@ -881,6 +881,11 @@ JSON 配置本身不能证明执行过；未配置的安全检查不会被执行
 沿用fixed fix编辑器的scope/expected摘要、完整UTF-8/null删除；可选 `mode`（"0755"/"0644"）只用于写入的文件，新文件为 0644。
 通道上限默认 64KiB，可用 `--input-limit` 调到 4 MiB，输入行与工具应答共用该上限；宿主不得先写或运行命令。
 驾驶员只提交严格 UTF-8 内容，二进制文件启动前拒绝。cm-fix 的受保护提案仍不接受 `mode`。
+新运行的 develop 请求带有 `allowSymlinks:true` 时，可提交 `{path,beforeSha256,symlink}`。
+链接目标使用相对于链接所在目录的路径，最多 1024 字节，且须在所属代码根内指向已存在的普通文件或目录。
+目标路径不得穿过其他软链，也不得进入实际规格目录、`.git` 或 `.reviews`。
+受保护应答用 `content:null` 和链接原指纹删除软链，预检和落盘都拒绝经软链父目录写入。
+审查材料保存链接指向的原文，已有链接即使悬空或指向项目外也能进入新运行的基线。
 失败仍返回原 `{status,code}`，blocked值必须空edits。实际编辑及配置中的检查由native Codex sandbox执行，
 不使用宿主check回报。Claude作者/Review身份保持Claude，所需本机Codex sandbox不是Codex模型调用。
 文档同步并入最后任务的同次编辑提案，QA命令受保护，语义/浏览器/文档核验仍按原宿主合同执行。

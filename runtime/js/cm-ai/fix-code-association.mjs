@@ -53,7 +53,7 @@ export function firstReviewAt(records,identity){
 const known=tasksPath=>typeof tasksPath==='string';
 export const sameDeliveryTask=(a,b)=>a.taskId===b.taskId
   &&(!known(a.tasksPath)||!known(b.tasksPath)||a.tasksPath===b.tasksPath);
-const key=file=>file===null||file===undefined?null:`${file.sha256}:${file.mode}`;
+const key=file=>file===null||file===undefined?null:`${file.sha256}:${file.mode??null}`;
 const applyMeta=(state,pkg)=>{for(const change of pkg.changes){
   if(change.after===null)state.delete(change.path);else state.set(change.path,inventoryFile(change.after));}};
 // Every qualifying later package, in durable review order (ties: run id, then
@@ -143,7 +143,7 @@ export function composeFixCode({baseline,parentPackage,fixPackages,steps=[]}){
   const resolved=steps.map(step=>{const pkg=readReviewPackage(step.pkg);
     need(pkg.packageDigest===step.packageDigest&&pkg.rootDigest===base.rootDigest,'fix_association_unverified');return {...step,pkg};});
   // Metadata-only transitions cannot rebuild legacy full-content inventories.
-  need(!resolved.length||base.version===2,'fix_before_mismatch');
+  need(!resolved.length||base.version>=2,'fix_before_mismatch');
   const files=[...composeState(chain,resolved).values()].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
   // Use the same canonical inventory for live association and journal replay.
   return {base,parent,fixes,files:base.version===1?files:files.map(inventoryFile)};
@@ -175,7 +175,7 @@ export function explainCompletedDelivery({root,baseline,parentPackage,deliveries
     explainReviewedDrift({root,baseline:base,composed:[...expected.values()],ownScope:parent.scope,deliveries,after});
     return;
   }catch(error){
-    if(error.code!=='fix_current_code_unexplained'||base.version!==2||!Number.isSafeInteger(since)
+    if(error.code!=='fix_current_code_unexplained'||base.version===1||!Number.isSafeInteger(since)
       ||!Number.isSafeInteger(after)||since>=after)throw error;
     // A sibling can finish while the parent is being revised. Prove the whole
     // bounded interval from the unchanged baseline, in durable review order;
@@ -205,7 +205,7 @@ export function explainCompletedDelivery({root,baseline,parentPackage,deliveries
 // or rootDigest to make it pass ordinary delivery discovery.
 export function explainIntegratedDelivery({root,baseline,parentPackage,deliveries,after,since,sources,documents,snapshots}){
   const base=readReviewBaseline(baseline),parent=readReviewPackage(parentPackage);
-  need(base.version===2&&parent.baseIdentity===base.baselineDigest&&parent.rootDigest===base.rootDigest
+  need(base.version>=2&&parent.baseIdentity===base.baselineDigest&&parent.rootDigest===base.rootDigest
     &&digest(parent.identity)===digest(base.identity),'fix_parent_binding_mismatch');
   if(base.specification)verifySpecificationMaterial(base);
   const expected=new Map(base.files.map(file=>[file.path,inventoryFile(file)]));
@@ -275,7 +275,7 @@ export function inspectFixCodeAssociation({root,specsRoot,baseline,parentPackage
     // Without a way to read other runs' deliveries the historical exact match holds.
     need(typeof deliveries==='function','fix_current_code_unexplained');
     // Metadata-only transitions cannot rebuild legacy full-content inventories.
-    need(!rest.length||base.version===2,'fix_before_mismatch');
+    need(!rest.length||base.version>=2,'fix_before_mismatch');
     const state=new Map(files.map(file=>[file.path,inventoryFile(file)]));
     for(const entry of rest)applyDelivery(state,entry.pkg,tolerated);
     compareCurrent({root,base,state,tolerated});

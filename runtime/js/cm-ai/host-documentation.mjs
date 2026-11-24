@@ -1,6 +1,7 @@
 // Documentation is part of the existing durable developer invocation, before
 // checks/Learning/handoff/review. This adapter grants no additional file scope.
 import {isFinalCmAiTask} from './cm-ai-admission.mjs';
+import {SYMLINK_BASELINE_VERSION} from './symlink-material.mjs';
 import {captureReviewBaseline} from './review-package.mjs';
 import {digest,json,shape,need,terminalFor,boundedReason} from './effect-contract.mjs';
 
@@ -30,9 +31,9 @@ export function splitDocumentationState(files,paths){
 }
 // Without a runner snapshot (no journal: nothing is recorded or retried), the
 // adapter keeps its own scope-only capture for the out-of-scope check.
-export function captureDocumentationState({root,specsRoot,identity,paths,requirements,specification=null}){
+export function captureDocumentationState({root,specsRoot,identity,paths,requirements,specification=null,allowSymlinks=false}){
   const baseline=captureReviewBaseline({root,specsRoot,identity,scope:paths,requirements,
-    ...(specification?{specification}:{})});
+    ...(allowSymlinks?{version:SYMLINK_BASELINE_VERSION}:{}),...(specification?{specification}:{})});
   return splitDocumentationState(baseline.files,paths);
 }
 // Paths outside the documentation paths that differ between two captures.
@@ -62,7 +63,7 @@ export function withHostDocumentation({developer,documentationSync,specsDir,code
       need(redo===undefined,'documentation_redo_mismatch');return response;
     }
     const capture=()=>typeof control.documentationSnapshot==='function'?control.documentationSnapshot(paths):captureDocumentationState({root:codeProject,specsRoot:specsDir,identity:request.identity,paths,
-      requirements:request.payload.requirements.map(file=>file.path),
+      requirements:request.payload.requirements.map(file=>file.path),allowSymlinks:control.allowSymlinks===true,
       specification:request.payload.specification?{specsRoot:specsDir,feature}:null});
     const before=capture();
     // The runner journals the developer answer and this start before the sync

@@ -143,7 +143,9 @@ test('split-root SwiftUI Claude control run creates a baseline beside Git-ignore
 test('host create reports the offending unsupported file on stderr before transport starts',async()=>{
   const f=fixture(),lines=[];
   try{
-    fs.symlinkSync('missing',path.join(f.codeProject,'alien.swift'));
+    // A hard link stays unsupported; a symlink is recorded since symlink baselines (v3).
+    fs.writeFileSync(path.join(f.codeProject,'zeta.swift'),'');
+    fs.linkSync(path.join(f.codeProject,'zeta.swift'),path.join(f.codeProject,'alien.swift'));
     const exit=await hostMain(launchArgs(f),{input:{},output:{write(){}},error:{write(value){lines.push(value);}}});
     assert.equal(exit,1);
     assert.match(lines.join(''),/\[host\] unsupported_file: alien\.swift/);

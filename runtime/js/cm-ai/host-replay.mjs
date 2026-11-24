@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createHostCheck} from './host-check.mjs';
+import {assertRealParents,readSymlinkRecord} from './symlink-material.mjs';
 import {need,json,validIdentity} from './effect-contract.mjs';
 
 const FILE_LIMIT=1024*1024,ENTRY_LIMIT=200000,EVIDENCE_LIMIT=1500;
@@ -16,15 +17,20 @@ export const HOST_REPLAY_EVIDENCE_PREFIX='cm-host-replay-v1: ';
 // Scope file state before development: {bytes,mode}, or null for a file that does
 // not exist yet. Anything else (a link, a directory, an oversized file) makes the
 // snapshot unavailable, never a partial one.
-export function captureBeforeSnapshot(codeProject,scope){
+export function captureBeforeSnapshot(codeProject,scope,{allowSymlinks=false}={}){
   const files=new Map();
   for(const file of scope){
+    if(allowSymlinks){
+      try{files.set(file,currentState(codeProject,file,true));}
+      catch(error){return {unavailable:error.code==='replay_scope_link'?'snapshot_unsupported_file':'snapshot_unreadable'};}
+      continue;
+    }
     const target=path.join(codeProject,file);let stat;
     try{stat=fs.lstatSync(target);}catch(error){if(error.code==='ENOENT'){files.set(file,null);continue;}return {unavailable:'snapshot_unreadable'};}
     if(!stat.isFile()||stat.size>FILE_LIMIT)return {unavailable:'snapshot_unsupported_file'};
     files.set(file,{bytes:fs.readFileSync(target),mode:stat.mode&0o777});
   }
-  return {files};
+  return {files,...(allowSymlinks?{allowSymlinks}:{})};
 }
 
 const summarize=rows=>{
@@ -65,7 +71,7 @@ function copyProject(codeProject,specsDir){
       if(real===null||!copied(codeProject,specsDir,real))continue;
       if(realOrNull(path.join(project,link))!==path.join(project,path.relative(codeProject,real)))throw replayError('replay_internal_link');
     }
-    return {root,project};
+    return {root,project,links};
   }catch(error){removeCopy(root);throw error;}
 }
 function removeCopy(root){
@@ -74,7 +80,7 @@ function removeCopy(root){
 }
 // Writes only through real directories inside the copy: every ancestor and the
 // target itself are checked without following links, before any byte is written.
-function place(project,file,state){
+function place(project,file,state,allowSymlinks){
   let current=project;
   for(const part of file.split('/').slice(0,-1)){
     current=path.join(current,part);let stat;
@@ -84,14 +90,17 @@ function place(project,file,state){
   const target=path.join(project,file);
   let existing=null;
   try{existing=fs.lstatSync(target);}catch(error){if(error.code!=='ENOENT')throw error;}
-  if(existing!==null){if(!existing.isFile())throw replayError('replay_scope_link');fs.unlinkSync(target);}
+  if(existing!==null){if(!existing.isFile()&&!(allowSymlinks&&existing.isSymbolicLink()))throw replayError('replay_scope_link');fs.unlinkSync(target);}
   if(state===null)return;
+  if(allowSymlinks&&Object.hasOwn(state,'symlink')){fs.symlinkSync(state.symlink,target);return;}
   const fd=fs.openSync(target,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,state.mode);
   try{fs.writeFileSync(fd,state.bytes);fs.fchmodSync(fd,state.mode);}finally{fs.closeSync(fd);}
 }
-const currentState=(codeProject,file)=>{
+const currentState=(codeProject,file,allowSymlinks)=>{
+  if(allowSymlinks)assertRealParents(codeProject,file);
   const target=path.join(codeProject,file);let stat;
   try{stat=fs.lstatSync(target);}catch(error){if(error.code==='ENOENT')return null;throw error;}
+  if(allowSymlinks&&stat.isSymbolicLink())return {symlink:readSymlinkRecord(codeProject,file).target};
   if(!stat.isFile()||stat.size>FILE_LIMIT)throw replayError('replay_scope_link');
   return {bytes:fs.readFileSync(target),mode:stat.mode&0o777};
 };
@@ -106,6 +115,7 @@ export async function replayDelivery({codeProject,specsDir,snapshot,scope,tests,
   // A path added to the scope after the snapshot has no known prior state.
   if(!scope.every(file=>snapshot.files.has(file)))return skipped('snapshot_scope_changed');
   if(!Array.isArray(checkCommands)||checkCommands.length===0)return skipped('no_host_checks');
+  const allowSymlinks=snapshot.allowSymlinks===true;
   const testFiles=(tests??[]).filter(file=>scope.includes(file));
   const commands=checkCommands.map(({id,command})=>({id,command}));
   // A command that names the project by absolute path would run the real project, not the copy.
@@ -115,7 +125,17 @@ export async function replayDelivery({codeProject,specsDir,snapshot,scope,tests,
     need(!signal?.aborted,'cancelled');
     const copy=copyProject(codeProject,specsDir);
     try{
-      for(const file of scope)place(copy.project,file,states(file));
+      for(const file of scope)place(copy.project,file,states(file),allowSymlinks);
+      if(allowSymlinks)for(const link of new Set([...copy.links,...scope])){
+        const target=path.join(copy.project,link);
+        let stat;
+        try{stat=fs.lstatSync(target);}catch(error){if(error.code==='ENOENT'||error.code==='ENOTDIR')continue;throw error;}
+        if(!stat.isSymbolicLink())continue;
+        const literal=path.resolve(path.dirname(target),readSymlinkRecord(copy.project,link).target);
+        const resolved=realOrNull(target);
+        const pointsBack=p=>p!==null&&(p===codeProject||p.startsWith(codeProject+path.sep));
+        if(pointsBack(literal)||pointsBack(resolved))throw replayError('replay_internal_link');
+      }
       // The same sandbox as the task's own checks: the copy is the workspace, specs stay read-only.
       return summarize(await makeCheck({cwd:copy.project,commands,timeoutMs,specsRoot:specsDir})({identity},{signal}));
     }finally{removeCopy(copy.root);}
@@ -125,7 +145,7 @@ export async function replayDelivery({codeProject,specsDir,snapshot,scope,tests,
     const baseline=await run(before);
     let red={skipped:'no_test_files'};
     if(testFiles.length){
-      const delivered=new Map(testFiles.map(file=>[file,currentState(codeProject,file)]));
+      const delivered=new Map(testFiles.map(file=>[file,currentState(codeProject,file,allowSymlinks)]));
       red=await run(file=>delivered.has(file)?delivered.get(file):before(file));
     }
     return {version:1,status:'replayed',baseline,red,green};

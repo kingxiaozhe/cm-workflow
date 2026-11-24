@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // JavaScript authority for CM handoff, review, and read-only completion-plan gates.
+import {assertRealParents,readSymlinkRecord,resolveSymlinkTarget} from '../runtime/js/cm-ai/symlink-material.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -179,7 +180,25 @@ function resolveStrictFalse(target){
   }
 }
 
-export function implementationSha256(projectRoot,changedFiles){
+const implementationDigest=()=>createHash('sha256').update('cm-implementation-v1\0');
+const pathBytesOrder=(left,right)=>Buffer.compare(Buffer.from(left),Buffer.from(right));
+function bindImplementationEntry(digest,file,type,content){
+  digest.update(file).update('\0').update(type).update('\0');
+  if(type!=='missing')digest.update(String(content.length)).update('\0').update(content).update('\0');
+}
+
+// The already validated package contains the same bytes the gate hashes on disk.
+export function projectedImplementationSha256(changes){
+  const digest=implementationDigest();
+  for(const {path:file,after} of [...changes].sort((a,b)=>pathBytesOrder(a.path,b.path))){
+    const type=after?.type??'missing';
+    const content=after===null?null:after.type==='symlink'?Buffer.from(after.target):Buffer.from(after.contentBase64,'base64');
+    bindImplementationEntry(digest,file,type,content);
+  }
+  return digest.digest('hex');
+}
+
+export function implementationSha256(projectRoot,changedFiles,{allowSymlinks=false}={}){
   requireString(projectRoot,'project root');
   const expanded=projectRoot==='~'?os.homedir()
     :projectRoot.startsWith(`~${path.sep}`)?path.join(os.homedir(),projectRoot.slice(2)):projectRoot;
@@ -191,11 +210,22 @@ export function implementationSha256(projectRoot,changedFiles){
     if(error instanceof GateError)throw error;
     throw new GateError(`project root is not an existing directory: ${path.resolve(expanded)}`);
   }
-  const digest=createHash('sha256');digest.update('cm-implementation-v1\0');
-  const files=[...requireRelativeFiles(changedFiles)].sort((left,right)=>Buffer.compare(Buffer.from(left),Buffer.from(right)));
+  const digest=implementationDigest();
+  const files=[...requireRelativeFiles(changedFiles)].sort(pathBytesOrder);
   for(const relative of files){
     const unresolved=path.join(root,...relative.split('/'));
-    try{if(fs.lstatSync(unresolved).isSymbolicLink())throw new GateError(`changed file must not be a symlink: ${relative}`);}
+    if(allowSymlinks){
+      try{assertRealParents(root,relative);}catch{throw new GateError(`changed file has an unsupported parent: ${relative}`);}
+    }
+    try{
+      if(fs.lstatSync(unresolved).isSymbolicLink()){
+        if(!allowSymlinks)throw new GateError(`changed file must not be a symlink: ${relative}`);
+        const file=readSymlinkRecord(root,relative);
+        try{resolveSymlinkTarget(root,relative,file.target);}
+        catch{throw new GateError(`changed file resolves outside project root: ${relative}`);}
+        bindImplementationEntry(digest,relative,'symlink',Buffer.from(file.target));continue;
+      }
+    }
     catch(error){if(error?.code!=='ENOENT')throw error;}
     let candidate;
     try{candidate=resolveStrictFalse(unresolved);}
@@ -203,28 +233,27 @@ export function implementationSha256(projectRoot,changedFiles){
     const fromRoot=path.relative(root,candidate);
     if(fromRoot===''||fromRoot==='..'||fromRoot.startsWith(`..${path.sep}`)||path.isAbsolute(fromRoot))
       throw new GateError(`changed file resolves outside project root: ${relative}`);
-    digest.update(relative);digest.update('\0');
     let info;
     try{info=fs.statSync(candidate);}catch(error){
-      if(error?.code==='ENOENT'){digest.update('missing\0');continue;}
+      if(error?.code==='ENOENT'){bindImplementationEntry(digest,relative,'missing',null);continue;}
       throw new GateError(`cannot read changed file ${relative}: ${error.message}`);
     }
     if(!info.isFile())throw new GateError(`changed file must be a regular file or deletion: ${relative}`);
     let content;
     try{content=fs.readFileSync(candidate);}catch(error){throw new GateError(`cannot read changed file ${relative}: ${error.message}`);}
-    digest.update('file\0');digest.update(String(content.length));digest.update('\0');digest.update(content);digest.update('\0');
+    bindImplementationEntry(digest,relative,'file',content);
   }
   return digest.digest('hex');
 }
 
-function verifyImplementationBinding(payload,{projectRoot=null,allowLegacyUnbound=false}={}){
+function verifyImplementationBinding(payload,{projectRoot=null,allowLegacyUnbound=false,allowSymlinks=false}={}){
   const expected=payload.implementation_sha256;
   if(expected===undefined){
     if(allowLegacyUnbound)return false;
     throw new GateError('handoff is not content-bound; legacy recovery requires --allow-legacy-unbound');
   }
   if(projectRoot===null||projectRoot===undefined)throw new GateError('content-bound handoff requires --project-root');
-  if(implementationSha256(projectRoot,payload.changed_files)!==expected)
+  if(implementationSha256(projectRoot,payload.changed_files,{allowSymlinks})!==expected)
     throw new GateError('implementation content changed after handoff');
   return true;
 }
@@ -1019,7 +1048,7 @@ function checkCorrection(selectors,stage){
 
 // Only compatibility CLI entries opt into inventory validation. Library callers
 // retain the original content-binding contract and exact result shape.
-export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null,inventory=null}){
+export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null,inventory=null,allowSymlinks=false}){
   if(correction!==null)return checkCorrection({handoff,reviewsDir,feature,task,projectRoot,correction,allowLegacyUnbound,inventory},'n4');
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
@@ -1028,12 +1057,12 @@ export function checkN4({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   const attempt=payload.attempt;
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
   validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot);
-  const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound});
+  const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound,allowSymlinks});
   const inventoryResult=inventory==='required'?verifyInventory(payload,{projectRoot,reviewsDir,feature,task,allowLegacyUnbound}):{};
   return {gate:'n4',task,attempt,outcome:'ready_for_review',handoff_sha256:sha256(handoff),content_bound:contentBound,...inventoryResult};
 }
 
-export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null,inventory=null}){
+export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowLegacyUnbound=false,requireLearning=false,correction=null,inventory=null,allowSymlinks=false}){
   if(correction!==null)return checkCorrection({handoff,reviewsDir,feature,task,projectRoot,correction,allowLegacyUnbound,inventory},'n5');
   requireTaskId(task,'task');
   const payload=loadHandoff(handoff,{task});
@@ -1042,7 +1071,7 @@ export function checkN5({handoff,reviewsDir,feature,task,projectRoot=null,allowL
   const attempt=payload.attempt;
   requireExpectedHandoff(handoff,{reviewsDir,feature,task,attempt});
   validateAttemptChain(reviewsDir,feature,task,attempt,payload,projectRoot,'n5');
-  const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound});
+  const contentBound=verifyImplementationBinding(payload,{projectRoot,allowLegacyUnbound,allowSymlinks});
   const inventoryResult=inventory==='required'?verifyInventory(payload,{projectRoot,reviewsDir,feature,task,allowLegacyUnbound}):{};
   const review=reviewPath(reviewsDir,feature,task,attempt);
   const result=validateReview(review,{task,attempt,handoff,changedFiles:payload.changed_files});

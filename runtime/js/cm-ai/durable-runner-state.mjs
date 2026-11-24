@@ -1,3 +1,4 @@
+import {reviewPackageVersion} from './symlink-material.mjs';
 import {packageMaterialEligible,resolveCheckpointPackage} from './checkpoint-package-material.mjs';
 import {validateIntegrationRecord} from './reviewed-integration.mjs';
 import {readExecutionPolicy} from './execution-policy.mjs';
@@ -8,7 +9,7 @@ import {beforeFirstQaRound,qaRevisionFollows,readQaConfigRevision} from './qa-co
 import {readCloseoutPolicy} from './knowledge-closeout.mjs';
 // Host-only S3b2b journal grammar. Data validation grants no provider authority.
 import {digest,need,shape,id,text,hex,json,validIdentity,validTaskLearningInput,validCallTimeout,validBlockedReason,validFailureCode,requestFor,JOURNAL_REASON_LIMIT,boundedReason,JOURNAL_PAYLOAD_LIMIT} from './effect-contract.mjs';
-import {readReviewBaseline,readReviewPackage,reviewSpecsPath,reviewMaterialLimitReason} from './review-package.mjs';
+import {readReviewBaseline,readReviewPackage,reviewSpecsPath,reviewMaterialLimitReason,unchangedScopeRecord} from './review-package.mjs';
 import {reviewResult,reviewReceipt} from './review-runner.mjs';
 import {checkCompletion} from './gate-bridge.mjs';
 import path from 'node:path';
@@ -788,13 +789,13 @@ export function controlledState(state,event,outstanding,version=1,developmentRew
 function packageLink(pkg,original,attempt,checks) {
   const p=readReviewPackage(pkg),b=attemptBaseline(original,attempt);
   same(p.identity,b.identity);same(p.scope,b.scope);same(p.checks,checks);
-  need(p.baseIdentity===b.baselineDigest && p.rootDigest===b.rootDigest,'runner_package');
+  need(p.version===reviewPackageVersion(b)&&p.baseIdentity===b.baselineDigest && p.rootDigest===b.rootDigest,'runner_package');
   const files=new Map(b.files.map(f=>[f.path,f]));
   for(const c of p.changes){same(c.before,files.get(c.path)??null);if(c.after===null)files.delete(c.path);else files.set(c.path,c.after);}
   if(Object.hasOwn(p,'unchangedScope')){
     const changed=new Set(p.changes.map(c=>c.path));
     same(p.unchangedScope,b.scope.filter(path=>!changed.has(path)&&files.has(path))
-      .map(path=>b.scopeRevisionPaths?.includes(path)?files.get(path):({path,sha256:files.get(path).sha256})));
+      .map(path=>unchangedScopeRecord(b,files.get(path))));
   }
   same(p.specification??null,b.specification??null);
   same(p.requirements,b.requirements.map(path=>files.get(path)??null));

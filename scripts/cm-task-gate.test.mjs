@@ -60,6 +60,39 @@ ${body}
 `);
 }
 
+test('legacy task gate rejects link leaves and preserves an in-root linked parent',()=>fixture(root=>{
+  const reviews=path.join(root,'.reviews');fs.mkdirSync(reviews);
+  fs.mkdirSync(path.join(root,'src'));fs.writeFileSync(path.join(root,'src/example.ts'),'fixture');
+  fs.symlinkSync('src',path.join(root,'alias'));
+  fs.symlinkSync('src/example.ts',path.join(root,'link.ts'));
+  const handoff=path.join(reviews,'login-T-001-a1-handoff.json'),review=path.join(reviews,'login-T-001-r1.md');
+  const options={handoff,reviewsDir:reviews,feature:'login',task:'T-001',projectRoot:root};
+  const bind=(file,implementation)=>{
+    writeHandoff(handoff,{implementation});
+    const payload=JSON.parse(fs.readFileSync(handoff,'utf8'));payload.changed_files=[file];
+    fs.writeFileSync(handoff,JSON.stringify(payload));writeReview(review,{handoff});
+    fs.writeFileSync(review,fs.readFileSync(review,'utf8').replace('src/example.ts',file));
+  };
+  const parentHash=createHash('sha256')
+    .update(['cm-implementation-v1','alias/example.ts','file','7','fixture',''].join('\0')).digest('hex');
+  const linkHash=implementationSha256(root,['link.ts'],{allowSymlinks:true});
+  bind('link.ts',linkHash);
+  assert.throws(()=>checkN4(options),/changed file must not be a symlink: link\.ts/);
+  assert.throws(()=>checkN5(options),/changed file must not be a symlink: link\.ts/);
+  bind('alias/example.ts',parentHash);
+  assert.equal(checkN4(options).outcome,'ready_for_review');
+  assert.equal(checkN5(options).outcome,'approved');
+}));
+
+test('legacy implementation digest omits link support unless explicitly selected',()=>fixture(root=>{
+  fs.mkdirSync(path.join(root,'src'));fs.writeFileSync(path.join(root,'src/a.js'),'fixture');
+  fs.symlinkSync('src',path.join(root,'alias'));
+  fs.symlinkSync('src/a.js',path.join(root,'link.js'));
+  assert.throws(()=>implementationSha256(root,['link.js']),/changed file must not be a symlink: link\.js/);
+  assert.equal(implementationSha256(root,['alias/a.js']),
+    implementationSha256(root,['alias/a.js'],{allowSymlinks:false}));
+}));
+
 test('Skill Learning gate rejects missing or pending records and binds reviewed writeback',()=>fixture(root=>{
   const reviews=path.join(root,'.reviews');fs.mkdirSync(reviews);
   fs.mkdirSync(path.join(root,'src'));fs.writeFileSync(path.join(root,'src/example.ts'),'fixture');

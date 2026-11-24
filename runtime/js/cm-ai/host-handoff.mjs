@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
+import {SYMLINK_BASELINE_VERSION} from './symlink-material.mjs';
 import {createReviewPackage,verifyReviewPackage} from './review-package.mjs';
 import {supersedeWorkflowFile} from './review-evidence-file.mjs';
 import {implementationSha256,loadHandoff} from '../../../scripts/cm-task-gate.mjs';
@@ -26,7 +27,7 @@ function prepareHostHandoff(raw){
   const reviewPackage=createReviewPackage({root,baseline,checks});
   const changedFiles=reviewPackage.changes.map(change=>change.path);
   const {payload,bytes}=hostHandoffDocument({baseline,checks,reviewPackage,
-    implementationSha256:implementationSha256(root,changedFiles),evidence});
+    implementationSha256:implementationSha256(root,changedFiles,{allowSymlinks:baseline.version===SYMLINK_BASELINE_VERSION}),evidence});
   need(bytes.length<=256*1024,'limit_exceeded');
   return {root,baseline,checks,handoffPath,parent,reviewPackage,changedFiles,payload,bytes};
 }
@@ -116,7 +117,7 @@ export function createHostHandoff(raw){
     fs.writeFileSync(fd,bytes);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
     loadHandoff(temp,{task:baseline.identity.taskId,attempt:baseline.identity.attempt});
     verifyReviewPackage({root,baseline,checks,reviewPackage,expectedDigest:reviewPackage.packageDigest});
-    need(payload.implementation_sha256===implementationSha256(root,changedFiles),'snapshot_changed');
+    need(payload.implementation_sha256===implementationSha256(root,changedFiles,{allowSymlinks:baseline.version===SYMLINK_BASELINE_VERSION}),'snapshot_changed');
     // Atomic no-replace publication, unlike rename which could overwrite approval.
     publishHandoff(parent,handoffPath,temp,bytes,baseline.identity.attempt);
     fs.unlinkSync(temp);

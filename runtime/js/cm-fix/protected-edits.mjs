@@ -3,75 +3,96 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {createHostCheck} from '../cm-ai/host-check.mjs';
 import {validateDeveloperScope} from '../cm-ai/developer-adapter.mjs';
 import {json,need,shape} from '../cm-ai/effect-contract.mjs';
+import {assertDisjointEditPaths,assertRealParents,lstatOrMissing,readSymlinkRecord,resolveSymlinkTarget,validateProtectedEdit} from '../cm-ai/symlink-material.mjs';
 
-function snapshot(cwd,file){
-  let cursor=cwd;
-  for(const part of file.split('/')){
-    cursor=path.join(cursor,part);
-    try{need(!fs.lstatSync(cursor).isSymbolicLink(),'unsupported_path');}
-    catch(error){if(error.code==='ENOENT')break;throw error;}
+function snapshot(cwd,file,allowSymlinks){
+  assertRealParents(cwd,file);
+  const target=path.join(cwd,file),stat=lstatOrMissing(target);
+  if(stat===null)return null;
+  if(stat.isSymbolicLink()){
+    need(allowSymlinks,'unsupported_path');
+    return readSymlinkRecord(cwd,file);
   }
-  const target=path.join(cwd,file);
+  need(stat.isFile()&&stat.nlink===1&&stat.size<=1024*1024,'protected_edit_invalid');
+  const fd=fs.openSync(target,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
   try{
-    const stat=fs.lstatSync(target);need(stat.isFile()&&stat.nlink===1&&stat.size<=1024*1024,'protected_edit_invalid');
-    return createHash('sha256').update(fs.readFileSync(target)).digest('hex');
-  }catch(error){if(error.code==='ENOENT')return null;throw error;}
+    const opened=fs.fstatSync(fd);
+    need(stat.dev===opened.dev&&stat.ino===opened.ino&&opened.nlink===1,'protected_edit_stale');
+    return {type:'file',sha256:createHash('sha256').update(fs.readFileSync(fd)).digest('hex')};
+  }finally{fs.closeSync(fd);}
 }
 
 // Optional mode sets the permission bits of a written file (never of a deletion).
 const EDIT_MODES=new Map([['0644',0o644],['0755',0o755]]);
-export function applyProtectedEdits({cwd,scope,edits}){
+export function checkProtectedEdits({cwd,scope,edits,allowSymlinks=false,specsRoot=null}){
   validateDeveloperScope(scope);need(fs.realpathSync(cwd)===cwd,'unsupported_path');
   need(Array.isArray(edits)&&edits.length>0&&edits.length<=scope.length,'protected_edit_invalid');
-  const seen=new Set();
+  const seen=new Set(),removed=new Set(edits.filter(edit=>edit.content===null||Object.hasOwn(edit,'symlink')).map(edit=>edit.path));
+  const check=edit=>{
+    const before=snapshot(cwd,edit.path,allowSymlinks),link=Object.hasOwn(edit,'symlink');
+    need(before?.type!=='symlink'||link||edit.content===null,'unsupported_path');
+    need(edit.beforeSha256===(before?.sha256??null),'protected_edit_stale');
+    if(link)resolveSymlinkTarget(cwd,edit.path,edit.symlink,{specsRoot,
+      stat:file=>removed.has(file)?null:lstatOrMissing(path.join(cwd,file))});
+  };
   for(const edit of edits){
-    shape(edit,['path','beforeSha256','content',...(Object.hasOwn(edit,'mode')?['mode']:[])]);
-    need(!Object.hasOwn(edit,'mode')||edit.content!==null&&EDIT_MODES.has(edit.mode),'protected_edit_invalid');
+    validateProtectedEdit(edit,allowSymlinks);
     need(scope.includes(edit.path)&&!seen.has(edit.path),'out_of_scope');seen.add(edit.path);
-    need(edit.content===null||typeof edit.content==='string','protected_edit_invalid');
-    need(edit.content===null||Buffer.byteLength(edit.content)<=1024*1024,'limit_exceeded');
-    need(edit.beforeSha256===snapshot(cwd,edit.path),'protected_edit_stale');
-    need(edit.content!==null||edit.beforeSha256!==null,'protected_edit_invalid');
+    check(edit);
   }
+  if(allowSymlinks)assertDisjointEditPaths([...seen]);
+  return check;
+}
+
+export function applyProtectedEdits(options){
+  const {cwd,edits}=options,check=checkProtectedEdits(options);
   for(const edit of edits){
-    need(edit.beforeSha256===snapshot(cwd,edit.path),'protected_edit_stale');
+    check(edit);
     const target=path.join(cwd,edit.path);
-    if(edit.content===null)fs.unlinkSync(target);
-    else{
-      fs.mkdirSync(path.dirname(target),{recursive:true});
-      // O_NOFOLLOW avoids silently replacing a last-moment link target. A new
-      // file is ordinary source (0644); an existing one keeps its mode unless set.
-      const created=edit.beforeSha256===null;
-      const fd=fs.openSync(target,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW,0o644);
-      try{
-        fs.writeFileSync(fd,edit.content);
-        if(created||Object.hasOwn(edit,'mode'))fs.fchmodSync(fd,EDIT_MODES.get(edit.mode)??0o644);
-        fs.fsyncSync(fd);
-      }finally{fs.closeSync(fd);}
+    if(edit.content===null){fs.unlinkSync(target);continue;}
+    fs.mkdirSync(path.dirname(target),{recursive:true});
+    check(edit);
+    if(Object.hasOwn(edit,'symlink')){
+      if(edit.beforeSha256===null){fs.symlinkSync(edit.symlink,target);continue;}
+      const temporary=path.join(path.dirname(target),'.cm-link-'+randomUUID());
+      fs.symlinkSync(edit.symlink,temporary);
+      try{check(edit);fs.renameSync(temporary,target);}
+      finally{if(lstatOrMissing(temporary))fs.unlinkSync(temporary);}
+      continue;
     }
+    const created=edit.beforeSha256===null;
+    const flags=fs.constants.O_WRONLY|fs.constants.O_NOFOLLOW
+      |(created?fs.constants.O_CREAT|fs.constants.O_EXCL:fs.constants.O_TRUNC);
+    const fd=fs.openSync(target,flags,0o644);
+    try{
+      fs.writeFileSync(fd,edit.content);
+      if(created||Object.hasOwn(edit,'mode'))fs.fchmodSync(fd,EDIT_MODES.get(edit.mode)??0o644);
+      fs.fsyncSync(fd);
+    }finally{fs.closeSync(fd);}
   }
 }
 
-export function captureProtectedEdits(cwd,scope){
+export function captureProtectedEdits(cwd,scope,{allowSymlinks=false}={}){
   validateDeveloperScope(scope);
-  return Object.fromEntries(scope.map(file=>[file,snapshot(cwd,file)]));
+  return Object.fromEntries(scope.map(file=>[file,snapshot(cwd,file,allowSymlinks)?.sha256??null]));
 }
 
 // onApply (cm-ai protected development) journals the applying subprocess:
 // apply_spawning before the spawn, apply_started with its pid right after. A
 // journal failure kills the new group and fails the apply.
-export async function commitProtectedEdits({cwd,specsRoot,scope,edits,expected,identity,timeoutMs,signal,onApply=null}){
+export async function commitProtectedEdits({cwd,specsRoot,scope,edits,expected,identity,timeoutMs,signal,onApply=null,allowSymlinks=false}){
   need(Array.isArray(edits),'protected_edit_invalid');
   for(const edit of edits)need(Object.hasOwn(expected,edit.path)&&edit.beforeSha256===expected[edit.path],'protected_edit_stale');
   need(!signal.aborted,'cancelled');
   if(edits.length===0)return;
+  if(allowSymlinks)checkProtectedEdits({cwd,scope,edits,allowSymlinks,specsRoot});
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cm-fix-edits-')),file=path.join(dir,'edits.json');
   try{
-    fs.writeFileSync(file,JSON.stringify({cwd,scope,edits}),{mode:0o600,flag:'wx'});
+    fs.writeFileSync(file,JSON.stringify({cwd,scope,edits,allowSymlinks,specsRoot}),{mode:0o600,flag:'wx'});
     let journalFailed=false;
     onApply?.({phase:'apply_spawning'});
     const check=createHostCheck({cwd,specsRoot,timeoutMs,commands:[{id:'protected-edits',

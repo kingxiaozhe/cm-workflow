@@ -54,6 +54,7 @@
   "cm-ai-session-chain.test.mjs": 85,
   "cm-ai-spec-rebind.test.mjs": 41,
   "cm-ai-supersede.test.mjs": 119,
+  "cm-ai-symlink.test.mjs": 1,
   "cm-ai-verification-gate.test.mjs": 1,
   "cm-announce-hook.test.mjs": 1,
   "cm-blocked-reason.test.mjs": 3,
