@@ -127,8 +127,8 @@ test('late design response cannot erase an existing draft or reset self-check ro
   assert.equal(host.status().selfCheckRound,1);assert.deepEqual(host.status().draft,original);
   assert.equal(host.status().designDraft,null);
 });
-for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements','design-narrow'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
-  const promotes=['promote','saved-promote'].includes(mode),succeeds=['design-narrow','self-check-revision','saved','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'].includes(mode);
+for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements','design-narrow','split-correct-narrow'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const promotes=['promote','saved-promote'].includes(mode),succeeds=['design-narrow','split-correct-narrow','self-check-revision','saved','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'].includes(mode);
   const revisesSplit=mode.startsWith('split-');let splitPackage,pendingSplit,checks=0;
   let originalDigest,originalDecisions,narrowArtifacts;
   const dir=fixture(t);fs.mkdirSync(path.join(dir,'mirror'));
@@ -242,7 +242,7 @@ for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','
         send({requestId:'correct',operation:'correct_findings',stage:'design',feature:'1.guide'});
       }else if(message.requestId==='correct'){
         assert.equal(message.result.status,'correction_saved');
-        if(mode==='design-narrow'){
+        if(['design-narrow','split-correct-narrow'].includes(mode)){
           originalDecisions=message.result.decisions;originalDigest=message.result.packageDigest;
           send({requestId:'narrow1',operation:'narrow_review',stage:'design',feature:'1.guide',packageDigest:originalDigest,round:1,
             designSha256:sha(fs.readFileSync(path.join(dir,'1.guide/design.md'),'utf8')),reviewer:'codex-gpt-6.2-sol',
@@ -288,7 +288,7 @@ for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','
         }
         send({requestId:'split-findings',operation:'review_findings',stage:'split',feature:'1.guide',...(pendingSplit??{})});
       }else if(message.requestId==='split-findings'){
-        if(mode==='split-correct'||mode==='split-requirements'||mode.startsWith('split-failed')){
+        if(mode==='split-correct'||mode==='split-correct-narrow'||mode==='split-requirements'||mode.startsWith('split-failed')){
           send({requestId:'split-corrected',operation:'correct_findings',stage:'split',feature:'1.guide'});continue;
         }
         if(!revisesSplit)assert.deepEqual(message.result.findings,[]);

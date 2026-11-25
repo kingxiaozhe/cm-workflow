@@ -42,12 +42,13 @@ export function inspectAcceptedPrdDesign(specs,original,selection=null,{draftDig
     const review=inspectPrdFindings({specs,stage:'design',feature:feature.directory,pendingSplit});
     need(review.gate.outcome==='completed'&&review.verdict!=='blocked'
       &&review.draftDigest===original.draftDigest,'prd_design_disposition_required');
-    // A receipt written by any path still needs the recorded narrow review chain to have approved these bytes.
-    assertPrdNarrowDispositionReady({specs,feature:feature.directory});
     const receiptPath=review.evidence.replace(/-r1\.md$/,'-disposition.json');
     const receiptBytes=readCmInitSource(specs,receiptPath),receipt=JSON.parse(receiptBytes.toString('utf8'));
     need(receipt.artifacts.length===1&&receipt.artifacts[0].path===`${feature.directory}/design.md`,
       'prd_design_receipt_scope_invalid');
+    // A receipt written by any path still needs the recorded narrow review chain to have approved the receipt's bytes;
+    // a saved split correction may have changed design.md since, which the checks below bind separately.
+    assertPrdNarrowDispositionReady({specs,feature:feature.directory,pendingSplit,designSha256:receipt.artifacts[0].sha256});
     need(review.reviewedArtifacts.length===2,'prd_design_review_scope_invalid');
     const documents=feature.documents.map(doc=>{
       const relative=`${feature.directory}/${doc.path}`,bytes=readCmInitSource(specs,relative);
