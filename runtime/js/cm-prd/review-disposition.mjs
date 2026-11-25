@@ -11,6 +11,7 @@ import {inspectPrdDispositionPlan} from './disposition-plan.mjs';
 import {checkPrdDraftMechanics,inspectPrdContextCheck} from './self-check.mjs';
 import {prdTaskScopeOptions} from './task-scope-record.mjs';
 import {correctionCheckStore} from './correction-check.mjs';
+import {assertPrdNarrowDispositionReady} from './review-correction.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 
 export function recordPrdHostDisposition(input){return disposition(input);}
@@ -21,7 +22,11 @@ function disposition({specs,stage,feature,packageDigest,decisions,artifacts,writ
   const review=inspectPrdFindings({specs,stage,feature});
   need(review.packageDigest===packageDigest,'prd_disposition_package_changed');
   need(review.verdict!=='blocked','prd_disposition_review_blocked');
-  const plan=inspectPrdDispositionPlan(review,decisions,artifacts);
+  // Design only: a recorded narrow review chain must have approved the exact saved design first.
+  const narrow=stage==='design'?assertPrdNarrowDispositionReady({specs,feature}):{used:false};
+  const plan=inspectPrdDispositionPlan(review,decisions,artifacts,{alsoChanged:narrow.used?[narrow.designPath]:[]});
+  // Narrow rounds never reopen the original per-finding decisions: they must equal the archived ones.
+  if(narrow.used)need(digest(plan.decisions)===digest(narrow.originalDecisions),'prd_narrow_disposition_decisions_changed');
   ({decisions,artifacts}=plan);const {changed,unresolved}=plan;
   for(const item of artifacts){
     const bytes=readCmInitSource(specs,item.path);
@@ -60,6 +65,8 @@ function disposition({specs,stage,feature,packageDigest,decisions,artifacts,writ
   const gate=inspectPrdReview(args);
   need(gate.outcome==='completed'&&gate.disposition===disposition&&gate.package_sha256===packageDigest,
     'prd_disposition_write_unknown');
+  // The receipt writer reads the files again: bytes that changed since the check above are not what was reviewed.
+  for(const item of selected){const bytes=readCmInitSource(specs,item.path);need(bytes!==null&&sha(bytes)===item.sha256,'prd_disposition_write_unknown');}
   return json({status:'disposition_recorded',outcome:recorded.outcome,gate,decisions,artifacts,
     unresolvedFindings:review.findings.filter(item=>decisions.some(decision=>decision.id===item.id&&(failedCheck||decision.status==='escalated'))),
     next:failedCheck?'prepare_human_summary_with_failed_checks':unresolved?'include_unresolved_in_human_summary':stage==='design'?'continue_task_generation':'prepare_human_summary',

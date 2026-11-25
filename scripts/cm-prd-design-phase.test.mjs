@@ -127,10 +127,10 @@ test('late design response cannot erase an existing draft or reset self-check ro
   assert.equal(host.status().selfCheckRound,1);assert.deepEqual(host.status().draft,original);
   assert.equal(host.status().designDraft,null);
 });
-for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
-  const promotes=['promote','saved-promote'].includes(mode),succeeds=['self-check-revision','saved','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'].includes(mode);
+for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements','design-narrow'])test(`actual CLI disposed design to tasks: ${mode}`, {timeout:FIXTURE_TIMEOUT_MS},async t=>{
+  const promotes=['promote','saved-promote'].includes(mode),succeeds=['design-narrow','self-check-revision','saved','late-risk','promote','saved-promote','split-correct','split-manual','split-requirements','split-failed-design','split-failed-requirements'].includes(mode);
   const revisesSplit=mode.startsWith('split-');let splitPackage,pendingSplit,checks=0;
-  let originalDigest;
+  let originalDigest,originalDecisions,narrowArtifacts;
   const dir=fixture(t);fs.mkdirSync(path.join(dir,'mirror'));
   const child=spawn(process.execPath,[path.join(root,'scripts/cm-prd-host.mjs'),'serve',
     '--skill-dir',path.join(root,'skills/cm-prd'),'--project',dir,'--specs',dir,'--runtime','codex',
@@ -143,6 +143,13 @@ for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','
       const message=JSON.parse(line);
       if(message.requestId==='tasks'&&!succeeds){
         assert.ok(message.error);send({type:'host_close',sessionId});continue;
+      }
+      if(message.requestId==='dispose-too-early'){
+        // The corrected design has no recorded narrow review yet: the original gate refuses it.
+        assert.ok(message.error,JSON.stringify(message));
+        send({requestId:'narrow2',operation:'narrow_review',stage:'design',feature:'1.guide',packageDigest:originalDigest,round:2,
+          designSha256:sha(fs.readFileSync(path.join(dir,'1.guide/design.md'),'utf8')),reviewer:'codex-gpt-6.2-sol',
+          sessionId:'narrow-reviewer-2',independent:true,at:'2026-11-24T02:00:00.000Z',verdict:'approved',summary:'Narrow review 2',findings:[]});continue;
       }
       assert.equal(message.error,undefined,JSON.stringify(message));
       if(message.type==='host_ready'){sessionId=message.sessionId;send({requestId:'start',operation:'start',text:'Analyze'});}
@@ -175,6 +182,12 @@ for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','
           checks++;const draft=message.payload.draft;
           result={draftDigest:draft.draftDigest,features:draft.features.map(feature=>({directory:feature.directory,
             checks:draft.mechanicalSelfCheck.pending.map((id,i)=>({id,status:((mode==='self-check-revision'&&checks===1)||mode.startsWith('split-failed')&&checks===2)&&i===0?'failed':'passed',evidence:['Synthetic contextual check']}))}))};
+        }
+        else if(message.kind==='prd_correct'&&message.payload.review.narrowRound===1){
+          assert.deepEqual(message.payload.review.findings.map(item=>item.id),['N1']);
+          result={decisions:[{id:'N1',status:'applied',evidence:['Narrow fix'],changedPaths:['1.guide/design.md']}],
+            documents:message.payload.documents.map(item=>({path:item.path,content:item.path==='1.guide/design.md'?
+              '## 方案摘要\nCorrected architecture boundary after narrow review':item.content}))};
         }
         else if(message.kind==='prd_correct'){
           const correctionPath=['split-requirements','split-failed-requirements'].includes(mode)&&message.payload.review.stage==='split'?'1.guide/requirements.md':'1.guide/design.md';
@@ -229,8 +242,27 @@ for(const mode of ['self-check-revision','saved','rewrite','drift','late-risk','
         send({requestId:'correct',operation:'correct_findings',stage:'design',feature:'1.guide'});
       }else if(message.requestId==='correct'){
         assert.equal(message.result.status,'correction_saved');
+        if(mode==='design-narrow'){
+          originalDecisions=message.result.decisions;originalDigest=message.result.packageDigest;
+          send({requestId:'narrow1',operation:'narrow_review',stage:'design',feature:'1.guide',packageDigest:originalDigest,round:1,
+            designSha256:sha(fs.readFileSync(path.join(dir,'1.guide/design.md'),'utf8')),reviewer:'codex-gpt-6.2-sol',
+            sessionId:'narrow-reviewer',independent:true,at:'2026-11-24T01:00:00.000Z',verdict:'changes_requested',summary:'Narrow review',
+            findings:[{id:'N1',severity:'major',security:false,dataLoss:false,silentFailure:false,violatesWrittenRule:false,
+              scenario:'Boundary input leaves the design ambiguous',message:'Name the boundary'}]});continue;
+        }
         send({requestId:'dispose',operation:'review_disposition',stage:'design',feature:'1.guide',
           packageDigest:message.result.packageDigest,decisions:message.result.decisions,artifacts:message.result.artifacts});
+      }else if(message.requestId==='narrow1'){
+        assert.equal(message.result.phase.status,'awaiting_correction');
+        send({requestId:'correct2',operation:'correct_findings',stage:'design',feature:'1.guide'});
+      }else if(message.requestId==='correct2'){
+        assert.equal(message.result.status,'correction_saved');assert.equal(message.result.narrow,true);narrowArtifacts=message.result.artifacts;
+        send({requestId:'dispose-too-early',operation:'review_disposition',stage:'design',feature:'1.guide',
+          packageDigest:originalDigest,decisions:originalDecisions,artifacts:narrowArtifacts});
+      }else if(message.requestId==='narrow2'){
+        assert.equal(message.result.phase.status,'approved');
+        send({requestId:'dispose',operation:'review_disposition',stage:'design',feature:'1.guide',
+          packageDigest:originalDigest,decisions:originalDecisions,artifacts:narrowArtifacts});
       }else if(message.requestId==='dispose'){
         assert.equal(message.result.status,'disposition_recorded');assert.equal(message.result.gate.outcome,'completed');
         send({requestId:'tasks',operation:'advance',text:'Generate tasks from disposed design'});

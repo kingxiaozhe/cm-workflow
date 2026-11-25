@@ -4,6 +4,7 @@ import {inspectPrdSplitDesign} from './split-design.mjs';
 import {TextDecoder} from 'node:util';
 import {createHash} from 'node:crypto';
 import {inspectPrdFindings} from './review-findings.mjs';
+import {assertPrdNarrowDispositionReady} from './review-correction.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {prdFeatureInventory} from './draft.mjs';
 import {inspectPrdDesignRiskSelection,requireUnreviewedPrdDesign} from './design-risk.mjs';
@@ -41,6 +42,8 @@ export function inspectAcceptedPrdDesign(specs,original,selection=null,{draftDig
     const review=inspectPrdFindings({specs,stage:'design',feature:feature.directory,pendingSplit});
     need(review.gate.outcome==='completed'&&review.verdict!=='blocked'
       &&review.draftDigest===original.draftDigest,'prd_design_disposition_required');
+    // A receipt written by any path still needs the recorded narrow review chain to have approved these bytes.
+    assertPrdNarrowDispositionReady({specs,feature:feature.directory});
     const receiptPath=review.evidence.replace(/-r1\.md$/,'-disposition.json');
     const receiptBytes=readCmInitSource(specs,receiptPath),receipt=JSON.parse(receiptBytes.toString('utf8'));
     need(receipt.artifacts.length===1&&receipt.artifacts[0].path===`${feature.directory}/design.md`,

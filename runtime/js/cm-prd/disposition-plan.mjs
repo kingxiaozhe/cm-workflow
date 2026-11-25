@@ -1,6 +1,7 @@
 // Shared finding-to-artifact accounting for proposal and recorded disposition.
 import {need,shape,json} from '../cm-ai/effect-contract.mjs';
-export function inspectPrdDispositionPlan(review,rawDecisions,rawArtifacts){
+// alsoChanged: paths a recorded narrow review chain legitimately changed after the original decisions.
+export function inspectPrdDispositionPlan(review,rawDecisions,rawArtifacts,{alsoChanged=[]}={}){
   const decisions=json(rawDecisions,64*1024),artifacts=json(rawArtifacts,64*1024);
   need(Array.isArray(decisions)&&decisions.length===review.findings.length,'prd_disposition_coverage');
   const originals=new Map(review.reviewedArtifacts.map(item=>[item.path,item.sha256]));
@@ -27,7 +28,8 @@ export function inspectPrdDispositionPlan(review,rawDecisions,rawArtifacts){
     shape(item,['path','sha256']);
     need(originals.has(item.path)&&!seen.has(item.path)&&typeof item.sha256==='string'
       &&/^[0-9a-f]{64}$/.test(item.sha256),'prd_disposition_artifact_inventory');seen.add(item.path);
-    need((originals.get(item.path)!==item.sha256)===changed.has(item.path),'prd_disposition_unaccounted_change');
+    const differs=originals.get(item.path)!==item.sha256;
+    need(differs===changed.has(item.path)||(differs&&alsoChanged.includes(item.path)),'prd_disposition_unaccounted_change');
   }
   return {decisions,artifacts,changed,unresolved};
 }

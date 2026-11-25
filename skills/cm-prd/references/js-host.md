@@ -93,7 +93,7 @@ JS拥有日志、草稿保存、修订写入、自检轮次、审查记录、处
    每会话只登记一次；登记不授权review或审批，已有design尝试不能改列低风险，不能重启会话重置。
    再save_design保存整批需求和设计；仅signals任一为true的feature用final_review（stage:design）进入原9.5，
    final_review_package只准备包，不授权调用。模式须预先选定，不在开始后改换。
-   review_findings读取结果；有发现用correct_findings，再将其packageDigest/decisions/artifacts交review_disposition；
+   review_findings读取结果；有发现用correct_findings，再将其packageDigest/decisions/artifacts交review_disposition（修正后可选窄审，最多两轮，见下节「设计阶段的窄审轮次」；一旦记录窄审，须窄审通过才能处置，处置的decisions须与原修正档案一致）；
    无发现用原findings响应的packageDigest/reviewedArtifacts和空decisions写原处置回执。
    全部需审feature处置后advance共同生成任务；低风险须无design尝试且保存正文未变，不补空审查回执。
    保留当前整批设计与编号，再advance原自检，通过后save_draft，继续步骤3。
@@ -123,6 +123,21 @@ JS 在 checkpoint 的 `selfCheckRevision` 记录原失败及其摘要、轮次�
 摘要风险信息逐 feature 自动注明原因、文件、轮次及“拆分审查已审、未另做设计审查”，说明本身不阻断。
 未使用此路径的运行不产生新字段或档案，旧 checkpoint 仍可恢复。
 
+### 设计阶段的窄审轮次（修正后再审，最多两轮）
+
+仅 design 阶段，仅新运行；在途运行、split 阶段不变。原 `correct_findings` 保存修正后，同一 packageDigest 下可记录窄审轮次：
+`narrow_review {stage:"design",feature,packageDigest,round,designSha256,reviewer,sessionId,independent:true,at,verdict,summary,findings}`
+（需 `--allow-review-write` 与 `--host-context`）。`narrow_status {stage,feature}` 只读状态。
+
+- 轮次链：原修正档案 → 窄审1 → 修正1 → 窄审2；每轮记录是 `.reviews/prd-<feature>-design-narrow-review-rN.json`（私有、不可覆盖），修正档案是 `...-narrow-correction-rN.md`。
+- 每条 finding 带 `severity`(blocker|major|minor) 和 security/dataLoss/silentFailure/violatesWrittenRule 四个是否题，阻断项必须写 `scenario`；任一四项为 true 或等级非 minor 即阻断。verdict 与阻断项必须一致（approved 不得含阻断，changes_requested 至少一条）。
+- `designSha256` 必须等于磁盘上 design.md 当前字节；独立模式下 reviewer 不得是 self-degraded，sessionId 不得等于 `--host-context` 作者，也不得等于已登记过降级轮的会话；这些是来源声明，不证明真实独立。
+- 审查模型不可用时的降级留痕：`narrow_review` 可带 `reviewer:"self-degraded"`、`independent:false`、`degradedReason`（非空）、`sessionId` 须等于 `--host-context`（作者自己复查）。降级轮占用轮次、记录里标 degraded；有阻断的降级轮照常驱动修正；**降级的 approved 不放行**，状态进入 `awaiting_user_decision`（`reason:degraded_review_only`），处置与旧入口 record 均拒绝，由用户决定。只有独立审查的 approved 才放行。
+- 窄审有阻断 → 再调 `correct_findings`，宿主以该轮 findings 向 `prd_correct` 要提案（`review.narrowRound`），逐项 applied/escalated + 证据，只准改 design.md，存档后写入；没有对应审查记录的修正一律拒绝（`prd_narrow_review_required`），修正后须再记下一轮审查才能继续。
+- 轮次上限 2：第 3 轮报 `prd_narrow_round_limit`。第 2 轮仍有阻断 → 状态 `awaiting_user_decision`（`narrow_review` 返回 `userDecisionRequired:true`），修正、再审、`review_disposition` 全部拒绝，宿主不提供自动放行入口，由用户决定后续。
+- 窄审通过（approved，非阻断项进 `backlog` 随结果返回）后才能 `review_disposition`；一旦存在窄审记录，未通过时处置报 `prd_narrow_review_pending`。原一次独立审查、处置回执、自检与审批位不变；从未记录窄审时行为与旧版一致。
+- 修正中断（档案已写、design.md 未替换）再调 `correct_findings` 即从档案续写，不重新生成。
+
 ## 恢复与退出
 
 status只读查询；只有用户明确取消才cancel，断连不等于取消。结束发送`{type:"host_close",sessionId:"原值"}`并保留结果。
@@ -133,7 +148,7 @@ status只读查询；只有用户明确取消才cancel，断连不等于取消�
 
 ### 拆分审查要求补正需求或设计
 
-设计阶段回执不改写。拆分审查已经返回且尚未处置时，可在同一 feature 的原发现中列明 requirements.md 或 design.md 改动，
+设计阶段回执不改写（设计阶段的窄审轮次见上文，split 不适用：它已有强制的原 10.5 自检，且改动含任务文件，本次未扩展）。拆分审查已经返回且尚未处置时，可在同一 feature 的原发现中列明 requirements.md 或 design.md 改动，
 由 correct_findings 归档并保存；随后直接 review_disposition，内置原 10.5 自检。补正保存有中断仍用
 inspect_correction / resume_correction，只认归档的原字节或提案字节，不接受第三种内容。
 
