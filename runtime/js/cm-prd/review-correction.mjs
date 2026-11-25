@@ -222,7 +222,7 @@ export function recordPrdNarrowReviewHost({specs,feature,packageDigest,input,aut
   const after=narrowFound({specs,feature}),row=after.state.rounds.at(-1);
   const blocking=row.review.findings.filter(item=>item.severity!=='minor'||['security','dataLoss','silentFailure','violatesWrittenRule'].some(flag=>item[flag]));
   return json({...narrowPublicState(after.state),status:'narrow_review_recorded',round:row.round,verdict:row.review.verdict,
-    reviewDigest:row.reviewDigest,backlog:row.review.findings.filter(item=>!blocking.includes(item)).map(item=>({id:item.id,message:item.message}))});
+    reviewDigest:row.reviewDigest,degradedReview:row.review.reviewer==='self-degraded',backlog:row.review.findings.filter(item=>!blocking.includes(item)).map(item=>({id:item.id,message:item.message}))});
 }
 // Original disposition gate: once a narrow round exists the design must have been approved by it.
 export function assertPrdNarrowDispositionReady({specs,feature}){

@@ -131,7 +131,8 @@ JS 在 checkpoint 的 `selfCheckRevision` 记录原失败及其摘要、轮次�
 
 - 轮次链：原修正档案 → 窄审1 → 修正1 → 窄审2；每轮记录是 `.reviews/prd-<feature>-design-narrow-review-rN.json`（私有、不可覆盖），修正档案是 `...-narrow-correction-rN.md`。
 - 每条 finding 带 `severity`(blocker|major|minor) 和 security/dataLoss/silentFailure/violatesWrittenRule 四个是否题，阻断项必须写 `scenario`；任一四项为 true 或等级非 minor 即阻断。verdict 与阻断项必须一致（approved 不得含阻断，changes_requested 至少一条）。
-- `designSha256` 必须等于磁盘上 design.md 当前字节；reviewer 不得是 self-degraded，sessionId 不得等于 `--host-context` 作者；这些是来源声明，不证明真实独立。
+- `designSha256` 必须等于磁盘上 design.md 当前字节；独立模式下 reviewer 不得是 self-degraded，sessionId 不得等于 `--host-context` 作者，也不得等于已登记过降级轮的会话；这些是来源声明，不证明真实独立。
+- 审查模型不可用时的降级留痕：`narrow_review` 可带 `reviewer:"self-degraded"`、`independent:false`、`degradedReason`（非空）、`sessionId` 须等于 `--host-context`（作者自己复查）。降级轮占用轮次、记录里标 degraded；有阻断的降级轮照常驱动修正；**降级的 approved 不放行**，状态进入 `awaiting_user_decision`（`reason:degraded_review_only`），处置与旧入口 record 均拒绝，由用户决定。只有独立审查的 approved 才放行。
 - 窄审有阻断 → 再调 `correct_findings`，宿主以该轮 findings 向 `prd_correct` 要提案（`review.narrowRound`），逐项 applied/escalated + 证据，只准改 design.md，存档后写入；没有对应审查记录的修正一律拒绝（`prd_narrow_review_required`），修正后须再记下一轮审查才能继续。
 - 轮次上限 2：第 3 轮报 `prd_narrow_round_limit`。第 2 轮仍有阻断 → 状态 `awaiting_user_decision`（`narrow_review` 返回 `userDecisionRequired:true`），修正、再审、`review_disposition` 全部拒绝，宿主不提供自动放行入口，由用户决定后续。
 - 窄审通过（approved，非阻断项进 `backlog` 随结果返回）后才能 `review_disposition`；一旦存在窄审记录，未通过时处置报 `prd_narrow_review_pending`。原一次独立审查、处置回执、自检与审批位不变；从未记录窄审时行为与旧版一致。

@@ -72,10 +72,14 @@ function validateFindings(findings){
 }
 
 function validateReviewRecord(value,{feature,packageDigest,round,priorDigest,designSha}){
-  shape(value,REVIEW_KEYS);
+  const degraded=value?.reviewer==='self-degraded';
+  shape(value,degraded?[...REVIEW_KEYS,'degradedReason']:REVIEW_KEYS);
   need(value.version===1&&value.kind==='prd_design_narrow_review'&&value.feature===feature&&value.packageDigest===packageDigest
     &&value.round===round&&value.priorDigest===priorDigest&&value.designSha256===designSha,'prd_narrow_record_invalid');
-  need(typeof value.reviewer==='string'&&value.reviewer.trim()&&value.reviewer!=='self-degraded'&&value.independent===true,
+  // A degraded round (the review model was unavailable, the author model reviewed) is evidence only: it declares
+  // itself, carries the reason, and can never be the approving round (see inspectPrdNarrowState).
+  need(typeof value.reviewer==='string'&&value.reviewer.trim()&&(degraded?value.independent===false
+    &&typeof value.degradedReason==='string'&&value.degradedReason.trim()&&value.degradedReason.length<=1000:value.independent===true),
     'prd_narrow_reviewer_not_independent');
   id(value.sessionId);
   need(typeof value.at==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value.at)&&!Number.isNaN(Date.parse(value.at)),'prd_narrow_record_invalid');
@@ -95,7 +99,11 @@ export function inspectPrdNarrowState({specs,feature,packageDigest,base,currentD
     if(review===null){need(correction===null,'prd_narrow_record_invalid');phase={status:'awaiting_review',round};break;}
     validateReviewRecord(review,{feature,packageDigest,round,priorDigest:prior,designSha:tip});
     const row={round,review,reviewDigest:digest(review),correction:null};rounds.push(row);
-    if(review.verdict==='approved'){need(correction===null,'prd_narrow_record_invalid');phase={status:'approved',round};break;}
+    if(review.verdict==='approved'){
+      need(correction===null,'prd_narrow_record_invalid');
+      // Only an independent approval releases the design; a degraded one stops for the user.
+      phase=review.reviewer==='self-degraded'?{status:'awaiting_user_decision',round,reason:'degraded_review_only'}:{status:'approved',round};break;
+    }
     if(round===PRD_NARROW_MAX_ROUNDS){
       need(correction===null,'prd_narrow_record_invalid');phase={status:'awaiting_user_decision',round};break;
     }
@@ -148,7 +156,8 @@ export function narrowPublicState(state){
     phase:state.phase,designSha256:state.currentDesignSha256,
     rounds:state.rounds.map(({round,review,reviewDigest,correction})=>({round,verdict:review.verdict,reviewer:review.reviewer,
       sessionId:review.sessionId,reviewDigest,findingCount:review.findings.length,
-      blockingCount:review.findings.filter(isBlockingNarrowFinding).length,corrected:correction!==null})),
+      blockingCount:review.findings.filter(isBlockingNarrowFinding).length,corrected:correction!==null,
+      degraded:review.reviewer==='self-degraded'})),
     next:nextByPhase[state.phase.status],userDecisionRequired:state.phase.status==='awaiting_user_decision',
     autoReleaseAllowed:false,completionAuthorized:false};
 }
@@ -158,7 +167,8 @@ export function narrowPublicState(state){
 export function recordPrdNarrowReview({specs,feature,packageDigest,state,input,authorContextId,originalAuthorContextId,writeEnabled}){
   need(writeEnabled===true,'prd_narrow_not_enabled');
   need(typeof authorContextId==='string','prd_review_host_context_required');
-  shape(input,['round','designSha256','reviewer','sessionId','independent','at','verdict','summary','findings']);
+  const degraded=input?.reviewer==='self-degraded';
+  shape(input,['round','designSha256','reviewer','sessionId','independent','at','verdict','summary','findings',...(degraded?['degradedReason']:[])]);
   need(Number.isInteger(input.round)&&input.round>=1,'prd_narrow_round_invalid');
   need(input.round<=PRD_NARROW_MAX_ROUNDS,'prd_narrow_round_limit');
   const status=state.phase.status;
@@ -166,10 +176,14 @@ export function recordPrdNarrowReview({specs,feature,packageDigest,state,input,a
   need(status!=='approved','prd_narrow_already_approved');
   need(status==='awaiting_review'&&state.phase.round===input.round,'prd_narrow_round_out_of_order');
   need(input.designSha256===state.currentDesignSha256,'prd_narrow_design_changed');
-  need(input.sessionId!==authorContextId&&input.sessionId!==originalAuthorContextId,'prd_narrow_reviewer_not_independent');
+  // Degraded: the author context itself reviews, so it must declare exactly that context.
+  need(degraded?input.sessionId===authorContextId:input.sessionId!==authorContextId&&input.sessionId!==originalAuthorContextId,'prd_narrow_reviewer_not_independent');
+  // A context that already signed a degraded (author-model) round can never later sign an independent one, whatever host resumed.
+  need(degraded||!state.rounds.some(row=>row.review.reviewer==='self-degraded'&&row.review.sessionId===input.sessionId),
+    'prd_narrow_reviewer_not_independent');
   const value=validateReviewRecord({version:1,kind:'prd_design_narrow_review',feature,packageDigest,round:input.round,
     priorDigest:state.priorDigest,designSha256:input.designSha256,reviewer:input.reviewer,sessionId:input.sessionId,
-    independent:input.independent,at:input.at,verdict:input.verdict,summary:input.summary,findings:input.findings},
+    independent:input.independent,...(degraded?{degradedReason:input.degradedReason}:{}),at:input.at,verdict:input.verdict,summary:input.summary,findings:input.findings},
     {feature,packageDigest,round:input.round,priorDigest:state.priorDigest,designSha:state.currentDesignSha256});
   const bytes=Buffer.from(JSON.stringify(value)+'\n');
   // The reader accepts at most 128 KiB; never write a record the host cannot read back.

@@ -136,7 +136,7 @@ test('review records need independence, grading, scenario and the exact reviewed
   const args={verdict:'changes_requested',findings:[finding('N1')]};
   assert.throws(()=>narrowReview(ctx,1,{...args,session:AUTHOR}),/prd_narrow_reviewer_not_independent/);
   assert.throws(()=>narrowReview(ctx,1,{...args,session:'resumed-host',author:'resumed-host'}),/prd_narrow_reviewer_not_independent/);
-  assert.throws(()=>narrowReview(ctx,1,{...args,reviewer:'self-degraded'}),/prd_narrow_reviewer_not_independent/);
+  assert.throws(()=>narrowReview(ctx,1,{...args,reviewer:'self-degraded'}),/invalid_input|prd_narrow_reviewer_not_independent/);
   assert.throws(()=>narrowReview(ctx,1,{...args,independent:false}),/prd_narrow_reviewer_not_independent/);
   assert.throws(()=>narrowReview(ctx,1,{...args,design:'b'.repeat(64)}),/prd_narrow_design_changed/);
   assert.throws(()=>narrowReview(ctx,1,{...args,packageDigest:'c'.repeat(64)}),/prd_narrow_package_changed/);
@@ -327,4 +327,55 @@ test('a user edit of requirements.md blocks the narrow correction before anythin
   assert.equal(fs.existsSync(path.join(ctx.specs,'.reviews/prd-guide-design-narrow-correction-r1.md')),false);
   fs.writeFileSync(requirements,original,{mode:0o600});
   assert.equal((await narrowCorrection(ctx)).status,'correction_saved');
+});
+
+// Degraded round: the review model was unavailable and the author model reviewed. Evidence only, never releases.
+const degradedReview=(ctx,round,{verdict,findings,reason='review model unavailable',session=AUTHOR,independent=false,design=designSha(ctx)})=>
+  recordPrdNarrowReviewHost({specs:ctx.specs,feature:FEATURE,packageDigest:ctx.packageDigest,authorContextId:AUTHOR,writeEnabled:true,
+    input:{round,designSha256:design,reviewer:'self-degraded',sessionId:session,independent,degradedReason:reason,at:'2026-11-24T03:00:00.000Z',
+      verdict,summary:'Degraded narrow review',findings}});
+test('a degraded approval is recorded but cannot release: it stops for the user',async t=>{
+  const ctx=fixture(t);await originalCorrection(ctx);
+  const recorded=degradedReview(ctx,1,{verdict:'approved',findings:[]});
+  assert.equal(recorded.degradedReview,true);assert.equal(recorded.phase.status,'awaiting_user_decision');
+  assert.equal(recorded.phase.reason,'degraded_review_only');assert.equal(recorded.userDecisionRequired,true);
+  assert.equal(recorded.rounds[0].degraded,true);
+  assert.throws(()=>disposition(ctx),/prd_narrow_awaiting_user_decision/);
+  assert.throws(()=>recordPrdReview({stage:'design',feature:'guide',evidence:path.join(ctx.specs,'.reviews/prd-guide-design-r1.md'),
+    receipt:path.join(ctx.specs,'.reviews/prd-guide-design-disposition.json'),disposition:'applied',finding_count:1,unresolved_count:0,
+    artifact:[path.join(ctx.specs,FEATURE,'design.md')]}),/prd_narrow_review_pending/);
+  assert.throws(()=>approved(ctx,2),/prd_narrow_awaiting_user_decision/);
+  await assert.rejects(narrowCorrection(ctx),/prd_narrow_awaiting_user_decision/);
+});
+test('a degraded round with findings still drives a correction, and an independent approval then releases',async t=>{
+  const ctx=fixture(t);await originalCorrection(ctx);
+  assert.equal(degradedReview(ctx,1,{verdict:'changes_requested',findings:[finding('N1')]}).phase.status,'awaiting_correction');
+  await narrowCorrection(ctx);
+  assert.equal(approved(ctx,2).phase.status,'approved');
+  assert.equal(disposition(ctx).status,'disposition_recorded');
+  assert.equal(state(ctx).rounds[0].degraded,true);assert.equal(state(ctx).rounds[1].degraded,false);
+});
+test('degraded rounds count toward the two-round limit and need a reason, the author context and no independence claim',async t=>{
+  const ctx=fixture(t);await originalCorrection(ctx);
+  assert.throws(()=>degradedReview(ctx,1,{verdict:'approved',findings:[],reason:' '}),/prd_narrow_reviewer_not_independent/);
+  assert.throws(()=>degradedReview(ctx,1,{verdict:'approved',findings:[],session:'someone-else'}),/prd_narrow_reviewer_not_independent/);
+  assert.throws(()=>degradedReview(ctx,1,{verdict:'approved',findings:[],independent:true}),/prd_narrow_reviewer_not_independent/);
+  // An independent claim cannot carry a degraded reason.
+  assert.throws(()=>recordPrdNarrowReviewHost({specs:ctx.specs,feature:FEATURE,packageDigest:ctx.packageDigest,authorContextId:AUTHOR,
+    writeEnabled:true,input:{round:1,designSha256:designSha(ctx),reviewer:'codex',sessionId:'r',independent:true,degradedReason:'x',
+      at:'2026-11-24T03:00:00.000Z',verdict:'approved',summary:'s',findings:[]}}));
+  degradedReview(ctx,1,{verdict:'changes_requested',findings:[finding('N1')]});await narrowCorrection(ctx);
+  assert.equal(degradedReview(ctx,2,{verdict:'changes_requested',findings:[finding('N2')]}).phase.status,'awaiting_user_decision');
+  assert.throws(()=>degradedReview(ctx,3,{verdict:'approved',findings:[]}),/prd_narrow_round_limit/);
+});
+
+test('a context that signed a degraded round cannot sign an independent one after a host change',async t=>{
+  const ctx=fixture(t);await originalCorrection(ctx);
+  // Another host (B) resumed and acted as the author for the degraded first round.
+  recordPrdNarrowReviewHost({specs:ctx.specs,feature:FEATURE,packageDigest:ctx.packageDigest,authorContextId:'host-b',writeEnabled:true,
+    input:{round:1,designSha256:designSha(ctx),reviewer:'self-degraded',sessionId:'host-b',independent:false,degradedReason:'review model unavailable',
+      at:'2026-11-24T03:00:00.000Z',verdict:'changes_requested',summary:'Degraded',findings:[finding('N1')]}});
+  await narrowCorrection(ctx);
+  assert.throws(()=>narrowReview(ctx,2,{verdict:'approved',findings:[],session:'host-b',author:'host-c'}),/prd_narrow_reviewer_not_independent/);
+  assert.equal(narrowReview(ctx,2,{verdict:'approved',findings:[],session:'real-reviewer',author:'host-c'}).phase.status,'approved');
 });

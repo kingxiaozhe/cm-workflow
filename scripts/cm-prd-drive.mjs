@@ -111,7 +111,7 @@ function load(){
   const request=plan.request??{};
   exact(request,['text','stage','feature','mode','packageDigest','decisions','artifacts','summaryDigest','draftDigest',
     'risks','reason','proposalDigest','approved','allowUserCaseChanges','resolution','successorSpecs','successorSessionId','binding',
-    'round','designSha256','reviewer','sessionId','independent','at','verdict','summary','findings'], 'PLAN.request');
+    'round','designSha256','reviewer','sessionId','independent','at','verdict','summary','findings','degradedReason'], 'PLAN.request');
   const needed={repair_review_response:['binding'],start:['text'],advance:['text'],plan_design:['text'],promote_design:['draftDigest','reason'],
     select_design_reviews:['draftDigest','risks'],final_review_package:['stage','feature'],final_review:['stage','feature','mode'],
     review_findings:['stage','feature'],review_disposition:['stage','feature','packageDigest','decisions','artifacts'],

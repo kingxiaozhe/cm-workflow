@@ -146,7 +146,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
       const request=json(raw);
       need(['start','advance','plan_design','promote_design','select_design_reviews','status','cancel','final_review_package','final_review','review_findings','review_disposition','save_draft','save_design','correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction','prepare_revision','decision','narrow_review','narrow_status'].includes(request.operation),'host_operation_invalid');
       shape(request,['requestId','operation',...(['start','advance','plan_design'].includes(request.operation)?['text']:
-        request.operation==='narrow_review'?['stage','feature','packageDigest','round','designSha256','reviewer','sessionId','independent','at','verdict','summary','findings']:
+        request.operation==='narrow_review'?['stage','feature','packageDigest','round','designSha256','reviewer','sessionId','independent','at','verdict','summary','findings',...(Object.hasOwn(request,'degradedReason')?['degradedReason']:[])]:
         ['final_review_package','review_findings','correct_findings','inspect_correction','resume_correction','narrow_status'].includes(request.operation)?['stage','feature',...(request.operation==='review_findings'&&Object.hasOwn(request,'packageDigest')?['packageDigest','decisions','artifacts']:[])]:
           request.operation==='review_disposition'?['stage','feature','packageDigest','decisions','artifacts']:
           request.operation==='publish_summary'?['summaryDigest']:request.operation==='select_design_reviews'?['draftDigest','risks']:
