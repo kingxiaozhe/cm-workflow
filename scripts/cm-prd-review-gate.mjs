@@ -8,6 +8,7 @@ import {TextDecoder} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {acceptsPrdSplitDesign} from '../runtime/js/cm-prd/split-design.mjs';
 import {inspectPrdFailedCorrection} from '../runtime/js/cm-prd/failed-correction.mjs';
+import {assertNarrowReceiptAllowed} from '../runtime/js/cm-prd/review-correction.mjs';
 import {normalizeRuntimeMarks,normalizeRuntimeMarkBytes} from './cm-spec-manifest.mjs';
 import {APPROVED_SPEC_FILES} from '../runtime/js/cm-ai/spec-amendment.mjs';
 import {tagDiagnosticReason} from '../runtime/js/cm-ai/diagnostic-reason.mjs';
@@ -307,6 +308,8 @@ export function recordPrdReview(args){
   }
   const {evidence,receipt}=paths(args),base={stage:args.stage,feature:args.feature};evidenceHeader(evidence);
   if(stat(receipt)){loadReceipt(receipt,args,evidence);return {...base,outcome:'already_recorded'};}
+  if(args.stage==='design')assertNarrowReceiptAllowed({specs:resolve(path.dirname(path.dirname(receipt))),slug:args.feature,
+    findingCount:args.finding_count,unresolvedCount:args.unresolved_count});
   const root=resolve(path.dirname(path.dirname(receipt))),seen=new Set();
   need(Array.isArray(args.artifact)&&args.artifact.length>0,'artifact required','prd_review_artifact_required');
   const artifacts=args.artifact.map(raw=>{

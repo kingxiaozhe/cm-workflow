@@ -14,7 +14,7 @@ import {runPrdHostReview,validatePrdReviewMode} from '../runtime/js/cm-prd/revie
 import {inspectPrdFindings} from '../runtime/js/cm-prd/review-findings.mjs';
 import {createPrdDispositionOwner} from '../runtime/js/cm-prd/review-disposition.mjs';
 import {savePrdDraft,savePrdDesign,savePrdPromotedDraft} from '../runtime/js/cm-prd/draft-save.mjs';
-import {createPrdCorrectionOwner,inspectPrdCorrectionRecovery,resumePrdCorrection} from '../runtime/js/cm-prd/review-correction.mjs';
+import {createPrdCorrectionOwner,inspectPrdCorrectionRecovery,resumePrdCorrection,prdNarrowChainStarted,inspectPrdNarrowReview,recordPrdNarrowReviewHost} from '../runtime/js/cm-prd/review-correction.mjs';
 import {createPrdSummaryOwner,publishPrdAwaitingReview} from '../runtime/js/cm-prd/summary.mjs';
 import {currentAcceptancePreview} from '../runtime/js/cm-prd/acceptance-preview.mjs';
 import {createHostToolBridge} from '../runtime/js/cm-ai/host-tool-bridge.mjs';
@@ -144,9 +144,10 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         ({callId,requestDigest,kind,status:result===undefined?'unknown':'recorded'}))}:null});
     const handle=async raw=>{
       const request=json(raw);
-      need(['start','advance','plan_design','promote_design','select_design_reviews','status','cancel','final_review_package','final_review','review_findings','review_disposition','save_draft','save_design','correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction','prepare_revision','decision'].includes(request.operation),'host_operation_invalid');
+      need(['start','advance','plan_design','promote_design','select_design_reviews','status','cancel','final_review_package','final_review','review_findings','review_disposition','save_draft','save_design','correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction','prepare_revision','decision','narrow_review','narrow_status'].includes(request.operation),'host_operation_invalid');
       shape(request,['requestId','operation',...(['start','advance','plan_design'].includes(request.operation)?['text']:
-        ['final_review_package','review_findings','correct_findings','inspect_correction','resume_correction'].includes(request.operation)?['stage','feature',...(request.operation==='review_findings'&&Object.hasOwn(request,'packageDigest')?['packageDigest','decisions','artifacts']:[])]:
+        request.operation==='narrow_review'?['stage','feature','packageDigest','round','designSha256','reviewer','sessionId','independent','at','verdict','summary','findings']:
+        ['final_review_package','review_findings','correct_findings','inspect_correction','resume_correction','narrow_status'].includes(request.operation)?['stage','feature',...(request.operation==='review_findings'&&Object.hasOwn(request,'packageDigest')?['packageDigest','decisions','artifacts']:[])]:
           request.operation==='review_disposition'?['stage','feature','packageDigest','decisions','artifacts']:
           request.operation==='publish_summary'?['summaryDigest']:request.operation==='select_design_reviews'?['draftDigest','risks']:
           request.operation==='promote_design'?['draftDigest','reason']:request.operation==='prepare_revision'?['reason']:
@@ -213,8 +214,17 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
         selfCheckRules:session.selfCheckRules()});
       if(request.operation==='save_design')return savePrdDesign({specs:admission.specs,
         writeEnabled:specWriteEnabled,getDraft:()=>analysis.currentDesignForSave()});
+      if(['narrow_review','narrow_status'].includes(request.operation)){
+        need(request.stage==='design','prd_narrow_stage_invalid');
+        if(request.operation==='narrow_status')return inspectPrdNarrowReview({specs:admission.specs,feature:request.feature});
+        need(reviewEnabled,'prd_review_not_enabled');
+        const {operation:_operation,requestId:_requestId,stage:_stage,feature:_feature,packageDigest:_packageDigest,...fields}=request;
+        return recordPrdNarrowReviewHost({specs:admission.specs,feature:request.feature,packageDigest:request.packageDigest,input:fields,
+          authorContextId,writeEnabled:reviewEnabled});
+      }
       if(request.operation==='correct_findings'){
-        if(replaying&&fs.existsSync(path.join(admission.specs,`.reviews/prd-${request.feature.replace(/^\d+\./,'')}-${request.stage}-correction.md`)))
+        if(replaying&&fs.existsSync(path.join(admission.specs,`.reviews/prd-${request.feature.replace(/^\d+\./,'')}-${request.stage}-correction.md`))
+          &&!(request.stage==='design'&&prdNarrowChainStarted({specs:admission.specs,feature:request.feature})))
           return resumePrdCorrection({specs:admission.specs,stage:request.stage,feature:request.feature,writeEnabled:specWriteEnabled&&reviewEnabled},reviewController.signal);
         return correct({specs:admission.specs,stage:request.stage,feature:request.feature,writeEnabled:specWriteEnabled&&reviewEnabled},reviewController.signal);
       }
@@ -257,7 +267,7 @@ export async function main(argv=process.argv.slice(2),{input=process.stdin,outpu
     const phaseFor=request=>{
       const stage=change?.status().stage??analysis?.status().stage;
       if(request.operation==='final_review')return request.stage==='design'?['prd-design-review','design_review']:['prd-spec-review','spec_review'];
-      if(['review_disposition','correct_findings'].includes(request.operation))return request.stage==='design'?['prd-design-review','design_review']:['prd-spec-review','spec_review'];
+      if(['review_disposition','correct_findings','narrow_review'].includes(request.operation))return request.stage==='design'?['prd-design-review','design_review']:['prd-spec-review','spec_review'];
       if(['save_draft','decision'].includes(request.operation)&&change)return ['prd-spec-validation','spec_validation'];
       if(!['start','advance','plan_design'].includes(request.operation))return null;
       if(['ready','awaiting_user'].includes(stage))return ['prd-requirements','requirements_analysis'];

@@ -191,6 +191,8 @@ callId/requestDigest必须绑定active中的未知调用，evidence不能为空�
 
 prd_correct先写`.reviews/prd-<feature>-<stage>-correction.md`存档再替换规格。中断后`inspect_correction`按存档逐文件比对：matches_correction（已是修正稿）、needs_correction（仍是原文，`resume_correction`续写）、conflict（两者都不是）。有conflict时inspect返回`status:correction_recovery_conflict`，每个冲突文件带currentSha256/originalSha256/correctedSha256和中文guidance；`resume_correction`以`prd_correction_recovery_conflict`阻断（blocked可见），不覆盖、不把半写结果当新交付。
 
+设计阶段原修正已保存后，`correct_findings` 不再返回 `correction_recovery_required`：改走窄审轮次（`narrow_review` / `narrow_status`，最多两轮，见 `js-host.md`「设计阶段的窄审轮次」）；原修正写入未完成时仍走本节 `inspect_correction` / `resume_correction`。窄审修正中断则重调 `correct_findings` 从 `...-narrow-correction-rN.md` 续写，不改 split 恢复。
+
 ### 可见的会话阻断
 
 宿主返回`{status:'blocked',reason:<code>,recovery:<当前recovery>,completionAuthorized:false}`，调用方先读reason与recovery，再选择原输出恢复、显式放弃或取消。

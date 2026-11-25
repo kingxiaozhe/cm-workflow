@@ -175,6 +175,7 @@
   "cm-prd-host.test.mjs": 26,
   "cm-prd-inputs-replaced.test.mjs": 5,
   "cm-prd-materials.test.mjs": 1,
+  "cm-prd-narrow-review.test.mjs": 1,
   "cm-prd-review-claim.test.mjs": 1,
   "cm-prd-review-disposition.test.mjs": 5,
   "cm-prd-review-gate.test.mjs": 1,

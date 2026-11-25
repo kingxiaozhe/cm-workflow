@@ -47,6 +47,7 @@ import {inspectPrdSummaryEvidence} from '../runtime/js/cm-prd/summary.mjs';
 import {prdDesignRiskSignals} from '../runtime/js/cm-prd/design-risk.mjs';
 import {reviewResultForPaths} from '../runtime/js/cm-ai/review-runner.mjs';
 import {stderr,stop,readJson,loadPlanFile,requireFields,preflightAnswers,driveHost} from '../runtime/js/cm-ai/drive-core.mjs';
+import {assertPrdNarrowDispositionReady,narrowCorrectionReview} from '../runtime/js/cm-prd/review-correction.mjs';
 import {driverLiveEvidence} from '../runtime/js/cm-ai/live-evidence.mjs';
 
 // PLAN.liveEvidence: fresh current-session evidence; see docs/live-evidence-drivers.md.
@@ -54,7 +55,7 @@ const HOST=fileURLToPath(new URL('./cm-prd-host.mjs',import.meta.url));
 const SKILL=fileURLToPath(new URL('../skills/cm-prd',import.meta.url));
 const KNOWN=new Set(['repair_review_response','start','advance','plan_design','promote_design','select_design_reviews','status','cancel',
   'final_review_package','final_review','review_findings','review_disposition','save_draft','save_design',
-  'correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction',
+  'correct_findings','prepare_summary','publish_summary','inspect_correction','resume_correction','narrow_review','narrow_status',
   'prepare_revision','decision','resume','read_batch','replace_inputs']);
 const FILES={prd_analyze:'analyze.json',prd_generate:'generate.json',prd_review:'review.json',
   prd_correct:'correct.json',prd_summary:'summary.json'};
@@ -89,7 +90,7 @@ function load(){
   if(plan.permissions?.includes('--allow-review-write')&&!nonempty(plan.hostContext))stop(2,'--allow-review-write 需要 hostContext');
   if(['save_draft','save_design','publish_summary','resume_correction','correct_findings'].includes(operation)
     &&!plan.permissions?.includes('--allow-spec-write'))stop(2,`${operation} 需要 --allow-spec-write`);
-  if(['final_review','repair_review_response'].includes(operation)&&!plan.permissions?.includes('--allow-review-write'))stop(2,'final_review 需要 --allow-review-write');
+  if(['final_review','repair_review_response','narrow_review'].includes(operation)&&!plan.permissions?.includes('--allow-review-write'))stop(2,`${operation} 需要 --allow-review-write`);
   if(operation==='review_disposition'&&!plan.permissions?.includes('--allow-disposition-write'))stop(2,'review_disposition 需要 --allow-disposition-write');
   if(['correct_findings','resume_correction'].includes(operation)&&!plan.permissions?.includes('--allow-review-write'))
     stop(2,`${operation} 需要 --allow-review-write`);
@@ -109,11 +110,13 @@ function load(){
   }
   const request=plan.request??{};
   exact(request,['text','stage','feature','mode','packageDigest','decisions','artifacts','summaryDigest','draftDigest',
-    'risks','reason','proposalDigest','approved','allowUserCaseChanges','resolution','successorSpecs','successorSessionId','binding'], 'PLAN.request');
+    'risks','reason','proposalDigest','approved','allowUserCaseChanges','resolution','successorSpecs','successorSessionId','binding',
+    'round','designSha256','reviewer','sessionId','independent','at','verdict','summary','findings'], 'PLAN.request');
   const needed={repair_review_response:['binding'],start:['text'],advance:['text'],plan_design:['text'],promote_design:['draftDigest','reason'],
     select_design_reviews:['draftDigest','risks'],final_review_package:['stage','feature'],final_review:['stage','feature','mode'],
     review_findings:['stage','feature'],review_disposition:['stage','feature','packageDigest','decisions','artifacts'],
-    correct_findings:['stage','feature'],inspect_correction:['stage','feature'],resume_correction:['stage','feature'],
+    correct_findings:['stage','feature'],inspect_correction:['stage','feature'],resume_correction:['stage','feature'],narrow_status:['stage','feature'],
+    narrow_review:['stage','feature','packageDigest','round','designSha256','reviewer','sessionId','independent','at','verdict','summary','findings'],
     publish_summary:['summaryDigest'],prepare_revision:['reason'],decision:['proposalDigest','approved','allowUserCaseChanges'],
     replace_inputs:['approved','reason','successorSpecs','successorSessionId']};
   for(const key of needed[operation]??[])if(!Object.hasOwn(request,key))stop(2,`${operation} 缺少 PLAN.request.${key}`);
@@ -132,7 +135,9 @@ function load(){
   if(['review_disposition','correct_findings'].includes(operation)){
     let review;try{review=inspectPrdFindings({specs,stage:request.stage,feature:request.feature});}
     catch(e){fail('原审查记录无效',e.code??e.message);}
-    if(operation==='review_disposition')try{inspectPrdDispositionPlan(review,request.decisions,request.artifacts);
+    if(operation==='review_disposition')try{
+      const narrow=request.stage==='design'?assertPrdNarrowDispositionReady({specs,feature:request.feature}):{used:false};
+      inspectPrdDispositionPlan(review,request.decisions,request.artifacts,{alsoChanged:narrow.used?[narrow.designPath]:[]});
       if(review.packageDigest!==request.packageDigest)throw Error('packageDigest 不匹配');}
     catch(e){fail('review_disposition 内容或 scope 无效',e.code??e.message);}
   }
@@ -290,7 +295,8 @@ function validate(kind,value,ctx){
   }else if(kind==='prd_correct'){
     exact(value,['decisions','documents'],'correct.json');
     check(Array.isArray(value.decisions)&&Array.isArray(value.documents),'correct.json');
-    const review=inspectPrdFindings({specs:ctx.specs,stage:ctx.request.stage,feature:ctx.request.feature});
+    const review=narrowCorrectionReview({specs:ctx.specs,stage:ctx.request.stage,feature:ctx.request.feature})
+      ??inspectPrdFindings({specs:ctx.specs,stage:ctx.request.stage,feature:ctx.request.feature});
     check(value.documents.length===review.reviewedArtifacts.length,'correct.json 文档清单不完整');
     for(const doc of value.documents){exact(doc,['path','content'],'correct.json.documents');
       check(review.reviewedArtifacts.some(item=>item.path===doc.path)&&nonempty(doc.content),

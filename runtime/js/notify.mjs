@@ -901,6 +901,7 @@ const CLASSIFY={
     if(stage==='change_check_failed'&&Number(r.round)>=2)return 'stuck';
     if(/^change_(requirements|design|tasks|check)$/.test(stage??'')&&text(r.question))return 'ask';
     if(status&&(/_unknown$/.test(status)||['correction_recovery_required','correction_recovery_conflict','disposition_details_need_verification'].includes(status)))return 'stuck';
+    if(status==='narrow_review_recorded'&&r.userDecisionRequired===true)return 'stuck';
     if(status==='human_summary_prepared'&&r.readyForAwaitingReview===false)return 'stuck';
     if(status==='review_findings_ready'&&r.verdict==='blocked')return 'stuck';
     if(['review_unknown','review_cancelled'].includes(review.status)||review.verdict==='blocked'

@@ -35,3 +35,11 @@ export function inspectPrdFindings({specs,stage,feature,pendingSplit=null,approv
       result.findings.length?'resolve_original_findings':'record_no_findings_after_artifacts_saved',
     dispatchAuthorized:false,writeAuthorized:false,completionAuthorized:false});
 }
+
+// Declared author of the original r1 attempt; separate so review results keep their exact shape.
+export function readPrdReviewAuthor({specs,stage,feature}){
+  const match=feature.match(/^[1-9]\d*\.([a-z0-9]+(?:-[a-z0-9]+)*)$/);need(match,'prd_review_feature_invalid');
+  const bytes=readCmInitSource(specs,`.reviews/prd-${match[1]}-${stage}-r1.md`);need(bytes!==null,'prd_review_archive_unavailable');
+  const line=new TextDecoder('utf-8',{fatal:true}).decode(bytes).match(/\n```json\n([^\n]+)\n```\n$/);need(line,'prd_review_archive_unavailable');
+  return JSON.parse(line[1]).authorContextId;
+}
