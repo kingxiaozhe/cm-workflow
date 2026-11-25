@@ -119,8 +119,8 @@ export function replacePrdDocument({specs,relative,content,current}){
   }finally{if(fd!==undefined)fs.closeSync(fd);try{fs.unlinkSync(temp);}catch(error){if(error.code!=='ENOENT')throw error;}}
 }
 
-function loadCorrection({specs,stage,feature}){
-  const review=inspectPrdFindings({specs,stage,feature});
+function loadCorrection({specs,stage,feature,pendingSplit=null}){
+  const review=inspectPrdFindings({specs,stage,feature,pendingSplit});
   need(review.verdict!=='blocked'&&['resume_disposition','completed'].includes(review.gate.outcome),'prd_correction_not_ready');
   const archiveName=`prd-${feature.replace(/^\d+\./,'')}-${stage}-correction.md`;
   const bytes=readCorrectionFile(specs,`.reviews/${archiveName}`);
@@ -179,16 +179,18 @@ export function resumePrdCorrection(input,signal){
 
 // ---- Design-stage narrow review rounds (see narrow-review.mjs) ----
 const designPath=feature=>`${feature}/design.md`;
-function narrowFound({specs,feature}){
+// After the design receipt is written the design is frozen at the receipt's bytes; a later saved split correction
+// legitimately changes the file. Callers past that point pass the receipt's design sha (and the saved split plan).
+function narrowFound({specs,feature,pendingSplit=null,designSha256=null}){
   need(typeof feature==='string'&&/^[1-9]\d*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(feature),'prd_review_feature_invalid');
   if(readCmInitSource(specs,`.reviews/prd-${feature.replace(/^\d+\./,'')}-design-correction.md`)===null)return null;
-  const value=loadCorrection({specs,stage:'design',feature}),design=designPath(feature);
+  const value=loadCorrection({specs,stage:'design',feature,pendingSplit}),design=designPath(feature);
   if(!value.narrowEnabled)return null; // run started before narrow rounds: unchanged legacy flow
   const state=inspectPrdNarrowState({specs,feature,packageDigest:value.review.packageDigest,
     base:{designSha256:value.after.find(item=>item.path===design).sha256,archiveSha256:value.archiveHash,
       originalDesignSha256:value.review.reviewedArtifacts.find(item=>item.path===design).sha256,
       requirementsSha256:value.review.reviewedArtifacts.find(item=>item.path===`${feature}/requirements.md`).sha256},
-    currentDesignSha256:sha(readCorrectionFile(specs,design))});
+    currentDesignSha256:designSha256??sha(readCorrectionFile(specs,design))});
   return {value,state};
 }
 // True only when the original correction is fully saved (or a narrow round already exists),
@@ -225,9 +227,9 @@ export function recordPrdNarrowReviewHost({specs,feature,packageDigest,input,aut
     reviewDigest:row.reviewDigest,degradedReview:row.review.reviewer==='self-degraded',backlog:row.review.findings.filter(item=>!blocking.includes(item)).map(item=>({id:item.id,message:item.message}))});
 }
 // Original disposition gate: once a narrow round exists the design must have been approved by it.
-export function assertPrdNarrowDispositionReady({specs,feature}){
+export function assertPrdNarrowDispositionReady({specs,feature,pendingSplit=null,designSha256=null}){
   if(readCmInitSource(specs,`.reviews/${narrowNames(feature).review(1)}`)===null)return {used:false};
-  const found=narrowFound({specs,feature});need(found,'prd_narrow_requires_original_correction');
+  const found=narrowFound({specs,feature,pendingSplit,designSha256});need(found,'prd_narrow_requires_original_correction');
   const status=found.state.phase.status;
   need(status!=='awaiting_user_decision','prd_narrow_awaiting_user_decision');
   need(status==='approved','prd_narrow_review_pending');
