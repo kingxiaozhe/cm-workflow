@@ -136,6 +136,12 @@ export async function previewTools({ cwd, model, effort, fixtureResponse = false
     transport.argument];
   const env = cleanEnvironment();
   env.CM_JS_PROBE_AUTH = 'cm-js-synthetic-local-probe';
+  // The probe sink only listens on 127.0.0.1. cleanEnvironment drops the host's proxy
+  // bypass list, so on a macOS system proxy (e.g. Clash on 127.0.0.1) Codex sent this
+  // loopback request through the proxy, got 502 and the preflight failed (2026-11-25,
+  // codex-cli 0.167.0). Exempt only the fixed loopback address, never copy host values.
+  env.NO_PROXY = '127.0.0.1';
+  env.no_proxy = '127.0.0.1';
   let result;
   try {
     result = await new Promise((resolve, reject) => {
