@@ -189,7 +189,8 @@ function narrowFound({specs,feature,pendingSplit=null,designSha256=null}){
   const state=inspectPrdNarrowState({specs,feature,packageDigest:value.review.packageDigest,
     base:{designSha256:value.after.find(item=>item.path===design).sha256,archiveSha256:value.archiveHash,
       originalDesignSha256:value.review.reviewedArtifacts.find(item=>item.path===design).sha256,
-      requirementsSha256:value.review.reviewedArtifacts.find(item=>item.path===`${feature}/requirements.md`).sha256},
+      requirementsSha256:value.review.reviewedArtifacts.find(item=>item.path===`${feature}/requirements.md`).sha256,
+      authorContextId:readPrdReviewAuthor({specs,stage:'design',feature})},
     currentDesignSha256:designSha256??sha(readCorrectionFile(specs,design))});
   return {value,state};
 }

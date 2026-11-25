@@ -93,16 +93,28 @@ function validateReviewRecord(value,{feature,packageDigest,round,priorDigest,des
 // base: {designSha256 (design.md after the original correction), originalDesignSha256, archiveSha256}.
 export function inspectPrdNarrowState({specs,feature,packageDigest,base,currentDesignSha256}){
   need(hex(packageDigest)&&hex(base.designSha256)&&hex(base.archiveSha256)&&hex(base.requirementsSha256)&&hex(currentDesignSha256),'prd_narrow_binding_invalid');
-  const names=narrowNames(feature),rounds=[];let tip=base.designSha256,prior=base.archiveSha256,phase=null,last=null;
+  const degradedSessions=new Set(),names=narrowNames(feature),rounds=[];let tip=base.designSha256,prior=base.archiveSha256,phase=null,last=null;
   for(let round=1;round<=PRD_NARROW_MAX_ROUNDS;round++){
     const review=readReview(specs,names.review(round)),correction=readCorrection(specs,names.correction(round));
     if(review===null){need(correction===null,'prd_narrow_record_invalid');phase={status:'awaiting_review',round};break;}
     validateReviewRecord(review,{feature,packageDigest,round,priorDigest:prior,designSha:tip});
+    // Read-back enforces the same independence the writer does: an independent record never reuses the original
+    // author's context or a context that signed a degraded round.
+    if(review.reviewer==='self-degraded')degradedSessions.add(review.sessionId);
+    else need(review.sessionId!==base.authorContextId&&!degradedSessions.has(review.sessionId),'prd_narrow_reviewer_not_independent');
     const row={round,review,reviewDigest:digest(review),correction:null};rounds.push(row);
     if(review.verdict==='approved'){
       need(correction===null,'prd_narrow_record_invalid');
       // Only an independent approval releases the design; a degraded one stops for the user.
-      phase=review.reviewer==='self-degraded'?{status:'awaiting_user_decision',round,reason:'degraded_review_only'}:{status:'approved',round};break;
+      if(review.reviewer!=='self-degraded'){phase={status:'approved',round};break;}
+      // Degraded approval never releases. While a round remains, one independent review of the same bytes may follow
+      // (chained to the degraded record) once the review model is back.
+      if(round<PRD_NARROW_MAX_ROUNDS){
+        prior=sha(Buffer.from(JSON.stringify(review)+'\n'));
+        if(readReview(specs,names.review(round+1))!==null)continue;
+      }
+      phase={status:'awaiting_user_decision',round,reason:'degraded_review_only',
+        independentFollowUpAllowed:round<PRD_NARROW_MAX_ROUNDS};break;
     }
     if(round===PRD_NARROW_MAX_ROUNDS){
       need(correction===null,'prd_narrow_record_invalid');phase={status:'awaiting_user_decision',round};break;
@@ -158,7 +170,8 @@ export function narrowPublicState(state){
       sessionId:review.sessionId,reviewDigest,findingCount:review.findings.length,
       blockingCount:review.findings.filter(isBlockingNarrowFinding).length,corrected:correction!==null,
       degraded:review.reviewer==='self-degraded'})),
-    next:nextByPhase[state.phase.status],userDecisionRequired:state.phase.status==='awaiting_user_decision',
+    next:state.phase.independentFollowUpAllowed?`record_independent_narrow_review_r${state.phase.round+1}`:nextByPhase[state.phase.status],
+    independentFollowUpAllowed:state.phase.independentFollowUpAllowed===true,userDecisionRequired:state.phase.status==='awaiting_user_decision',
     autoReleaseAllowed:false,completionAuthorized:false};
 }
 
@@ -172,9 +185,12 @@ export function recordPrdNarrowReview({specs,feature,packageDigest,state,input,a
   need(Number.isInteger(input.round)&&input.round>=1,'prd_narrow_round_invalid');
   need(input.round<=PRD_NARROW_MAX_ROUNDS,'prd_narrow_round_limit');
   const status=state.phase.status;
-  need(status!=='awaiting_user_decision','prd_narrow_awaiting_user_decision');
+  // After a degraded approval one independent follow-up on the same bytes is the only way past the stop.
+  const followUp=status==='awaiting_user_decision'&&state.phase.independentFollowUpAllowed===true;
+  need(status!=='awaiting_user_decision'||followUp,'prd_narrow_awaiting_user_decision');
   need(status!=='approved','prd_narrow_already_approved');
-  need(status==='awaiting_review'&&state.phase.round===input.round,'prd_narrow_round_out_of_order');
+  need(followUp?input.round===state.phase.round+1&&!degraded:status==='awaiting_review'&&state.phase.round===input.round,
+    followUp&&degraded?'prd_narrow_reviewer_not_independent':'prd_narrow_round_out_of_order');
   need(input.designSha256===state.currentDesignSha256,'prd_narrow_design_changed');
   // Degraded: the author context itself reviews, so it must declare exactly that context.
   need(degraded?input.sessionId===authorContextId:input.sessionId!==authorContextId&&input.sessionId!==originalAuthorContextId,'prd_narrow_reviewer_not_independent');

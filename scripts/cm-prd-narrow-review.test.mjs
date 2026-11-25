@@ -344,7 +344,7 @@ test('a degraded approval is recorded but cannot release: it stops for the user'
   assert.throws(()=>recordPrdReview({stage:'design',feature:'guide',evidence:path.join(ctx.specs,'.reviews/prd-guide-design-r1.md'),
     receipt:path.join(ctx.specs,'.reviews/prd-guide-design-disposition.json'),disposition:'applied',finding_count:1,unresolved_count:0,
     artifact:[path.join(ctx.specs,FEATURE,'design.md')]}),/prd_narrow_review_pending/);
-  assert.throws(()=>approved(ctx,2),/prd_narrow_awaiting_user_decision/);
+  assert.equal(recorded.independentFollowUpAllowed,true);
   await assert.rejects(narrowCorrection(ctx),/prd_narrow_awaiting_user_decision/);
 });
 test('a degraded round with findings still drives a correction, and an independent approval then releases',async t=>{
@@ -378,4 +378,52 @@ test('a context that signed a degraded round cannot sign an independent one afte
   await narrowCorrection(ctx);
   assert.throws(()=>narrowReview(ctx,2,{verdict:'approved',findings:[],session:'host-b',author:'host-c'}),/prd_narrow_reviewer_not_independent/);
   assert.equal(narrowReview(ctx,2,{verdict:'approved',findings:[],session:'real-reviewer',author:'host-c'}).phase.status,'approved');
+});
+
+test('after a degraded approval an independent follow-up on the same bytes can release',async t=>{
+  const ctx=fixture(t);await originalCorrection(ctx);
+  degradedReview(ctx,1,{verdict:'approved',findings:[]});
+  assert.equal(state(ctx).next,'record_independent_narrow_review_r2');
+  assert.throws(()=>degradedReview(ctx,2,{verdict:'approved',findings:[]}),/prd_narrow_reviewer_not_independent/);
+  assert.throws(()=>narrowReview(ctx,2,{verdict:'approved',findings:[],session:AUTHOR}),/prd_narrow_reviewer_not_independent/);
+  assert.throws(()=>narrowReview(ctx,3,{verdict:'approved',findings:[]}),/prd_narrow_round_limit/);
+  assert.throws(()=>narrowReview(ctx,1,{verdict:'approved',findings:[]}),/prd_narrow_round_out_of_order/);
+  assert.equal(narrowReview(ctx,2,{verdict:'approved',findings:[]}).phase.status,'approved');
+  assert.equal(disposition(ctx).status,'disposition_recorded');
+  assert.equal(state(ctx).rounds[0].degraded,true);assert.equal(state(ctx).rounds[1].degraded,false);
+});
+test('an independent follow-up with blocking findings stops for the user, and a late degraded approval has no follow-up slot',async t=>{
+  let ctx=fixture(t);await originalCorrection(ctx);
+  degradedReview(ctx,1,{verdict:'approved',findings:[]});
+  const stopped=narrowReview(ctx,2,{verdict:'changes_requested',findings:[finding('N2')]});
+  assert.equal(stopped.phase.status,'awaiting_user_decision');assert.equal(stopped.independentFollowUpAllowed,false);
+  assert.throws(()=>disposition(ctx),/prd_narrow_awaiting_user_decision/);
+  ctx=fixture(t);await originalCorrection(ctx);changes(ctx,1);await narrowCorrection(ctx);
+  const late=degradedReview(ctx,2,{verdict:'approved',findings:[]});
+  assert.equal(late.independentFollowUpAllowed,false);
+  assert.throws(()=>narrowReview(ctx,3,{verdict:'approved',findings:[]}),/prd_narrow_round_limit/);
+  assert.throws(()=>disposition(ctx),/prd_narrow_awaiting_user_decision/);
+});
+test('the independent follow-up is chained to the degraded record',async t=>{
+  const ctx=fixture(t);await originalCorrection(ctx);degradedReview(ctx,1,{verdict:'approved',findings:[]});narrowReview(ctx,2,{verdict:'approved',findings:[]});
+  const file=path.join(ctx.specs,'.reviews/prd-guide-design-narrow-review-r1.json'),value=JSON.parse(fs.readFileSync(file,'utf8'));
+  value.summary='Rewritten after the follow-up was signed';fs.writeFileSync(file,JSON.stringify(value)+'\n',{mode:0o600});
+  assert.throws(()=>state(ctx),error=>error.code==='prd_narrow_record_invalid');
+});
+
+test('read-back refuses an independent record that reuses a degraded or author context',async t=>{
+  const tamper=(ctx,round,session)=>{const file=path.join(ctx.specs,`.reviews/prd-guide-design-narrow-review-r${round}.json`),value=JSON.parse(fs.readFileSync(file,'utf8'));
+    value.sessionId=session;fs.writeFileSync(file,JSON.stringify(value)+'\n',{mode:0o600});};
+  let ctx=fixture(t);await originalCorrection(ctx);degradedReview(ctx,1,{verdict:'approved',findings:[]});narrowReview(ctx,2,{verdict:'approved',findings:[]});
+  tamper(ctx,2,AUTHOR);assert.throws(()=>state(ctx),error=>error.code==='prd_narrow_reviewer_not_independent');
+  assert.throws(()=>disposition(ctx));
+  ctx=fixture(t);await originalCorrection(ctx);
+  recordPrdNarrowReviewHost({specs:ctx.specs,feature:FEATURE,packageDigest:ctx.packageDigest,authorContextId:'host-b',writeEnabled:true,
+    input:{round:1,designSha256:designSha(ctx),reviewer:'self-degraded',sessionId:'host-b',independent:false,degradedReason:'review model unavailable',
+      at:'2026-11-24T03:00:00.000Z',verdict:'approved',summary:'Degraded',findings:[]}});
+  narrowReview(ctx,2,{verdict:'approved',findings:[],session:'real-reviewer',author:'host-c'});
+  tamper(ctx,2,'host-b');assert.throws(()=>state(ctx),error=>error.code==='prd_narrow_reviewer_not_independent');
+  // No degraded round at all: an independent record naming the original author is refused on read-back.
+  ctx=fixture(t);await originalCorrection(ctx);approved(ctx,1);
+  tamper(ctx,1,AUTHOR);assert.throws(()=>state(ctx),error=>error.code==='prd_narrow_reviewer_not_independent');
 });
