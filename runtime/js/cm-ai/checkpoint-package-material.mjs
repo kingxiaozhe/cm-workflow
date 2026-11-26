@@ -17,7 +17,11 @@ const sameRun=(left,right)=>same({...left,attempt:right.attempt},right);
 // It is not scope authority, a recovery grant, or a requirement to revise scope.
 export function packageMaterialEligible(rawConfig,version=3){
   try{const config=json(rawConfig,STATE_LIMIT),policy=config.controlPolicy;
-    validIdentity(config.identity);shape(policy,['version','development','bootstrap','qa','qaFix']);
+    // verification 是 control policy 的合法可选项（取值规则同 readControlPolicy）：漏掉它会让开了验证闸门的运行
+    // 永远不能存档审查包，审查包稍大就卡在开工前（实跑实拦）。验证闸门与存储表示正交，这里只放行这一项
+    const verifies=policy!==null&&typeof policy==='object'&&Object.hasOwn(policy,'verification');
+    validIdentity(config.identity);shape(policy,['version','development','bootstrap','qa','qaFix',...(verifies?['verification']:[])]);
+    must(!verifies||['disabled','precheck','auto'].includes(policy.verification));
     must(['disabled','run'].includes(policy.qa)&&['disabled','manual','auto'].includes(policy.qaFix)
       &&(policy.qaFix==='disabled'||policy.qa==='run'));
     return version===3&&typeof config.root==='string'&&path.isAbsolute(config.root)
@@ -157,7 +161,10 @@ export function checkpointStoragePlan({records:rawRecords,effectId,checkpoint:ra
   // Those later records enforce their actual limit, not that future reserve again;
   // a review or completion (including a reconciled review invocation) cannot
   // introduce a first material archive.
-  if(!ref&&['review','complete'].includes(effect.kind)){
+  // 同理，不是合法存档来源的开发检查点（不在待审、或包不属于本轮，如第二轮失败仍保留的第一轮内联包）也不能
+  // 开第一份存档：资格可能在运行中途翻转（升级后放行 verification），这时照旧内联，按记录上限落盘（Codex 审查实拦）
+  const source=effect.kind==='develop'&&checkpoint.state==='awaiting_review'&&same(pkg.identity,identity)&&checkpoint.attempt===pkg.identity.attempt;
+  if(!ref&&!source){
     must(size(payload)<=JOURNAL_PAYLOAD_LIMIT);return freeze({checkpoint,payloadFields:{}});
   }
   const budget=checkpointPackageBudget({inlineBytes:size(payload),packageBytes:size(pkg),reserve,enabled,referenced:ref!==null});
