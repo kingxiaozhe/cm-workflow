@@ -6,8 +6,17 @@ import {createCmCheckInvocation} from '../../../scripts/cm-check-entry.mjs';
 import {readCmInitSource} from '../cm-init/draft-inspection.mjs';
 import {need,shape,json,digest} from '../cm-ai/effect-contract.mjs';
 
-const directories=['skills','runtime','agents','compat/claude-commands','templates','scripts','.codex-plugin'];
-const topFiles=['VERSION','README.md','package.json','install.sh','install.ps1','install-codex.sh','install-codex.ps1'];
+const directories=['skills','runtime','agents','compat/claude-commands','templates','scripts','.codex-plugin','docs','cm-workflow/docs'];
+const topFiles=['cm-workflow/doc-links-scope.txt','VERSION','README.md','package.json','install.sh','install.ps1','install-codex.sh','install-codex.ps1'];
+const READ_LIMIT=1048576; // 与 readCmInitSource 的单文件上限一致
+const OVERSIZE_HASH_LIMIT=16*1024*1024;
+function readOversize(file,size){
+  const fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  try{
+    const opened=fs.fstatSync(fd);need(opened.isFile()&&opened.nlink===1&&opened.size===size,'check_source_changed');
+    const bytes=Buffer.alloc(size);need(fs.readSync(fd,bytes,0,size,0)===size,'check_source_changed');return bytes;
+  }finally{fs.closeSync(fd);}
+}
 const optionalIds=['statusline','updater','subagents','isolated_review','external_browser'];
 // Groups 1 and 7 inspect the Codex plugin manifest, the root VERSION and the root README.
 // A Claude-compatible installation legitimately owns none of them, so only these two may be
@@ -24,14 +33,27 @@ function snapshot(root){
     if(stat.isDirectory()){
       need(fs.realpathSync(target)===target,'check_source_path_changed');
       files[relative]={directory:true};
-      for(const name of fs.readdirSync(target).sort())visit(relative+'/'+name);
+      let names;
+      try{names=fs.readdirSync(target).sort();}catch(error){if(error&&typeof error==='object')error.file=relative;throw error;}
+      for(const name of names)visit(relative+'/'+name);
     }else{
       need(stat.isFile()&&stat.nlink===1,'check_source_file_invalid');
-      if(/\.(?:md|mjs|js|json|ya?ml|py|sh|ps1|toml|txt|ts|css|html)$/.test(relative)||relative==='VERSION'){
+      // 超过 readCmInitSource 单文件上限（1MB）的文本（如非 CM 技能自带的 babel.min.js，约 3MB）不再走它，
+      // 否则整次检查会以 init_draft_target_invalid 阻断（2026-11 反馈：~/.claude/skills/huashu-design）。
+      // 仍要发现检查期间的改动：16MB 内的按内容算摘要，更大的只记大小与修改时间。
+      const text=/\.(?:md|mjs|js|json|ya?ml|py|sh|ps1|toml|txt|ts|css|html)$/.test(relative)||relative==='VERSION';
+      if(text&&stat.size<=READ_LIMIT){
         bytes+=stat.size;need(bytes<=64*1024*1024,'check_inventory_limit');
-        const data=readCmInitSource(root,relative);need(data!==null,'check_source_changed');
+        let data;
+        try{data=readCmInitSource(root,relative);need(data!==null,'check_source_changed');}
+        catch(error){if(error&&typeof error==='object')error.file=relative;throw error;}
         files[relative]={digest:digest(data.toString('base64')),lines:data.toString('utf8').split('\n').length};
-      }else files[relative]={size:stat.size,mode:stat.mode&0o777};
+      }else if(text&&stat.size<=OVERSIZE_HASH_LIMIT){
+        bytes+=stat.size;need(bytes<=64*1024*1024,'check_inventory_limit');
+        let data;
+        try{data=readOversize(target,stat.size);}catch(error){if(error&&typeof error==='object')error.file=relative;throw error;}
+        files[relative]={size:stat.size,mode:stat.mode&0o777,oversized:true,digest:digest(data.toString('base64')),lines:data.toString('utf8').split('\n').length};
+      }else files[relative]={size:stat.size,mode:stat.mode&0o777,...(text?{oversized:true,mtimeMs:stat.mtimeMs,ctimeMs:stat.ctimeMs}:{})};
     }
   }
   for(const relative of [...directories,...topFiles])visit(relative);
@@ -51,7 +73,14 @@ export function createCmCheckHost(raw,{call}){
     return {...source,digest:digest({source:source.digest,configs})};
   };
   const status=()=>json({stage,mechanical,result,completionAuthorized:false});
-  const current=baseline=>need(capture().digest===baseline.digest,'check_source_changed');
+  const current=baseline=>{
+    const now=capture();
+    if(now.digest===baseline.digest)return;
+    const e=new Error('check_source_changed');e.code='check_source_changed';
+    const keys=[...new Set([...Object.keys(baseline.files),...Object.keys(now.files)])].sort();
+    const file=keys.find(k=>JSON.stringify(baseline.files[k])!==JSON.stringify(now.files[k]));
+    if(file)e.file=file;throw e;
+  };
   async function start(){
     need(stage==='ready','check_already_started');stage='mechanical';
     try{
@@ -110,7 +139,7 @@ export function createCmCheckHost(raw,{call}){
         findingsCount:assessment.checks.filter(row=>row.status==='failed').reduce((sum,row)=>sum+row.findings.length,0),
         semanticChecked:true,completionAuthorized:false};
       stage='reported';return status();
-    }catch(error){stage=controller.signal.aborted?'cancelled':'blocked';result={overall:'BLOCKED',reason:error?.code??'check_failed',completionAuthorized:false};return status();}
+    }catch(error){stage=controller.signal.aborted?'cancelled':'blocked';result={overall:'BLOCKED',reason:error?.code??'check_failed',...(typeof error?.file==='string'?{file:error.file}:{}),completionAuthorized:false};return status();}
   }
   return Object.freeze({async handle(request){
     shape(request,['requestId','operation']);

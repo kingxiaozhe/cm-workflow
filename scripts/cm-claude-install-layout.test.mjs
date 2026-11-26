@@ -12,12 +12,24 @@ test('real isolated Claude install checks correction docs at its installed layou
   t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
   const target=path.join(home,'.claude'),env={...process.env,HOME:home,CLAUDE_HOME:target,
     CM_WORKFLOW_HOME:path.join(home,'user'),CM_WORKFLOW_LOG_HOME:path.join(home,'logs'),CM_MATT_SKILLS_INSTALL:'off'};
+  // 用户自装、带断链的技能（首次安装时目标里已存在）不得让安装的自检失败或回滚。
+  fs.mkdirSync(path.join(target,'skills/cm-user-own'),{recursive:true});
+  fs.writeFileSync(path.join(target,'skills/cm-user-own/SKILL.md'),'---\nname: cm-user-own\ndescription: 用户自装技能\n---\n[x](../../docs/none.md)\n');
   const installed=spawnSync('/bin/bash',[path.join(source,'install.sh'),'--yes'],{cwd:source,env,encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024});
   assert.equal(installed.status,0,installed.stdout+installed.stderr);
   assert.match(installed.stdout,/cm runtime check: PASSED \(claude-compat v/);
   const doc=path.join(target,'cm-workflow/docs/human-correction.md');
   assert.equal(fs.readFileSync(doc,'utf8'),fs.readFileSync(path.join(source,'docs/human-correction.md'),'utf8'));
   assert.equal(fs.existsSync(path.join(target,'docs/human-correction.md')),false);
+  const notify=fs.readFileSync(path.join(target,'skills/cm-notify/SKILL.md'),'utf8');
+  assert.match(notify,/\.\.\/\.\.\/cm-workflow\/docs\/user-guide\.md/);
+  assert.equal(fs.readFileSync(path.join(source,'skills/cm-notify/SKILL.md'),'utf8').includes('../../cm-workflow/docs/'),false);
+  const scope=fs.readFileSync(path.join(target,'cm-workflow/doc-links-scope.txt'),'utf8');
+  assert.match(scope,/skills\/cm-notify\/SKILL\.md/);
+  assert.equal(scope.includes('cm-user-own'),false);
+  assert.equal(fs.readFileSync(path.join(target,'skills/cm-user-own/SKILL.md'),'utf8'),'---\nname: cm-user-own\ndescription: 用户自装技能\n---\n[x](../../docs/none.md)\n');
+  const links=spawnSync(process.execPath,[path.join(target,'scripts/cm-check-doc-links.mjs'),target],{encoding:'utf8'});
+  assert.equal(links.status,0,links.stderr);
   fs.unlinkSync(doc);
   const rejected=spawnSync('/bin/bash',[path.join(target,'scripts/cm-check-runtime.sh'),'--project',source],{cwd:source,env,encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024});
   assert.notEqual(rejected.status,0);

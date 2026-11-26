@@ -374,6 +374,8 @@ done
 stage_tree "$SRC_DIR/docs" "cm-workflow/docs"
 stage_tree "$SRC_DIR/assets" "cm-workflow/assets"
 stage_file "$SRC_DIR/README.md" "cm-workflow/README.md"
+# docs 装在 cm-workflow/docs/，技能里的 ../docs/ 相对链接要跟着改写。
+node "$SRC_DIR/scripts/cm-rewrite-doc-links.mjs" "$STAGE" >/dev/null || { echo "改写文档链接失败，安装已停止，未修改任何文件。" >&2; exit 1; }
 
 for wrapper in "$SRC_DIR"/compat/claude-commands/cm-*.md; do
   name="$(basename "$wrapper" .md)"

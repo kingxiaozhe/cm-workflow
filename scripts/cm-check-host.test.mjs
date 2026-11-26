@@ -49,6 +49,52 @@ test('actual JSONL CLI runs fixture checker once then eight groups; optional deg
   assert.equal(result.mechanical.output,'original checker output\noriginal stderr\n');assert.equal(result.result.completionAuthorized,false);
   assert.deepEqual(fs.readdirSync(f.input.project),[]);
 });
+test('snapshot 遇到超过 1MB 的非 CM 技能文本只记大小，不阻断检查',{timeout:5000},async t=>{
+  const f=fixture(t);const big=path.join(f.dir,'skills/other-skill/assets/vendor/babel.min.js');
+  fs.mkdirSync(path.dirname(big),{recursive:true});fs.writeFileSync(big,Buffer.alloc(1048576+1024,97));
+  const host=createCmCheckHost(f.input,{call:async(kind,payload)=>kind==='check_runtime'?mechanical(payload):assessment(payload)});
+  const value=await host.handle({requestId:'start',operation:'start'});
+  assert.equal(value.result.overall,'PASSED',JSON.stringify(value));
+});
+test('超过 1MB 的 CM 文本在检查期间被等长改一个字节仍判为源码漂移；读失败的阻断带文件路径',{timeout:8000},async t=>{
+  const f=fixture(t);const big=path.join(f.dir,'skills/cm-check/big.md');fs.writeFileSync(big,Buffer.alloc(1048576+1024,97));
+  const host=createCmCheckHost(f.input,{call:async(kind,payload)=>{
+    if(kind==='check_runtime')return mechanical(payload);
+    const bytes=fs.readFileSync(big);bytes[10]=98;fs.writeFileSync(big,bytes);return assessment(payload);}});
+  const drift=await host.handle({requestId:'start',operation:'start'});
+  assert.equal(drift.result.overall,'BLOCKED',JSON.stringify(drift));
+  const g=fixture(t);const locked=path.join(g.dir,'skills/cm-check/locked.md');fs.writeFileSync(locked,'x');fs.chmodSync(locked,0o000);
+  t.after(()=>{try{fs.chmodSync(locked,0o644);}catch{}});
+  if(process.getuid?.()!==0){
+    const blocked=await createCmCheckHost(g.input,{call:async()=>{throw Error('must not run');}}).handle({requestId:'start',operation:'start'});
+    assert.equal(blocked.result.overall,'BLOCKED');assert.equal(blocked.result.file,'skills/cm-check/locked.md');
+  }
+});
+test('大文件的读取计入 64MiB 预算；超 16MB 的文本等长改写（ctime 变）也判漂移；漂移与目录读失败的阻断带路径；大文件可作证据',{timeout:30000},async t=>{
+  const run=async(f,mutate)=>createCmCheckHost(f.input,{call:async(kind,payload)=>{if(kind==='check_runtime')return mechanical(payload);mutate?.(payload);return assessment(payload);}}).handle({requestId:'start',operation:'start'});
+  const f=fixture(t);for(let i=0;i<5;i++)fs.writeFileSync(path.join(f.dir,`skills/cm-check/b${i}.md`),Buffer.alloc(14*1024*1024,97));
+  assert.equal((await run(f)).result.reason,'check_inventory_limit');
+  const g=fixture(t);const huge=path.join(g.dir,'skills/cm-check/huge.md');fs.writeFileSync(huge,Buffer.alloc(17*1024*1024,97));
+  const d=await run(g,()=>{const b=fs.readFileSync(huge);b[5]=98;fs.writeFileSync(huge,b);});
+  assert.equal(d.result.reason,'check_source_changed');assert.equal(d.result.file,'skills/cm-check/huge.md');
+  const h=fixture(t);const mid=path.join(h.dir,'skills/cm-check/mid.md');fs.writeFileSync(mid,Buffer.alloc(1048576+10,97));
+  const ok=createCmCheckHost(h.input,{call:async(kind,payload)=>{if(kind==='check_runtime')return mechanical(payload);const v=assessment(payload);v.checks[0].evidence=[{path:'skills/cm-check/mid.md',line:1}];return v;}});
+  assert.equal((await ok.handle({requestId:'start',operation:'start'})).result.overall,'PASSED');
+  if(process.getuid?.()!==0){
+    const k=fixture(t);const dir=path.join(k.dir,'skills/cm-check/locked');fs.mkdirSync(dir);fs.chmodSync(dir,0o000);
+    try{assert.equal((await run(k)).result.file,'skills/cm-check/locked');}finally{fs.chmodSync(dir,0o755);}
+  }
+});
+test('docs 目录进入快照：检查期间删掉被技能链接指向的文档会被判漂移',{timeout:8000},async t=>{
+  const f=fixture(t);fs.mkdirSync(path.join(f.dir,'docs'));const doc=path.join(f.dir,'docs/user-guide.md');fs.writeFileSync(doc,'x');
+  const r=await createCmCheckHost(f.input,{call:async(kind,payload)=>{if(kind==='check_runtime')return mechanical(payload);fs.unlinkSync(doc);return assessment(payload);}}).handle({requestId:'start',operation:'start'});
+  assert.equal(r.result.reason,'check_source_changed');
+});
+test('范围清单进入快照：检查期间改它（改变受管范围）会被判漂移',{timeout:8000},async t=>{
+  const f=fixture(t);fs.mkdirSync(path.join(f.dir,'cm-workflow'));const scope=path.join(f.dir,'cm-workflow/doc-links-scope.txt');fs.writeFileSync(scope,'# cm-workflow doc-links scope v1 count=0\n');
+  const r=await createCmCheckHost(f.input,{call:async(kind,payload)=>{if(kind==='check_runtime')return mechanical(payload);fs.writeFileSync(scope,'# cm-workflow doc-links scope v1 count=1\nskills/x/SKILL.md\n');return assessment(payload);}}).handle({requestId:'start',operation:'start'});
+  assert.equal(r.result.reason,'check_source_changed');
+});
 test('mechanical failure stops semantics, repeated start never retries',async t=>{
   const f=fixture(t,7);let calls=0;const host=createCmCheckHost(f.input,{call:async(kind,payload)=>{calls++;assert.equal(kind,'check_runtime');return mechanical(payload);}});
   const value=await host.handle({requestId:'start',operation:'start'});assert.equal(value.result.overall,'FAILED');assert.equal(value.result.semanticChecked,false);

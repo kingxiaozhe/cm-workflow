@@ -360,6 +360,12 @@ for correction_command in prepare-human-correction publish-human-correction-revi
     grep -Fq "$correction_command" "$ROOT/$HUMAN_CORRECTION_DOC" ||
     fail "human correction command/document pair incomplete: $correction_command"
 done
+# Skill docs links must resolve in this layout (0.21.5: claude-compat links pointed at a missing ~/.claude/docs).
+if [ -n "$NODE_BIN" ] && [ -f "$ROOT/scripts/cm-check-doc-links.mjs" ]; then
+  "$NODE_BIN" "$ROOT/scripts/cm-check-doc-links.mjs" "$ROOT" || fail "skills docs links do not resolve in $MODE layout (see broken docs link lines above)"
+else
+  fail "missing scripts/cm-check-doc-links.mjs or node for docs link check"
+fi
 require_file "scripts/cm-workflow-config.mjs"
 require_file "scripts/cm-workflow-config.test.mjs"
 # Group 4: user runtimes.yml producers <-> authoritative consumer.
@@ -706,6 +712,15 @@ for name in cm-challenge cm-idea cm-init cm-prd cm-ai cm-test cm-security cm-fix
     grep -q "skills/$name/SKILL.md" "$wrapper" || fail "legacy wrapper does not delegate to $name"
     [ "$(wc -l < "$wrapper" | tr -d ' ')" -le 8 ] || fail "legacy wrapper is not thin: compat/claude-commands/$name.md"
   fi
+done
+
+# cm-check 第 2 组口径：除独立配置工具 cm-notify 外，核心 Skill 必须用链接或反引号路径引用真实存在的 runtime/ 合同。
+for name in cm-idea cm-init cm-prd cm-ai cm-test cm-security cm-fix cm-refactor cm-check cm-runtime; do
+  runtime_ref_ok=0
+  for ref in $(grep -oE '(\]\(\.\./\.\./runtime/[A-Za-z0-9._/-]+\.(md|json|mjs)[)#]|`\.\./\.\./runtime/[A-Za-z0-9._/-]+\.(md|json|mjs)[`#])' "$ROOT/skills/$name/SKILL.md" | sed -E 's/^(\]\(|`)//; s/.$//'); do
+    [ -f "$ROOT/skills/$name/$ref" ] && runtime_ref_ok=1
+  done
+  [ "$runtime_ref_ok" -eq 1 ] || fail "core skill has no resolvable runtime/ contract reference: skills/$name/SKILL.md"
 done
 
 for reference in \
