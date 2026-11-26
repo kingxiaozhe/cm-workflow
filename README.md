@@ -17,6 +17,11 @@
 
 ## 最近更新
 
+**0.21.6**
+
+- **修复 Claude 兼容安装下技能里的文档链接失效**：技能里指向 `docs/` 的链接装完后能打开；`cm-check` 新增链接可达检查，不会误查你自己装的技能。
+- **修复 `cm-check` 被大文件误阻断**：技能目录里有超过 1MB 的文本（如其他技能自带的压缩脚本）时不再启动即报 `init_draft_target_invalid`，阻断信息会指出具体文件。详见[更新日志](CHANGELOG.md)。
+
 **0.21.5**
 
 - **cm-ai 新任务支持软链**：项目里有软链不再一建基线就报错；开发可以新建、改指向或删除软链，CM 会核对它不指出项目、不指进 `.git` 和规格目录。已有任务不受影响。
@@ -293,7 +298,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.21.5 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.21.6 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
