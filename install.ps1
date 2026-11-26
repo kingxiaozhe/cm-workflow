@@ -114,6 +114,9 @@ try {
     Stage-Tree (Join-Path $Src "docs") "cm-workflow\docs"
     Stage-Tree (Join-Path $Src "assets") "cm-workflow\assets"
     Stage-File (Join-Path $Src "README.md") "cm-workflow\README.md"
+    # docs 装在 cm-workflow\docs，技能里的 ../docs/ 相对链接要跟着改写。
+    node (Join-Path $Src "scripts\cm-rewrite-doc-links.mjs") $Stage | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "改写文档链接失败。" }
 
     foreach ($pair in @(
         @("dashboard", "dashboard"),

@@ -84,7 +84,7 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-spec-amend.mjs" inspect --specs-dir "{SPECS_
 - 审查者不能是写补正的会话；宿主要求跨工具审查时按宿主规则选审查者。审查判 `changes_requested` 或摘要不符时 `apply` 拒绝，转 2 级。
 - `apply` 只换绑规格批准，保留原 `approval.response`；在途运行仍按 `js-host.md` 的 `spec_rebind` 规则换绑或重做。
 - 不得手改 `.cm-specs-approved.json` 和 `~/.cm-workflow/spec-approvals/` 下的批准台账；被改过即失效，退回 2 级。`apply` 报 `spec_approval_busy` 时等对方批准结束再试，不删锁文件；持续报错时把 `.cm-specs-approval.lock` 与 `.cm-specs-approval.lock.reclaim` 里的 pid 告诉用户，由用户确认没有批准或补正在运行后自行删除（崩溃遗留不自动清理）。
-- 机器条件与理由见 `docs/proposals/spec-amendment-tiers.md`。快照与回执只绑定内容，不证明是谁写的，保障级别同 `.cm-specs-status`（实跑教训：wue、aihot-dev 两个会话 17 次“开始”里 16 次是开发中补规格）。
+- 机器条件与理由见 [spec-amendment-tiers](../../../docs/proposals/spec-amendment-tiers.md)。快照与回执只绑定内容，不证明是谁写的，保障级别同 `.cm-specs-status`（实跑教训：wue、aihot-dev 两个会话 17 次“开始”里 16 次是开发中补规格）。
 
 多任务批次的并行组提议规则见 `js-host.md` 第 3.1 条；本兼容流程不自行发明并行判定。
 
