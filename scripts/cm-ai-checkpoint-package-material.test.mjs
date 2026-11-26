@@ -175,6 +175,28 @@ test('r2 failed develop may retain the r1 package and exact r1 archive without s
   assert.throws(()=>resolveCheckpointPackage(replaced,records,nextIdentity),invalid);
 });
 
+// Codex 审查实拦：资格可能在运行中途翻转（升级后 verification 运行才可存档）。第一轮包当时内联、没有存档，
+// 第二轮开发失败仍保留它时，失败检查点不是合法存档来源（不在待审、包不属于本轮）：必须照旧内联落盘，
+// 不能标 packageMaterial 让存储失败、把本该持久化的失败结果丢掉
+test('r2 failed develop retaining an inline (unarchived) r1 package stays inline when it cannot source an archive',()=>{
+  const material=pkg(700000);let records=append([],{version:3,protocol:'cm-task-runner',type:'init',config:{identity}});
+  records=intent(records,'develop-1');records=append(records,payload('develop-1',frame(material)));
+  const nextIdentity={...identity,attempt:2};records=intent(records,'develop-2','develop',nextIdentity);
+  const checkpoint=frame(material,'develop-2','develop','blocked',nextIdentity);
+  checkpoint.code='verification_precheck_failed';checkpoint.receiptPadding='p'.repeat(100000);
+  const reserve=272125,inline=Math.min(JOURNAL_PAYLOAD_LIMIT,1024*1024)-reserve;
+  const p0=payload('develop-2',checkpoint);
+  assert(size(p0)>inline&&size(p0)<=JOURNAL_PAYLOAD_LIMIT,'fixture crosses the inline budget yet fits one record');
+  for(const enabled of [false,true]){
+    const plan=checkpointStoragePlan({records,effectId:'develop-2',checkpoint,identity:nextIdentity,enabled,reserve});
+    assert.deepEqual(plan.payloadFields,{},String(enabled));assert.deepEqual(plan.checkpoint,checkpoint);
+    assert.deepEqual(resolveCheckpointPackage(payload('develop-2',plan.checkpoint,plan.payloadFields),records,nextIdentity),checkpoint);
+  }
+  // 当前轮待审的开发检查点仍是合法来源：照常存档，修复不放过本该存档的大包
+  const fresh=frame(pkg(700000,nextIdentity),'develop-2','develop','awaiting_review',nextIdentity);fresh.receiptPadding='p'.repeat(100000);
+  assert.deepEqual(checkpointStoragePlan({records,effectId:'develop-2',checkpoint:fresh,identity:nextIdentity,enabled:true,reserve}).payloadFields,{packageMaterial:true});
+});
+
 test('a package above the original record limit cannot be admitted by material storage and no reserve is changed',()=>{
   const f=fixture(),oversize=frame(pkg(JOURNAL_PAYLOAD_LIMIT));
   const measured={inlineBytes:815380,packageBytes:789175,reserve:272125};
@@ -226,6 +248,12 @@ test('eligibility is limited to durable v3 single-project conversation v2 withou
   for(const controlPolicy of [{...config.controlPolicy,development:'provider'},{...config.controlPolicy,bootstrap:'write'},
     {...config.controlPolicy,qaFix:'manual'},undefined])assert.equal(packageMaterialEligible({...config,controlPolicy}),false);
   for(const root of ['relative','/fixture/../fixture',null])assert.equal(packageMaterialEligible({...config,root}),false);
+  // verification 是 control policy 的合法可选项（control-policy.mjs）：带上它不能让大审查包失去存档资格；
+  // 存档资格只看执行方式，验证闸门与它正交。非法取值仍由 control policy 自身拒绝，这里不放宽其他未知键
+  for(const verification of ['disabled','precheck','auto'])
+    assert.equal(packageMaterialEligible({...config,controlPolicy:{...config.controlPolicy,verification}},3),true,verification);
+  assert.equal(packageMaterialEligible({...config,controlPolicy:{...config.controlPolicy,verification:'bogus'}},3),false);
+  assert.equal(packageMaterialEligible({...config,controlPolicy:{...config.controlPolicy,extra:true}},3),false);
 });
 
 test('reconciled review uses the same backward package reference and validates invocation binding',()=>{
