@@ -17,7 +17,10 @@ N3 保留开发期 lint 与测试；这些正常检查不构成作者自审前�
 
 ## 1. 独立审查（强制）
 
-按以下顺序选择一个**新上下文**的审查者：
+按以下顺序选择一个**新上下文**的审查者。**先看项目声明的 `roles.reviewer.adapter`**（含 `claude-only` 预设）：
+声明为 `claude-cli` → 直接用第 3 项，不再尝试 Codex（实跑教训：声明 claude-only 后仍总被派去 Codex 审，因为旧顺序固定先试 Codex）；
+声明为 `codex-cli`，或未声明 → 按下列顺序。
+本条只约束兼容流程；JS 宿主按 `--review-runtime` 显式选择审查端（声明与实际不符时需人工核对），不在此处自动改选。
 
 1. `codex-subagent`：用当前运行时的 no-history/fresh-context 选项（如 `fork_turns: none`）新建独立 Codex 子代理/线程，只接收任务范围、验收标准、diff 和验证结果
 2. `codex-cli`：子代理不可用时，启动隔离的非交互 Codex CLI 审查会话；禁止它修改文件

@@ -151,7 +151,7 @@ preset: codex-codes
 `cm-runtime show [--project PATH]` 只读；`set <preset> [--project PATH]` 原子改项目；
 `set --user <preset>` 改用户默认；`unset --user` 删除用户默认但不删除项目声明。
 无参数先显示有效配置、来源与模型，默认保留；高级模型入口只提供说明和现有校验方法。
-终端/会话向导和安装器的最终确认均为 `[y/N]`，回车不写；无效配置保留并报告错误。
+终端/会话向导和安装器的最终确认要输入提问时随机生成的 8 位确认码，回车或输错都不写；无效配置保留并报告错误。
 `preview <preset> [--project PATH | --user] [--json]` 只读生成候选，复用同一合并和校验逻辑，
 展示范围、目标、字段前后值、项目覆盖和保留模型。`set ... --expect-preview <preview_sha256>`
 核对项目、范围、预设、候选内容及相关输入快照；漂移后必须重新预览确认。两次调用保持相同

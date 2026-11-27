@@ -10,7 +10,7 @@ import {ConfigError,findConfig,loadConfig,readConfigText,parseUserRuntimes,
   CONFIG_FILENAMES,previewUserRuntimeConfig} from './cm-workflow-config.mjs';
 import {editRuntimeDeclaration} from './cm-runtime-edit.mjs';
 import {runtimeLanguage,runtimeText as t} from './cm-runtime-i18n.mjs';
-import {askRuntimePreset,runtimeQuestions,PromptCancelled} from './cm-runtime-install.mjs';
+import {askRuntimePreset,askConfirm,runtimeQuestions,PromptCancelled} from './cm-runtime-install.mjs';
 export {askRuntimePreset} from './cm-runtime-install.mjs';
 import {probeRuntimes} from './cm-failover.mjs';
 
@@ -188,9 +188,7 @@ export async function interactiveRuntime(project,{input=process.stdin,output=pro
     const preset=await askRuntimePreset(ask,lang);
     const preview=prepareRuntimePreview(root,preset,{user,lang});
     output.write(formatRuntimePreview(preview,lang));
-    let confirm;
-    do{confirm=(await ask(t('confirm',lang))).toLowerCase();}while(!['','y','n'].includes(confirm));
-    if(confirm!=='y')throw new PromptCancelled();
+    if(!await askConfirm(ask,preview,lang))throw new PromptCancelled();
     saveRuntime(root,preset,user,lang,output,preview);
     output.write(showRuntime(root,{lang})+'\n');return 0;
   }catch(error){if(error instanceof PromptCancelled){output.write(t('cancelled',lang));return 0;}throw error;}

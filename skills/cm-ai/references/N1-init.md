@@ -94,11 +94,12 @@ node "{CM_WORKFLOW_ROOT}/scripts/cm-spec-amend.mjs" inspect --specs-dir "{SPECS_
 
 开工前按 `runtime/review.md` 探测能否建立**与实现者不同上下文**的审查通道，而不是检查当前进程是否叫 Codex：
 
-- 可创建 fresh Codex 子代理/独立线程 → 作为主通道
+- 项目声明审查者为 `claude-cli`（含 `claude-only`）→ 只探测全新 Claude CLI 审查进程，不探测 Codex；不可用即暂停
+- 其余情况：可创建 fresh Codex 子代理/独立线程 → 作为主通道
 - 子代理不可用，但可以安全启动隔离的 `codex` CLI 审查会话 → 作为备用通道
 - 两者都不可用 → 暂停新开发，已有实现保持待审并说明通道失败原因；不论任务风险高低，都不能用 `self-degraded` 诊断代替独立审查或进入成功收尾
 
-当前 gate 支持的是上述 Codex 通道；未来 Claude-native 适配须单独验证，不能把
+Codex 与 Claude 两条通道都由 protected host 实际启动并回收 V3 凭证；凭证标明实际审查端，不能把
 Claude 结果标成 Codex 通过门禁。通道不可用不算代码 finding，不消耗实现审查轮次。
 
 ## Git 前置检查（字段优先，询问兜底）
