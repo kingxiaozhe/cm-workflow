@@ -17,6 +17,12 @@
 
 ## 最近更新
 
+**0.21.7**
+
+- **运行时向导默认选 Claude**：安装向导和 `cm-runtime` 直接回车就是只用 Claude、Claude 写 Claude 审；保存配置要输入每次随机的 8 位确认码，粘贴的旧输入不会误保存。
+- **声明 Claude 审查后不再先试 Codex**：兼容流程的审查通道说明改为遵守声明；JS 默认入口的限制写进 `js-host.md`。
+- **状态栏不再串项目**：只显示属于当前会话项目的 CM 状态，别处的旧状态不显示。详见[更新日志](CHANGELOG.md)。
+
 **0.21.6**
 
 - **修复 Claude 兼容安装下技能里的文档链接失效**：技能里指向 `docs/` 的链接装完后能打开；`cm-check` 新增链接可达检查，不会误查你自己装的技能。
@@ -298,7 +304,7 @@ $cm-check
 
 仓库直接分发 Skills 和脚本，无需在仓库根目录运行 `npm install` 或构建。完整安装行为、覆盖范围和卸载说明见[安装指南](docs/installation.md)。
 
-需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.21.6 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
+需要固定版本时可使用 `npx @aibyzero/cm-workflow@0.21.7 install`，请在 CM Workflow 源码仓库以外的目录执行，例如用户主目录。npm 安装入口复用原安装器，要求与覆盖范围见[安装指南](docs/installation.md#npm-installation-macos-codex)。
 
 ## 升级旧版本
 
