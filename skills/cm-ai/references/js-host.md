@@ -305,8 +305,19 @@ scope、命令及恢复存档。批次宿主没有 `--original-host-context`，�
 上述 runtime，并使用真实宿主提供的 `--host-context`。不要为了使用 Claude 改写规格、
 Review 头或完成记录；provider 标签由原 adapter/V3 绑定，失败不切到另一端兜底。
 
+**普通宿主的审查端**：省略 `--review-runtime` 时，审查端就是当前会话所在工具；项目声明了另一端审查
+（如 `codex-codes` 在 Codex 会话里）也不会自动改选，声明只是偏好。要让声明的审查端执行，必须显式传
+`--review-runtime {claude|codex}`（须与声明一致，恢复时要重复传，否则指纹不符）；该参数只用于单任务
+`cm-ai-host.mjs`，批次入口 `cm-ai-batch-host.mjs` 不接受，会报 `invalid_arguments`。只有 `--protected-config`
+按 roles 自行选开发/审查端；`--external-models` 单独使用时仍按 `--runtime` 绑定的当前端，不会改选。
+已知限制（维护者 2026-11-27 定）：默认入口不强制遵守声明，也不在不一致时停住；曾试过强制拒绝，会破坏
+既有恢复指纹合同（旧运行不得变）。批次入口在 `claude-only` 项目的 Codex 会话里仍会由 Codex 审，需改在 Claude 会话开跑。
+
 需配置审查时，按文档运行单任务脚本的
-`preflight --config {该代码根的单任务配置} --review-model {已选择模型} --runtime {当前端}`。
+`preflight --config {该代码根的单任务配置} --review-model {已选择模型} --runtime {审查端}`（未传
+`--review-runtime` 时审查端就是当前端；传了则用 `--review-runtime` 指定的那一端；用单任务 `--protected-config` 时用
+roles 声明的审查端；批次成员可能因授权不同而审查端不同，按各成员 status 给出的审查端分别预检。用错端宿主会报
+`tool_preflight_missing`）。
 即使后续执行批次，诊断仍用同一代码根的单任务配置，不把 batch/workflows 配置传给该命令。
 诊断输出直接作为 review-config 输入，不手造或修补 `passed`/指纹；失败则保留原因。
 本机配置诊断通过不证明模型可用、Review 协议成功或用户已批准外发。

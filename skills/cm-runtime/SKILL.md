@@ -26,21 +26,21 @@ macOS/Linux 兼容别名 `/cm:runtime`。这是独立配置工具，不进入 N1
    `[2] 用户级默认 / User default`（`~/.cm-workflow/runtimes.yml`）。有项目配置默认 1，
    无配置默认 2；无配置仍选 1 时，提示将从模板新建 `.cm-workflow.yml`。
 2. 你手上有哪个 AI 工具？/ Which AI tools do you have?
-   `[1] 只有 Codex / Codex only` `[2] 只有 Claude / Claude only` `[3] 两个都有 / Both`。
-   此问无默认，必须选择；选 3 再问：谁写代码？/ Who writes code?
-   `[1] Codex（Claude 审，推荐）/ Codex (Claude reviews, recommended)`
-   `[2] Claude（Codex 审）/ Claude (Codex reviews)`，默认 1。
+   `[1] 只有 Codex / Codex only` `[2] 只有 Claude / Claude only (default)` `[3] 两个都有 / Both`。
+   直接回车选 2；选 3 再问：谁写代码？/ Who writes code?
+   `[1] Codex（Claude 审）/ Codex (Claude reviews)`
+   `[2] Claude（Codex 审，默认）/ Claude (Codex reviews, default)`，默认 2。
 3. 执行只读 `preview <preset> --project "{代码项目路径}"`；用户范围用 `preview <preset> --user`，
    工作目录必须是代码项目根，以便核对该项目的覆盖关系。可加 `--json` 读取结构化结果。
    展示目标文件/范围、字段前后值、当前项目保存前后的有效值及模型兼容性提示，保留返回的
-   `preview_sha256`，询问确认 / Confirm? `[y/N]`，默认不保存。
+   `preview_sha256`，会话里必须由用户本人在对话中明确回复同意才保存，不得代答，也不得自造确认码；终端向导才使用随机 8 位确认码（每次提问重新生成），输入其他内容或直接回车都不保存。
 4. 只有用户明确同意才调用相同项目、范围、预设、语言和运行时环境的
    `set ... --expect-preview <preview_sha256>`。不得用普通 `set` 绕过摘要校验。
    配置漂移或校验失败时保留文件，重新预览并取得新的确认，不沿用旧批准。
    成功后执行 `show --project "{代码项目路径}"` 并回显。
 
 工具选 1/2 分别映射 `codex-only`/`claude-only`；两个都有、写代码选 1/2 分别映射
-`codex-codes`/`claude-codes`。取消、拒绝确认或必选问题连续三次空输入时放弃，不写。
+`codex-codes`/`claude-codes`。取消或拒绝确认时放弃，不写；两道选择题直接回车选 Claude。
 会话没有回复不代表回车或确认，不得因等待超时执行；选择了修改也不等于批准保存。
 用户声明被项目覆盖时如实报告当前项目不会切换。摘要仅用于预览一致性，不是用户授权证据。
 

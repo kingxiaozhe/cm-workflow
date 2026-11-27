@@ -84,11 +84,13 @@ cm-ai-host failover: CLI 可解析不等于配额可用；本次切换只决定�
 ### 限制
 
 - **只决定起跑运行时**，任务开始后不再切换；中途失效由 L1 交接接手。
-- 与 `--protected-config` 互斥（protected 模式只支持 Codex，无备端可选），组合报
+- 与 `--protected-config` 互斥（protected 模式按 roles 自行选开发/审查端，不走起跑选路），组合报
   `failover_unsupported_in_protected_mode`。
 - 当前会话 host 下 developer 与 reviewer 共用同一 runtime 参数，选路按
-  `developer` 角色进行。要让 N4 跨模型，用 `--review-config` 指定审查通道，或走
-  `codex-review` skill。
+  `developer` 角色进行。要让 N4 跨模型，普通宿主显式传 `--review-runtime {另一端}`（并按
+  `skills/cm-ai/references/js-host.md` 用审查端生成预检、配 `--review-config`），或走
+  `codex-review` skill。与 `--failover` 同用时，起跑端若因故障切到另一端，开发端与声明不符，
+  宿主会以 `runtime_selection_mismatch` 拒绝，声明端 CLI 仍不可用时，去掉 `--failover` 并先恢复该端，或改项目声明。
 
 ## 定点测试
 

@@ -52,6 +52,7 @@ New cm-ai runs additionally bind `specification` into the baseline, developer re
 
 ## Channel order
 
+0. Project declares `roles.reviewer.adapter: claude-cli` (including `claude-only`): go straight to item 3; do not try Codex first. This governs the compatibility flow; the ordinary JS host reviews with the current tool unless `--review-runtime` is passed (see `skills/cm-ai/references/js-host.md`).
 1. `codex-subagent`: spawn a fresh reviewer/subagent with the runtime's no-history/fresh-context option (for example `fork_turns: none`) and provide only the review package. Ask for concrete failure scenarios, ordered by severity, and require an explicit zero-findings result when applicable.
 2. `codex-cli`: if subagents are unavailable, run `codex review` only when the task changes are isolated from unrelated dirty work (clean pre-task tree or isolated worktree/commit).
 3. `claude-cli`: when selected by the project declaration, the protected host must actually spawn a fresh Claude reviewer and recover its registered V3 receipt before recording `independent: true`. A two-provider declaration requires coder and reviewer on different providers; a single-provider declaration uses a fresh context on that provider.

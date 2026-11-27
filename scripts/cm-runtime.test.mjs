@@ -135,9 +135,22 @@ function tty(){
   let text='';output.on('data',chunk=>{text+=chunk;});
   return {input,output,text:()=>text};
 }
+// 逐行喂入：每个提问（不以换行结尾的输出）出现后才送下一行；{CODE} 换成提示里显示的确认码。
+function feed(io,answers){
+  const lines=answers.split(/(?<=\n)/);let seen='';
+  io.output.on('data',chunk=>{
+    seen+=chunk;
+    if(String(chunk).endsWith('\n'))return;
+    let next=lines.shift();
+    if(next===undefined){io.input.end();return;}
+    if(next.includes('{CODE}')){const code=(/(?:confirmation code|确认码) (\w{8})/.exec(String(chunk))??[])[1];next=next.replace('{CODE}',code??'????');}
+    if(lines.length===0)io.input.end(next);else io.input.write(next);
+  });
+}
 async function wizard(root,answers,lang='en'){
-  const io=tty();const running=main(['--project',root],{...io,lang});
-  io.input.end(answers);const code=await running;return {code,text:io.text()};
+  const io=tty();feed(io,answers);
+  const running=main(['--project',root],{...io,lang});
+  const code=await running;return {code,text:io.text()};
 }
 test('wizard and installer share the same preset question function',()=>assert.equal(wizardPreset,installerPreset));
 test('entry keeps missing and existing configuration by default, without logs or run writes',()=>wizardFixture(async root=>{
@@ -156,7 +169,7 @@ test('advanced model information is read-only and has no model editing prompt',(
   assert.deepEqual(fs.readdirSync(root),[]);
 }));
 test('Enter at the final confirmation declines the proposed change',()=>wizardFixture(async root=>{
-  const result=await wizard(root,'2\n2\n1\n\n');assert.equal(result.code,0);assert.match(result.text,/Confirm\? \[y\/N\]/);
+  const result=await wizard(root,'2\n2\n1\n\n');assert.equal(result.code,0);assert.match(result.text,/confirmation code/);
   assert.match(result.text,/Cancelled/);assert.deepEqual(fs.readdirSync(root),[]);
 }));
 test('first-install declaration is optional and Enter skips it',()=>wizardFixture(async root=>{
@@ -180,7 +193,7 @@ test('TTY project wizard changes exactly five fields, logs decision and shows re
   const before='\ufeff# keep\r\nversion: 1\r\nruntimes: {available: codex}\r\nroles:\r\n  coder: {adapter: current-ai, source: local, model: default} # keep coder\r\n  reviewer: {adapter: current-ai, source: local, model: default}\r\n';
   const initial=before;
   fs.writeFileSync(file,initial);
-  const result=await wizard(root,'2\n1\n3\n1\nY\n');assert.equal(result.code,0,result.text);
+  const result=await wizard(root,'2\n1\n3\n1\n{CODE}\n');assert.equal(result.code,0,result.text);
   assert.equal(fs.readFileSync(file,'utf8'),initial.replace('available: codex','available: both').replace('adapter: current-ai','adapter: codex-cli').replace('adapter: current-ai','adapter: claude-cli').replaceAll('source: local','source: subscription'));
   assert.match(result.text,/Which AI tools do you have/);assert.match(result.text,/Who writes code/);
   assert.match(result.text,/preset: codex-codes/);assert.match(result.text,/runtimes_source: project/);
@@ -189,12 +202,12 @@ test('TTY project wizard changes exactly five fields, logs decision and shows re
   assert.equal(event.event,'decision');assert.equal(event.preset,'codex-codes');
 }));
 test('missing project defaults to user scope and Chinese preset/comment/output',()=>wizardFixture(async root=>{
-  const result=await wizard(root,'2\n\n2\nY\n','zh');assert.equal(result.code,0);
+  const result=await wizard(root,'2\n\n2\n{CODE}\n','zh');assert.equal(result.code,0);
   assert(!fs.existsSync(path.join(root,'.cm-workflow.yml')));
   assert.match(fs.readFileSync(path.join(root,'user','runtimes.yml'),'utf8'),/# 用 cm-runtime.*\npreset: claude-only/s);
-  assert.match(result.text,/你手上有哪个 AI 工具/);assert.match(result.text,/确认？/);assert.match(result.text,/runtimes_source: user/);
+  assert.match(result.text,/你手上有哪个 AI 工具/);assert.match(result.text,/确认码/);assert.match(result.text,/runtimes_source: user/);
 }));
-test('three empty mandatory answers, refusal, EOF and SIGINT do not write',()=>wizardFixture(async root=>{
+test('empty final confirmation, refusal, EOF and SIGINT do not write',()=>wizardFixture(async root=>{
   for(const [lang,cancelled] of [['en',/Cancelled/],['zh',/已放弃/]]){
     for(const answers of ['2\n2\n\n\n\n','2\n2\n1\nn\n','2\n2\n','2\n2\n1\n']){
       const result=await wizard(root,answers,lang);assert.equal(result.code,0);
@@ -204,9 +217,38 @@ test('three empty mandatory answers, refusal, EOF and SIGINT do not write',()=>w
     assert.equal(await running,0);assert.match(io.text(),cancelled);assert.deepEqual(fs.readdirSync(root),[]);
   }
 }));
+test('empty answers default to Claude: tools question and coder question',async()=>{
+  const feed=list=>async()=>list.shift();
+  assert.equal(await installerPreset(feed([''])),'claude-only');
+  assert.equal(await installerPreset(feed(['3',''])),'claude-codes');
+  assert.equal(await installerPreset(feed(['3','1'])),'codex-codes');
+  assert.equal(await installerPreset(feed(['1'])),'codex-only');
+});
+test('saving needs the preview confirmation code: pasted y, n, Enter, wrong code and unterminated EOF code never write',()=>wizardFixture(async root=>{
+  const cancelled=/Cancelled/;
+  // 提前粘贴（含猜测 y）：确认码预览前不可知 → 取消，不写。
+  const pasted=tty(),running=main(['--project',root],{...pasted,lang:'en'});
+  pasted.input.end('2\n2\n\ny\n');assert.equal(await running,0);
+  assert.match(pasted.text(),cancelled);assert.deepEqual(fs.readdirSync(root),[]);
+  // y、n、回车、错码：立即取消（不挂起、不吞输入），不写。
+  for(const answer of ['y\n','n\n','\n','zzzz\n']){
+    const r=await wizard(root,`2\n2\n\n${answer}`);assert.equal(r.code,0);
+    assert.match(r.text,cancelled);assert.deepEqual(fs.readdirSync(root),[]);
+  }
+  // 确认码每次提问随机生成：同一预览两次提问的码不同，上一次的码复用不了。
+  const codes=[];for(let i=0;i<2;i++){const r=await wizard(root,'2\n2\n\nn\n');codes.push(/(?:confirmation code|确认码) (\w{8})/.exec(r.text)[1]);}
+  assert.notEqual(codes[0],codes[1]);
+  const reused=await wizard(root,`2\n2\n\n${codes[0]}\n`);assert.match(reused.text,cancelled);assert.deepEqual(fs.readdirSync(root),[]);
+  // 正确确认码但没回车就 EOF：不算数，不写。
+  const tail=await wizard(root,'2\n2\n\n{CODE}');assert.equal(tail.code,0);
+  assert.match(tail.text,cancelled);assert.deepEqual(fs.readdirSync(root),[]);
+  // 对照：输入显示的确认码并回车才写入，且确认码大小写不敏感。
+  const ok=await wizard(root,'2\n2\n\n{CODE}\n');assert.equal(ok.code,0);
+  assert.match(ok.text,/Saved|已保存|installed/i);assert(fs.existsSync(path.join(root,'user','runtimes.yml')));
+}));
 test('explicit project creation, existing-project scope default and invalid choice retry',()=>wizardFixture(async root=>{
-  const created=await wizard(root,'2\n1\nwrong\n1\ny\n');assert.equal(created.code,0);assert.match(created.text,/Will create project configuration/);
-  const changed=await wizard(root,'2\n\n3\n2\ny\n');assert.equal(changed.code,0);assert.match(changed.text,/preset: claude-codes/);
+  const created=await wizard(root,'2\n1\nwrong\n1\n{CODE}\n');assert.equal(created.code,0);assert.match(created.text,/Will create project configuration/);
+  const changed=await wizard(root,'2\n\n3\n2\n{CODE}\n');assert.equal(changed.code,0);assert.match(changed.text,/preset: claude-codes/);
   assert.equal(loadConfig({projectRoot:root}).roles.coder.adapter,'claude-cli');
 }));
 test('non-TTY no command exits 2 with usage and no writes',()=>fixture((root,run)=>{
@@ -234,8 +276,8 @@ test('installer culture reaches shared prompts and comments; explicit override w
     for(const key of keys)delete process.env[key];
     for(const [culture,override,expected] of [['zh-CN',undefined,'zh'],['en-US',undefined,'en'],['zh-CN','en','en']]){
       if(override)process.env.CM_WORKFLOW_LANG=override;else delete process.env.CM_WORKFLOW_LANG;
-      const io=tty(),running=promptRuntime(['--lang',culture],io.input,io.output);
-      io.input.end('y\n3\n2\ny\n');await running;
+      const io=tty();feed(io,'y\n3\n2\n{CODE}\n');const running=promptRuntime(['--lang',culture],io.input,io.output);
+      await running;
       assert.match(io.text(),expected==='zh'?/你手上有哪个 AI 工具/:/Which AI tools do you have/);
       const file=path.join(root,'user','runtimes.yml');assert.match(fs.readFileSync(file,'utf8'),expected==='zh'?/# 用 cm-runtime/:/# Use cm-runtime/);
       fs.unlinkSync(file);
@@ -297,7 +339,7 @@ test('project preview save refuses target edits and preserves the external write
 test('TTY confirmation cannot overwrite edits made after its preview',()=>wizardFixture(async root=>{
   const file=path.join(root,'.cm-workflow.yml');fs.writeFileSync(file,'version: 1\n');
   const io=tty(),external='version: 1\n# external edit\n';let changed=false;
-  io.output.on('data',chunk=>{if(String(chunk).includes('Confirm?')){fs.writeFileSync(file,external);changed=true;io.input.end('y\n');}});
+  io.output.on('data',chunk=>{const m=/(?:confirmation code|确认码) (\w{8})/.exec(String(chunk));if(m){fs.writeFileSync(file,external);changed=true;io.input.end(`${m[1]}\n`);}});
   const running=main(['--project',root],{...io,lang:'en'});io.input.write('2\n1\n1\n');
   assert.equal(await running,1);assert(changed);assert.equal(fs.readFileSync(file,'utf8'),external);
   assert(!fs.existsSync(path.join(root,'logs')));
@@ -310,7 +352,7 @@ test('installer keeps existing defaults, defaults No at final confirmation and r
     assert.deepEqual(fs.readFileSync(file),before);
   }
   const io=tty();let changed=false;
-  io.output.on('data',chunk=>{if(String(chunk).includes('[y/N]')){writeUserRuntime('claude-codes');changed=true;io.input.end('y\n');}});
+  io.output.on('data',chunk=>{const m=/(?:confirmation code|确认码) (\w{8})/.exec(String(chunk));if(m){writeUserRuntime('claude-codes');changed=true;io.input.end(`${m[1]}\n`);}});
   const running=promptRuntime([],io.input,io.output);io.input.write('n\n2\n');
   await assert.rejects(running,/fresh preview|重新预览/);assert(changed);
   assert.match(fs.readFileSync(file,'utf8'),/preset: claude-codes/);

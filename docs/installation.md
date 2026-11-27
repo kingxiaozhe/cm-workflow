@@ -566,7 +566,7 @@ offer an optional user-default setup. First-time setup defaults to skipping; an 
 declaration is displayed and “Keep it? [Y/n]” defaults to keeping it.
 Only opting in asks which tools you have: Codex only, Claude only, or both, and which
 tool codes when both are selected. Preview the target, fields and impact, then explicitly
-confirm `[y/N]` to save. Enter at this final step does not save.
+type the 8-character confirmation code shown with the preview to save. Enter or any other input at this final step does not save.
 The shared prompt writes only `~/.cm-workflow/runtimes.yml` using a temporary file
 and atomic rename. It never changes settings.json or CLAUDE.md.
 An invalid existing declaration is reported and preserved; setup does not overwrite it.
@@ -593,13 +593,13 @@ without arguments to display current effective configuration, source and model a
 `[1] Keep current configuration (recommended, default)`, `[2] Change runtime preset`, or
 `[3] Advanced model configuration` (documentation and validation only). Keeping missing
 configuration does not create any file. Only option 2 starts the wizard:
-`[1] Current project / [2] User default` → `[1] Codex only / [2] Claude only / [3] Both`
-(with `[1] Codex writes, Claude reviews (recommended) / [2] Claude writes, Codex reviews`
-when both are selected) → preview the fields and effective impact and confirm `[y/N]`.
+`[1] Current project / [2] User default` → `[1] Codex only / [2] Claude only (default) / [3] Both`
+(with `[1] Codex writes, Claude reviews / [2] Claude writes, Codex reviews (default)`
+when both are selected) → preview the fields and effective impact; in the conversation, save only after you explicitly agree in your own reply (the 8-character confirmation code appears only in the terminal wizard).
 In a terminal, `node <workflow-root>/scripts/cm-runtime.mjs [--project PATH]` opens the same wizard.
 Scope defaults to 1 with an existing project config, otherwise 2. Choosing 1 without a config
-announces creation from the template. The tool question has no default. Ctrl+C, three consecutive
-empty answers to that required question, EOF, declining confirmation or Enter at confirmation
+announces creation from the template. Enter at the tool question or the writer question picks Claude (the default). Ctrl+C,
+EOF, a wrong or empty confirmation code, or Enter at confirmation
 cancels without writing. Invalid configuration is reported and preserved, not automatically repaired.
 Project overrides are shown explicitly. Model aliases are retained across adapter changes;
 validation does not prove provider compatibility, model access or quota.
